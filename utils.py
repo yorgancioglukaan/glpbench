@@ -104,7 +104,7 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
     test.edge_label = torch.ones(n_test_edges)
 
     #negative sampling for test edges
-    #TODO
+
     #randomly sample candidate nodes with replacement
     cand_nodes = list(set(range(data.num_nodes-1))- set(query))
     negative_src = torch.tensor(random.choices(cand_nodes,k=n_test_edges))
@@ -113,8 +113,5 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
     negative_labels = torch.zeros(n_test_edges)
     test.edge_label = torch.cat([test.edge_label, negative_labels],dim=0)
     test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
-
-    
-
 
     return train, val, test

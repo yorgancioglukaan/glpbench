@@ -3,6 +3,7 @@ import torch
 import utils
 from torch_geometric.datasets import Planetoid
 import torch_geometric.transforms as T
+import link_prediction
 
 class TestInductiveSplit(unittest.TestCase):
     def test_query_int(self):
@@ -51,6 +52,19 @@ class TestInductiveSplit(unittest.TestCase):
             utils.inductive_split(data, [[2,3],[3,4]])
         utils.inductive_split(data, [633])
         
+
+class TestLinkPrediction(unittest.TestCase):
+
+    def test_constructor(self):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        transform = T.Compose([
+            T.NormalizeFeatures(),
+            T.ToDevice(device),
+        ])
+        dataset = Planetoid(root='/tmp/Cora', name='Cora', transform=transform)
+        data = dataset[0]
+        link_prediction.LinkPrediction(data, conv_layer_type= "GCNConv", model_type = "asymmetric")
+
 
 if __name__ == "__main__":
     unittest.main()
