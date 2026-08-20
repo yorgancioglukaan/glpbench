@@ -3,7 +3,7 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.utils import is_undirected
 import random
-
+from sklearn.decomposition import PCA
 
 
 def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs):
@@ -115,3 +115,44 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
     test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
 
     return train, val, test
+
+def calculate_reduced_features(data, dim = 128, reduction_method = 'pca', **kwargs):
+    '''
+    This function adds an attribute `data.x_reduced` do the provided data object. Where `x_reduced` is the dimension-reduced feature matrix.
+    It also saves the calculated dimensionality reduction model to `data.dim_reduction` that can be used for future applications to new data.
+
+    Parameters:
+    -----------
+    data : torch_geometric.data.Data
+        Source network to be operated on. 
+    dim : int, optional
+        Number of dimensions to reduce the features to. Default is 128.
+    reduction_method : str, optional
+        Reduction model to be used. Must be one of 'pca'. Default is pca
+    '''
+
+    valid_reduction_methods = ['pca']
+    if not reduction_method in valid_reduction_methods:
+        raise ValueError(f"reduction method should be one of {', '.join(valid_reduction_methods)}")
+
+    if reduction_method == 'pca':
+        data.dim_reduction = PCA(n_components=dim)
+        data.dim_reduction.fit(data.x)
+        data.x_reduced = torch.tensor(data.dim_reduction.fit_transform(data.x.cpu()), dtype=torch.float).to(data.x.device)
+
+def update_reduced_features(data, reduction_model = None, **kwargs):
+    '''
+    This function appliess the previously trained dimensionality reduction method to new data
+    
+    Parameters:
+    -----------
+    data : torch_geometric.data.Data
+        Network to be operated on.
+    reduction_model : object, optional
+        If provided, the function will use this model instead of the one that is saved on the `data.dim_reduction`
+    '''
+    if reduction_model == None:
+        reduction_model = data.dim_reduction
+
+    if isinstance(reduction_model, PCA):
+        data.x_reduced = torch.tensor(reduction_model.fit_transform(data.x.cpu()), dtype=torch.float).to(data.x.device)

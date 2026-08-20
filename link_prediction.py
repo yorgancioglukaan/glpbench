@@ -65,7 +65,36 @@ class GAE_Model(torch.nn.Module):
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
 class LinkPrediction:
-    def __init__(self, train_data = None, **kwargs):
+    '''
+    Default Link Prediction module for all types of graph auto encoder variants
+
+    ...
+
+    Attributes:
+    -----------
+    model_type : str
+        symmetric, asymmetric, and other variants
+    optimizer : torch.optim.Optimizer
+        torch.optim.Adam by default
+    criterion : torch.nn.ModuleHolder
+        toch.nn.BCEWithLogitsLoss by default
+    model : torch.nn.Module
+        underlying graph auto-encoder model
+
+    
+    '''
+
+    def __init__(self, train_data, **kwargs):
+        '''
+        Constructor for LinkPrediction object
+
+        Parameters:
+        -----------
+        train_data : torch_geometric.data.Data
+            Training data to be used for back-propagation
+        
+        '''
+
         
         self.model_type = kwargs["model_type"] if "model_type" in kwargs.keys() else "symmetric"
 
@@ -92,28 +121,46 @@ class LinkPrediction:
         self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=0.01)
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
+    def train(self, train_data = None):
+        '''
+        Trains the model for one epoch by performing one round of back-propagation using `self.training_data`
 
-    
-    def train(self):
+        Parameters:
+        -----------
+        train_data : torch_geometric.data.Data, optional
+            If supplied with a training data, the method uses it for back propagation. 
+            Otherwise it uses `self.train_data` provided during construction.
+
+        Returns:
+        --------
+        loss : float
+            output of the loss function calculated before back-propagation
+
+        '''
+
+        if train_data == None:
+             train_data = self.train_data
+
+
         self.model.train()
         self.optimizer.zero_grad()
-        z = self.model.encode(self.train_data.x, self.train_data.edge_index)
+        z = self.model.encode(train_data.x, train_data.edge_index)
 
         # We perform a new round of negative sampling for every training epoch:
         neg_edge_index = negative_sampling(
-            edge_index=self.train_data.edge_index, num_nodes=self.train_data.num_nodes,
-            num_neg_samples=self.train_data.edge_label_index.size(1))
+            edge_index=train_data.edge_index, num_nodes=train_data.num_nodes,
+            num_neg_samples=train_data.edge_label_index.size(1))
 
         edge_label_index = torch.cat(
-            [self.train_data.edge_label_index, neg_edge_index],
+            [train_data.edge_label_index, neg_edge_index],
             dim=-1,
         )
         edge_label = torch.cat([
-            self.train_data.edge_label,
-            self.train_data.edge_label.new_zeros(neg_edge_index.size(1))
+            train_data.edge_label,
+            train_data.edge_label.new_zeros(neg_edge_index.size(1))
         ], dim=0)
 
-        out = self.model.decode(z, edge_label_index, self.train_data.x_reduced).view(-1)
+        out = self.model.decode(z, edge_label_index, train_data.x_reduced).view(-1)
         loss = self.criterion(out, edge_label)
         loss.backward()
         self.optimizer.step()
@@ -121,6 +168,15 @@ class LinkPrediction:
 
     @torch.no_grad()
     def test(self, data):
+        '''
+        Uses trained model to predict for the provided test data
+
+        Parameters:
+        -----------
+        data : torch_geometric.data.Data
+            test data to make predictions for. Assumes edge_label and edge_label_index are present.
+
+        '''
         self.model.eval()
         z = self.model.encode(data.x, data.edge_index)
         out = self.model.decode(z, data.edge_label_index, data.x_reduced).view(-1).sigmoid()
