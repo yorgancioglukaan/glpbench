@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import patch
+import csv
+import json
+from pathlib import Path
+import tempfile
 import torch
 import utils
+from experiment_logging import CSVResultLogger, ExperimentResult
 from torch_geometric.datasets import Planetoid
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
@@ -292,6 +297,94 @@ class TestLinkPrediction(unittest.TestCase):
         x_reduced = torch.ones((2, 3))
         with self.assertRaises(RuntimeError):
             model.decode(z, torch.tensor([[0], [1]]), x_reduced)
+
+
+class TestExperimentLogging(unittest.TestCase):
+    @staticmethod
+    def _result(**overrides):
+        values = {
+            "dataset": "Cora",
+            "model_type": "asymmetric",
+            "split_type": "inductive",
+            "conv_layer_type": "GCNConv",
+            "hidden_channels": 128,
+            "out_channels": 64,
+            "query_size": 10,
+            "train_ratio": 0.8,
+            "test_ratio": 0.1,
+            "epochs": 100,
+            "random_seed": 42,
+            "roc_auc": 0.91,
+            "average_precision": 0.87,
+        }
+        values.update(overrides)
+        return ExperimentResult(**values)
+
+    def test_logger_creates_file_and_round_trips_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "results.csv"
+            run_id = CSVResultLogger(path).log(
+                self._result(extra_fields={"learning_rate": 0.01})
+            )
+
+            with path.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["run_id"], run_id)
+            self.assertTrue(rows[0]["timestamp_utc"].endswith("+00:00"))
+            self.assertEqual(rows[0]["dataset"], "Cora")
+            self.assertEqual(float(rows[0]["roc_auc"]), 0.91)
+            self.assertEqual(json.loads(rows[0]["extra_fields"]), {"learning_rate": 0.01})
+
+    def test_logger_appends_without_repeating_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            logger = CSVResultLogger(path)
+            logger.log(self._result(split_type="inductive"))
+            logger.log(self._result(split_type="transductive", query_size=0))
+
+            with path.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.reader(csv_file))
+
+            self.assertEqual(rows[0], CSVResultLogger.FIELDNAMES)
+            self.assertEqual(len(rows), 3)
+
+    def test_logger_preserves_empty_optional_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            CSVResultLogger(path).log(self._result(roc_auc=None, average_precision=None))
+            with path.open(newline="", encoding="utf-8") as csv_file:
+                row = next(csv.DictReader(csv_file))
+            self.assertEqual(row["roc_auc"], "")
+            self.assertEqual(row["average_precision"], "")
+
+    def test_logger_rejects_mismatched_existing_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            path.write_text("wrong,header\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema"):
+                CSVResultLogger(path).log(self._result())
+
+    def test_result_validates_parameters_and_metrics(self):
+        invalid_values = [
+            {"model_type": "unknown"},
+            {"split_type": "unknown"},
+            {"conv_layer_type": "unknown"},
+            {"hidden_channels": 0},
+            {"query_size": -1},
+            {"train_ratio": 1.1},
+            {"roc_auc": -0.1},
+            {"loss": -1.0},
+        ]
+        for values in invalid_values:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                self._result(**values)
+
+    def test_logger_requires_experiment_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(TypeError):
+                CSVResultLogger(Path(directory) / "results.csv").log({})
 
 if __name__ == "__main__":
     unittest.main()

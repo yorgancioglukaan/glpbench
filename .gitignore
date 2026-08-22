@@ -6,3 +6,4 @@
 /features/
 *.md
 !README.md
+/out/
