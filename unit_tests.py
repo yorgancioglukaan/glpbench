@@ -4,9 +4,11 @@ import csv
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import torch
 import utils
 import datasets
+import main
 from experiment_logging import CSVResultLogger, ExperimentResult
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
@@ -510,6 +512,57 @@ class TestDatasetLoading(unittest.TestCase):
         mock_planetoid.return_value.__getitem__.return_value = graph
         with self.assertRaisesRegex(ValueError, "undirected"):
             datasets.load_dataset("cora")
+
+
+class TestMainPipeline(unittest.TestCase):
+    @staticmethod
+    def _graph():
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+            (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        directed_edges = edges + [(target, source) for source, target in edges]
+        data = Data(
+            x=torch.rand(8, 4),
+            edge_index=torch.tensor(directed_edges).t().contiguous(),
+        )
+        data.dataset_name = "Toy"
+        data.dataset_family = "Test"
+        return data
+
+    @patch("main.load_dataset")
+    def test_unspecified_model_type_runs_both_models_on_both_splits(self, mock_load):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=None,
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+            )
+
+            run_id = main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+        combinations = {(row["model_type"], row["split_type"]) for row in rows}
+        self.assertEqual(combinations, {
+            ("symmetric", "transductive"),
+            ("symmetric", "inductive"),
+            ("asymmetric", "transductive"),
+            ("asymmetric", "inductive"),
+        })
+        self.assertEqual({row["run_id"] for row in rows}, {run_id})
 
 if __name__ == "__main__":
     unittest.main()

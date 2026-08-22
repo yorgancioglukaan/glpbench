@@ -1,0 +1,152 @@
+import torch
+from datasets import load_dataset
+import argparse
+import random
+
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+
+from experiment_logging import CSVResultLogger, ExperimentResult
+from link_prediction import LinkPrediction
+from utils import calculate_reduced_features, generate_comparable_splits
+
+
+def calculate_metrics(labels, probabilities):
+    """Calculate binary link-prediction metrics."""
+    labels = labels.detach().cpu().numpy()
+    probabilities = probabilities.detach().cpu().numpy()
+    predictions = (probabilities >= 0.5).astype(int)
+    return {
+        "roc_auc": roc_auc_score(labels, probabilities),
+        "average_precision": average_precision_score(labels, probabilities),
+        "accuracy": accuracy_score(labels, predictions),
+        "precision": precision_score(labels, predictions, zero_division=0),
+        "recall": recall_score(labels, predictions, zero_division=0),
+        "f1": f1_score(labels, predictions, zero_division=0),
+    }
+
+
+def parse_args():
+    """Parse command-line experiment parameters."""
+    parser = argparse.ArgumentParser(description="Run a link-prediction experiment")
+    parser.add_argument("dataset", help="benchmark dataset name")
+    parser.add_argument(
+        "out_filepath", nargs="?", default="out/results.csv",
+        help="path to the result CSV",
+    )
+    parser.add_argument("--data-root", default="data/Planetoid")
+    parser.add_argument(
+        "--model-type",
+        choices=("symmetric", "asymmetric"),
+        default=None,
+        help="model architecture; omit to run both",
+    )
+    parser.add_argument(
+        "--conv-layer-type",
+        choices=("GCNConv", "GraphConv", "SAGEConv"),
+        default="GCNConv",
+    )
+    parser.add_argument("--hidden-channels", type=int, default=128)
+    parser.add_argument("--out-channels", type=int, default=64)
+    parser.add_argument("--query-size", type=int, default=10)
+    parser.add_argument("--train-ratio", type=float, default=0.8)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--normalize-features", action=argparse.BooleanOptionalAction, default=True
+    )
+    return parser.parse_args()
+
+
+def run_experiment(args):
+    """Run one training experiment and log both test settings."""
+    if args.query_size <= 0:
+        raise ValueError("query_size must be a positive integer")
+    if args.epochs <= 0:
+        raise ValueError("epochs must be a positive integer")
+    if not 0 < args.train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1")
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    device = torch.device(args.device)
+
+    # Load and prepare the source graph on CPU for splitting and PCA.
+    data = load_dataset(
+        args.dataset,
+        root=args.data_root,
+        normalize_features=args.normalize_features,
+        device="cpu",
+    )
+    if args.out_channels > min(data.num_nodes, data.num_features):
+        raise ValueError(
+            "out_channels cannot exceed the smaller of num_nodes and num_features"
+        )
+    calculate_reduced_features(data, dim=args.out_channels)
+
+    # Select seeded, non-isolated query nodes.
+    candidate_queries = torch.unique(data.edge_index).tolist()
+    if args.query_size > len(candidate_queries):
+        raise ValueError("query_size exceeds the number of non-isolated nodes")
+    query = random.sample(candidate_queries, args.query_size)
+
+    train, _, test_transductive, test_inductive = generate_comparable_splits(
+        data, query=query, train_ratio=args.train_ratio
+    )
+    train = train.to(device)
+    test_transductive = test_transductive.to(device)
+    test_inductive = test_inductive.to(device)
+
+    logger = CSVResultLogger(args.out_filepath)
+    model_types = (
+        (args.model_type,) if args.model_type is not None
+        else ("symmetric", "asymmetric")
+    )
+    for model_type in model_types:
+        torch.manual_seed(args.seed)
+        predictor = LinkPrediction(
+            train,
+            model_type=model_type,
+            conv_layer_type=args.conv_layer_type,
+            hidden_channels=args.hidden_channels,
+            out_channels=args.out_channels,
+        )
+        predictor.model = predictor.model.to(device)
+        last_loss = None
+        for _ in range(args.epochs):
+            last_loss = predictor.train()
+
+        for split_type, test_data in (
+            ("transductive", test_transductive),
+            ("inductive", test_inductive),
+        ):
+            probabilities = predictor.test(test_data)
+            metrics = calculate_metrics(test_data.edge_label, probabilities)
+            result = ExperimentResult(
+                dataset=data.dataset_name,
+                model_type=model_type,
+                split_type=split_type,
+                conv_layer_type=args.conv_layer_type,
+                hidden_channels=args.hidden_channels,
+                out_channels=args.out_channels,
+                query_size=args.query_size,
+                train_ratio=args.train_ratio,
+                epochs=args.epochs,
+                random_seed=args.seed,
+                loss=float(last_loss.detach().cpu()),
+                **metrics,
+            )
+            logger.log(result)
+    return logger.run_id
+
+
+if __name__ == "__main__":
+    run_id = run_experiment(parse_args())
+    print(f"Completed experiment run {run_id}")
