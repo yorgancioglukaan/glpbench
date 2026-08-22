@@ -29,8 +29,8 @@ class ExperimentResult:
         Latent representation size.
     query_size : int
         Number of cold-start query nodes.
-    train_ratio, test_ratio : float
-        Training and test ratios.
+    train_ratio : float
+        Training ratio.
     epochs : int
         Number of training epochs.
     random_seed : int
@@ -45,7 +45,6 @@ class ExperimentResult:
     out_channels: int
     query_size: int
     train_ratio: float
-    test_ratio: float
     epochs: int
     random_seed: int
     roc_auc: float | None = None
@@ -76,10 +75,8 @@ class ExperimentResult:
         if not isinstance(self.random_seed, int) or self.random_seed < 0:
             raise ValueError("random_seed must be a non-negative integer")
 
-        for name in ("train_ratio", "test_ratio"):
-            value = getattr(self, name)
-            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
-                raise ValueError(f"{name} must be between 0 and 1")
+        if not isinstance(self.train_ratio, (int, float)) or not 0 <= self.train_ratio <= 1:
+            raise ValueError("train_ratio must be between 0 and 1")
         for name in ("roc_auc", "average_precision", "accuracy", "precision", "recall", "f1"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, (int, float)) or not 0 <= value <= 1):
@@ -99,6 +96,8 @@ class CSVResultLogger:
     ----------
     path : str or pathlib.Path
         Destination CSV file.
+    run_id : str, optional
+        Identifier shared by all rows logged by this instance.
     """
 
     FIELDNAMES = [
@@ -112,7 +111,6 @@ class CSVResultLogger:
         "out_channels",
         "query_size",
         "train_ratio",
-        "test_ratio",
         "epochs",
         "random_seed",
         "roc_auc",
@@ -125,8 +123,29 @@ class CSVResultLogger:
         "extra_fields",
     ]
 
-    def __init__(self, path):
+    def __init__(self, path, run_id=None):
         self.path = Path(path)
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ValueError("run_id must be a non-empty string")
+        self.run_id = run_id or str(uuid4())
+
+    def reset_run_id(self, run_id=None):
+        """Start a new run and return its identifier.
+
+        Parameters
+        ----------
+        run_id : str, optional
+            Identifier to use. By default, a new UUID is generated.
+
+        Returns
+        -------
+        str
+            New run identifier.
+        """
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ValueError("run_id must be a non-empty string")
+        self.run_id = run_id or str(uuid4())
+        return self.run_id
 
     def log(self, result):
         """Append one result and return its generated run ID.
@@ -152,11 +171,10 @@ class CSVResultLogger:
             if header != self.FIELDNAMES:
                 raise ValueError("existing CSV schema does not match the logger schema")
 
-        run_id = str(uuid4())
         row = asdict(result)
         row["extra_fields"] = json.dumps(row["extra_fields"], sort_keys=True)
         row = {
-            "run_id": run_id,
+            "run_id": self.run_id,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             **row,
         }
@@ -167,4 +185,4 @@ class CSVResultLogger:
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
-        return run_id
+        return self.run_id

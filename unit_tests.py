@@ -311,7 +311,6 @@ class TestExperimentLogging(unittest.TestCase):
             "out_channels": 64,
             "query_size": 10,
             "train_ratio": 0.8,
-            "test_ratio": 0.1,
             "epochs": 100,
             "random_seed": 42,
             "roc_auc": 0.91,
@@ -341,14 +340,74 @@ class TestExperimentLogging(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "results.csv"
             logger = CSVResultLogger(path)
-            logger.log(self._result(split_type="inductive"))
-            logger.log(self._result(split_type="transductive", query_size=0))
+            first_run_id = logger.log(self._result(split_type="inductive"))
+            second_run_id = logger.log(
+                self._result(split_type="transductive", query_size=0)
+            )
 
             with path.open(newline="", encoding="utf-8") as csv_file:
                 rows = list(csv.reader(csv_file))
 
             self.assertEqual(rows[0], CSVResultLogger.FIELDNAMES)
             self.assertEqual(len(rows), 3)
+            run_id_index = CSVResultLogger.FIELDNAMES.index("run_id")
+            self.assertEqual(first_run_id, logger.run_id)
+            self.assertEqual(second_run_id, logger.run_id)
+            self.assertEqual(rows[1][run_id_index], logger.run_id)
+            self.assertEqual(rows[2][run_id_index], logger.run_id)
+
+    def test_separate_loggers_generate_different_run_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            first_logger = CSVResultLogger(path)
+            second_logger = CSVResultLogger(path)
+
+            first_logger.log(self._result())
+            second_logger.log(self._result())
+
+            self.assertNotEqual(first_logger.run_id, second_logger.run_id)
+
+    def test_logger_accepts_explicit_run_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            logger = CSVResultLogger(path, run_id="experiment-001")
+
+            returned_run_id = logger.log(self._result())
+
+            with path.open(newline="", encoding="utf-8") as csv_file:
+                row = next(csv.DictReader(csv_file))
+            self.assertEqual(returned_run_id, "experiment-001")
+            self.assertEqual(row["run_id"], "experiment-001")
+
+    def test_logger_rejects_empty_explicit_run_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                CSVResultLogger(Path(directory) / "results.csv", run_id=" ")
+
+    def test_logger_can_reset_to_generated_run_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            logger = CSVResultLogger(path)
+            original_run_id = logger.log(self._result())
+
+            reset_run_id = logger.reset_run_id()
+            logged_run_id = logger.log(self._result())
+
+            self.assertNotEqual(reset_run_id, original_run_id)
+            self.assertEqual(logged_run_id, reset_run_id)
+
+    def test_logger_can_reset_to_explicit_run_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            logger = CSVResultLogger(path)
+
+            reset_run_id = logger.reset_run_id("experiment-002")
+            logged_run_id = logger.log(self._result())
+
+            self.assertEqual(reset_run_id, "experiment-002")
+            self.assertEqual(logged_run_id, "experiment-002")
+            with self.assertRaises(ValueError):
+                logger.reset_run_id("")
 
     def test_logger_preserves_empty_optional_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
