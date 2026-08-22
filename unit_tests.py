@@ -6,11 +6,10 @@ from pathlib import Path
 import tempfile
 import torch
 import utils
+import datasets
 from experiment_logging import CSVResultLogger, ExperimentResult
-from torch_geometric.datasets import Planetoid
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
-import torch_geometric.transforms as T
 import link_prediction
 
 class TestInductiveSplit(unittest.TestCase):
@@ -23,13 +22,7 @@ class TestInductiveSplit(unittest.TestCase):
         )
 
     def test_query_int(self):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        transform = T.Compose([
-            T.NormalizeFeatures(),
-            T.ToDevice(device),
-        ])
-        dataset = Planetoid(root='/tmp/Cora', name='Cora', transform=transform)
-        data = dataset[0]
+        data = self._undirected_data(4, [(0, 1), (1, 2), (2, 3)])
         #negative input should throw ValueError
         with self.assertRaises(ValueError):
             utils.inductive_split(data, query = -3)
@@ -38,13 +31,7 @@ class TestInductiveSplit(unittest.TestCase):
             utils.inductive_split(data, query = 1.3)
 
     def test_query_tensor(self):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        transform = T.Compose([
-            T.NormalizeFeatures(),
-            T.ToDevice(device),
-        ])
-        dataset = Planetoid(root='/tmp/Cora', name='Cora', transform=transform)
-        data = dataset[0]
+        data = self._undirected_data(5, [(0, 1), (1, 2), (2, 3), (3, 4)])
         #negative input should throw ValueError
         with self.assertRaises(ValueError):
             utils.inductive_split(data, torch.tensor([1,2,3,-1], dtype=torch.int32))
@@ -56,17 +43,13 @@ class TestInductiveSplit(unittest.TestCase):
             utils.inductive_split(data, torch.tensor([1,2,3,4],dtype=torch.float32))
 
     def test_query_list(self):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        transform = T.Compose([
-            T.NormalizeFeatures(),
-            T.ToDevice(device),
-        ])
-        dataset = Planetoid(root='/tmp/Cora', name='Cora', transform=transform)
-        data = dataset[0]
+        data = self._undirected_data(
+            6, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (0, 5)]
+        )
         #
         with self.assertRaises(TypeError):
             utils.inductive_split(data, [[2,3],[3,4]])
-        utils.inductive_split(data, [633])
+        utils.inductive_split(data, [5])
 
     def test_inductive_negatives_do_not_overlap_positive_edges(self):
         data = self._undirected_data(
@@ -444,6 +427,89 @@ class TestExperimentLogging(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(TypeError):
                 CSVResultLogger(Path(directory) / "results.csv").log({})
+
+
+class TestDatasetLoading(unittest.TestCase):
+    @staticmethod
+    def _graph():
+        return Data(
+            x=torch.tensor([[2.0, 2.0], [1.0, 3.0], [4.0, 0.0]]),
+            edge_index=torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]]),
+        )
+
+    def test_available_datasets_has_stable_names(self):
+        self.assertEqual(datasets.available_datasets(), ["citeseer", "cora", "pubmed"])
+
+    @patch("datasets.Planetoid")
+    def test_planetoid_names_dispatch_to_canonical_names(self, mock_planetoid):
+        expected_names = {
+            "cora": "Cora",
+            "CITESEER": "CiteSeer",
+            "PubMed": "PubMed",
+        }
+        for supplied_name, canonical_name in expected_names.items():
+            with self.subTest(name=supplied_name):
+                mock_planetoid.reset_mock()
+                mock_planetoid.return_value.__getitem__.return_value = self._graph()
+
+                data = datasets.load_dataset(
+                    supplied_name, root=Path("benchmark-data"), normalize_features=False
+                )
+
+                mock_planetoid.assert_called_once_with(
+                    root="benchmark-data", name=canonical_name
+                )
+                self.assertEqual(data.dataset_name, canonical_name)
+                self.assertEqual(data.dataset_family, "Planetoid")
+
+    @patch("datasets.Planetoid")
+    def test_loader_clones_normalizes_and_moves_graph(self, mock_planetoid):
+        original = self._graph()
+        mock_planetoid.return_value.__getitem__.return_value = original
+
+        loaded = datasets.load_dataset("cora", device=torch.device("cpu"))
+
+        self.assertIsNot(loaded, original)
+        self.assertTrue(torch.allclose(loaded.x.sum(dim=1), torch.ones(3)))
+        self.assertTrue(torch.equal(original.x, self._graph().x))
+        self.assertEqual(loaded.x.device.type, "cpu")
+
+    @patch("datasets.Planetoid")
+    def test_loader_can_skip_feature_normalization(self, mock_planetoid):
+        original = self._graph()
+        mock_planetoid.return_value.__getitem__.return_value = original
+
+        loaded = datasets.load_dataset("cora", normalize_features=False)
+
+        self.assertTrue(torch.equal(loaded.x, original.x))
+
+    def test_loader_rejects_unknown_name_and_invalid_options(self):
+        with self.assertRaisesRegex(ValueError, "Available datasets"):
+            datasets.load_dataset("unknown")
+        with self.assertRaises(TypeError):
+            datasets.load_dataset("cora", root=123)
+        with self.assertRaises(TypeError):
+            datasets.load_dataset("cora", normalize_features="yes")
+        with self.assertRaises(TypeError):
+            datasets.load_dataset("cora", device=3)
+        with self.assertRaisesRegex(ValueError, "Invalid device"):
+            datasets.load_dataset("cora", device="not-a-device")
+
+    @patch("datasets.Planetoid")
+    def test_loader_rejects_missing_features(self, mock_planetoid):
+        graph = self._graph()
+        graph.x = None
+        mock_planetoid.return_value.__getitem__.return_value = graph
+        with self.assertRaisesRegex(ValueError, "node features"):
+            datasets.load_dataset("cora")
+
+    @patch("datasets.Planetoid")
+    def test_loader_rejects_directed_graphs(self, mock_planetoid):
+        graph = self._graph()
+        graph.edge_index = torch.tensor([[0, 1], [1, 2]])
+        mock_planetoid.return_value.__getitem__.return_value = graph
+        with self.assertRaisesRegex(ValueError, "undirected"):
+            datasets.load_dataset("cora")
 
 if __name__ == "__main__":
     unittest.main()
