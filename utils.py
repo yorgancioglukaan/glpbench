@@ -6,6 +6,41 @@ import random
 from sklearn.decomposition import PCA
 
 
+def _sample_inductive_negative_edges(data, positive_edges, query):
+    """Sample non-edges ending at the same query nodes as ``positive_edges``."""
+    edge_dtype = data.edge_index.dtype
+    edge_device = data.edge_index.device
+    query_nodes = set(query)
+
+    neighbors = [set() for _ in range(data.num_nodes)]
+    src_nodes, tgt_nodes = data.edge_index.detach().cpu().tolist()
+    for src, tgt in zip(src_nodes, tgt_nodes):
+        neighbors[src].add(tgt)
+        neighbors[tgt].add(src)
+
+    negative_sources = []
+    negative_targets = positive_edges[1].detach().cpu().tolist()
+    for target in negative_targets:
+        candidates = [
+            node for node in range(data.num_nodes)
+            if node not in query_nodes
+            and node != target
+            and node not in neighbors[target]
+        ]
+        if not candidates:
+            raise ValueError(
+                f"Cannot sample a negative edge for query node {target}: "
+                "no eligible non-neighbor nodes are available."
+            )
+        negative_sources.append(random.choice(candidates))
+
+    return torch.tensor(
+        [negative_sources, negative_targets],
+        dtype=edge_dtype,
+        device=edge_device,
+    )
+
+
 def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs):
     """Generate both inductive and trandcutive split for a dataset. 
     
@@ -97,11 +132,7 @@ def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8
 
     #negative sampling for test edges
 
-    #randomly sample candidate nodes with replacement
-    cand_nodes = list(set(range(data.num_nodes-1))- set(query))
-    negative_src = torch.tensor(random.choices(cand_nodes,k=n_test_edges))
-    negative_tgt = directed_test_edges[1,:]
-    negative_edges = torch.stack([negative_src,negative_tgt], dim=0)
+    negative_edges = _sample_inductive_negative_edges(data, directed_test_edges, query)
     negative_labels = torch.zeros(n_test_edges)
     test_inductive.edge_label = torch.cat([test_inductive.edge_label, negative_labels],dim=0)
     test_inductive.edge_label_index = torch.cat([test_inductive.edge_label_index, negative_edges], dim=1)
@@ -115,8 +146,8 @@ def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8
                                       add_negative_train_samples=False, is_undirected=True,
                                       neg_sampling_ratio=1.0)
     
-
     train, val, test_transductive = link_splitter(temp_data)
+    test_inductive.edge_index = test_transductive.edge_index
 
     return train, val, test_transductive, test_inductive
 
@@ -221,11 +252,7 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
 
     #negative sampling for test edges
 
-    #randomly sample candidate nodes with replacement
-    cand_nodes = list(set(range(data.num_nodes-1))- set(query))
-    negative_src = torch.tensor(random.choices(cand_nodes,k=n_test_edges))
-    negative_tgt = directed_test_edges[1,:]
-    negative_edges = torch.stack([negative_src,negative_tgt], dim=0)
+    negative_edges = _sample_inductive_negative_edges(data, directed_test_edges, query)
     negative_labels = torch.zeros(n_test_edges)
     test.edge_label = torch.cat([test.edge_label, negative_labels],dim=0)
     test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
