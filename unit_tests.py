@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 import torch
 import utils
 from torch_geometric.datasets import Planetoid
 from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
 import torch_geometric.transforms as T
 import link_prediction
 
@@ -102,17 +104,194 @@ class TestInductiveSplit(unittest.TestCase):
         
 
 class TestLinkPrediction(unittest.TestCase):
+    @staticmethod
+    def _training_data():
+        return Data(
+            x=torch.tensor([
+                [1.0, 0.0, 0.5],
+                [0.0, 1.0, 0.5],
+                [1.0, 1.0, 0.0],
+                [0.5, 0.0, 1.0],
+                [0.0, 0.5, 1.0],
+            ]),
+            x_reduced=torch.tensor([
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [0.5, 1.0],
+                [1.0, 0.5],
+            ]),
+            edge_index=torch.tensor([
+                [0, 1, 1, 2, 2, 3, 3, 4],
+                [1, 0, 2, 1, 3, 2, 4, 3],
+            ]),
+            edge_label_index=torch.tensor([[0, 1], [1, 2]]),
+            edge_label=torch.ones(2),
+        )
 
-    def test_constructor(self):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        transform = T.Compose([
-            T.NormalizeFeatures(),
-            T.ToDevice(device),
-        ])
-        dataset = Planetoid(root='/tmp/Cora', name='Cora', transform=transform)
-        data = dataset[0]
-        link_prediction.LinkPrediction(data, conv_layer_type= "GCNConv", model_type = "asymmetric")
+    def test_model_construction_for_supported_convolutions(self):
+        layer_types = {
+            "GCNConv": GCNConv,
+            "GraphConv": GraphConv,
+            "SAGEConv": SAGEConv,
+        }
+        for model_class in (link_prediction.GAE_Model, link_prediction.AGAE_Model):
+            for layer_name, layer_class in layer_types.items():
+                with self.subTest(model=model_class.__name__, layer=layer_name):
+                    model = model_class(3, 4, 2, conv_layer_type=layer_name)
+                    self.assertIsInstance(model.conv1, layer_class)
+                    self.assertIsInstance(model.conv2, layer_class)
 
+    def test_invalid_model_and_convolution_types(self):
+        data = self._training_data()
+        with self.assertRaises(ValueError):
+            link_prediction.GAE_Model(3, 4, 2, conv_layer_type="InvalidConv")
+        with self.assertRaises(ValueError):
+            link_prediction.AGAE_Model(3, 4, 2, conv_layer_type="InvalidConv")
+        with self.assertRaises(ValueError):
+            link_prediction.LinkPrediction(data, model_type="invalid")
+
+    def test_encoder_output_shapes_are_finite(self):
+        data = self._training_data()
+        for model_class in (link_prediction.GAE_Model, link_prediction.AGAE_Model):
+            for layer_name in ("GCNConv", "GraphConv", "SAGEConv"):
+                with self.subTest(model=model_class.__name__, layer=layer_name):
+                    model = model_class(3, 4, 2, conv_layer_type=layer_name)
+                    encoded = model.encode(data.x, data.edge_index)
+                    self.assertEqual(encoded.shape, (data.num_nodes, 2))
+                    self.assertTrue(torch.isfinite(encoded).all())
+
+    def test_symmetric_decoder_matches_dot_products_and_is_symmetric(self):
+        model = link_prediction.GAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        z = torch.tensor([[1.0, 2.0], [3.0, 4.0], [-1.0, 2.0]])
+        edges = torch.tensor([[0, 1, 2], [1, 0, 1]])
+
+        scores = model.decode(z, edges)
+
+        expected = torch.tensor([11.0, 11.0, 5.0])
+        self.assertTrue(torch.equal(scores, expected))
+        self.assertEqual(scores[0].item(), scores[1].item())
+
+    def test_asymmetric_decoder_matches_source_target_dot_products(self):
+        model = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        z = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+        x_reduced = torch.tensor([[2.0, 0.0], [0.0, 5.0]])
+        edges = torch.tensor([[0, 1], [1, 0]])
+
+        scores = model.decode(z, edges, x_reduced)
+
+        self.assertTrue(torch.equal(scores, torch.tensor([10.0, 6.0])))
+        self.assertNotEqual(scores[0].item(), scores[1].item())
+
+    def test_decode_all_applies_score_threshold(self):
+        symmetric = link_prediction.GAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        asymmetric = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        z = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        x_reduced = torch.tensor([[0.4, 0.0], [0.0, 0.6]])
+
+        self.assertTrue(torch.equal(
+            symmetric.decode_all(z), torch.tensor([[0, 1], [0, 1]])
+        ))
+        self.assertTrue(torch.equal(
+            asymmetric.decode_all(z, x_reduced), torch.tensor([[1], [1]])
+        ))
+
+    def test_link_prediction_constructor_configuration(self):
+        data = self._training_data()
+        symmetric = link_prediction.LinkPrediction(
+            data, model_type="symmetric", conv_layer_type="GraphConv",
+            hidden_channels=7, out_channels=2,
+        )
+        asymmetric = link_prediction.LinkPrediction(
+            data, model_type="asymmetric", conv_layer_type="SAGEConv",
+            hidden_channels=6, out_channels=2,
+        )
+
+        self.assertIsInstance(symmetric.model, link_prediction.GAE_Model)
+        self.assertIsInstance(symmetric.model.conv1, GraphConv)
+        self.assertEqual(symmetric.model.conv1.out_channels, 7)
+        self.assertEqual(symmetric.model.conv2.out_channels, 2)
+        self.assertIsInstance(asymmetric.model, link_prediction.AGAE_Model)
+        self.assertIsInstance(asymmetric.model.conv1, SAGEConv)
+        self.assertEqual(asymmetric.model.conv1.out_channels, 6)
+        self.assertIsInstance(symmetric.criterion, torch.nn.BCEWithLogitsLoss)
+        optimizer_params = {id(param) for group in symmetric.optimizer.param_groups
+                            for param in group["params"]}
+        self.assertEqual(optimizer_params, {id(param) for param in symmetric.model.parameters()})
+
+    def test_default_constructor_uses_symmetric_gcn(self):
+        predictor = link_prediction.LinkPrediction(self._training_data())
+        self.assertIsInstance(predictor.model, link_prediction.GAE_Model)
+        self.assertIsInstance(predictor.model.conv1, GCNConv)
+
+    @patch("link_prediction.negative_sampling")
+    def test_asymmetric_training_step_updates_parameters(self, mock_sampling):
+        data = self._training_data()
+        mock_sampling.return_value = torch.tensor([[0, 4], [3, 1]])
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+        )
+        before = [parameter.detach().clone() for parameter in predictor.model.parameters()]
+
+        loss = predictor.train(data)
+
+        self.assertEqual(loss.ndim, 0)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(any(
+            not torch.equal(old, new) for old, new in zip(before, predictor.model.parameters())
+        ))
+        mock_sampling.assert_called_once_with(
+            edge_index=data.edge_index,
+            num_nodes=data.num_nodes,
+            num_neg_samples=data.edge_label_index.size(1),
+        )
+        sampled = mock_sampling.return_value
+        positives = {tuple(edge) for edge in data.edge_index.t().tolist()}
+        self.assertEqual(sampled.size(1), data.edge_label_index.size(1))
+        self.assertTrue(all(tuple(edge) not in positives for edge in sampled.t().tolist()))
+
+    def test_train_without_argument_uses_constructor_data(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+        )
+        loss = predictor.train()
+        self.assertTrue(torch.isfinite(loss))
+
+    def test_symmetric_training_step_returns_finite_loss(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="symmetric", hidden_channels=4, out_channels=2
+        )
+        loss = predictor.train(data)
+        self.assertTrue(torch.isfinite(loss))
+
+    def test_asymmetric_test_returns_probabilities_and_sets_eval_mode(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+        )
+        probabilities = predictor.test(data)
+        self.assertEqual(probabilities.shape, (data.edge_label_index.size(1),))
+        self.assertTrue(torch.isfinite(probabilities).all())
+        self.assertTrue(((probabilities >= 0) & (probabilities <= 1)).all())
+        self.assertFalse(predictor.model.training)
+
+    def test_symmetric_test_returns_probabilities(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="symmetric", hidden_channels=4, out_channels=2
+        )
+        probabilities = predictor.test(data)
+        self.assertEqual(probabilities.shape, (data.edge_label_index.size(1),))
+        self.assertTrue(((probabilities >= 0) & (probabilities <= 1)).all())
+
+    def test_asymmetric_decoder_rejects_incompatible_feature_dimensions(self):
+        model = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        z = torch.ones((2, 2))
+        x_reduced = torch.ones((2, 3))
+        with self.assertRaises(RuntimeError):
+            model.decode(z, torch.tensor([[0], [1]]), x_reduced)
 
 if __name__ == "__main__":
     unittest.main()

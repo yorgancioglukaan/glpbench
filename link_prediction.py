@@ -96,11 +96,12 @@ class LinkPrediction:
         '''
 
         
+        self.train_data = train_data
         self.model_type = kwargs["model_type"] if "model_type" in kwargs.keys() else "symmetric"
 
-        hidden_channels = kwargs["hidden_channels"] if "in_channels" in kwargs.keys() else 128
+        hidden_channels = kwargs["hidden_channels"] if "hidden_channels" in kwargs.keys() else 128
         out_channels = kwargs["out_channels"] if "out_channels" in kwargs.keys() else 64
-        conv_layer_type= kwargs["conv_layer_type"] if "conv_layer_type" in kwargs.keys() else None
+        conv_layer_type= kwargs["conv_layer_type"] if "conv_layer_type" in kwargs.keys() else "GCNConv"
 
         self.model = None
         if self.model_type == "symmetric":
@@ -160,7 +161,10 @@ class LinkPrediction:
             train_data.edge_label.new_zeros(neg_edge_index.size(1))
         ], dim=0)
 
-        out = self.model.decode(z, edge_label_index, train_data.x_reduced).view(-1)
+        if self.model_type == "asymmetric":
+            out = self.model.decode(z, edge_label_index, train_data.x_reduced).view(-1)
+        else:
+            out = self.model.decode(z, edge_label_index).view(-1)
         loss = self.criterion(out, edge_label)
         loss.backward()
         self.optimizer.step()
@@ -179,5 +183,9 @@ class LinkPrediction:
         '''
         self.model.eval()
         z = self.model.encode(data.x, data.edge_index)
-        out = self.model.decode(z, data.edge_label_index, data.x_reduced).view(-1).sigmoid()
+        if self.model_type == "asymmetric":
+            out = self.model.decode(z, data.edge_label_index, data.x_reduced)
+        else:
+            out = self.model.decode(z, data.edge_label_index)
+        out = out.view(-1).sigmoid()
         return out
