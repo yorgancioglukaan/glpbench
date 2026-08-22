@@ -7,7 +7,22 @@ from sklearn.decomposition import PCA
 
 
 def _sample_inductive_negative_edges(data, positive_edges, query):
-    """Sample non-edges ending at the same query nodes as ``positive_edges``."""
+    """Sample non-edges targeting the positive edges' query nodes.
+
+    Parameters
+    ----------
+    data : torch_geometric.data.Data
+        Original graph.
+    positive_edges : torch.Tensor
+        Positive edges with shape ``[2, num_edges]``.
+    query : sequence of int
+        Query node IDs excluded from candidate sources.
+
+    Returns
+    -------
+    torch.Tensor
+        Negative edges with shape ``[2, num_edges]``.
+    """
     edge_dtype = data.edge_index.dtype
     edge_device = data.edge_index.device
     query_nodes = set(query)
@@ -42,31 +57,23 @@ def _sample_inductive_negative_edges(data, positive_edges, query):
 
 
 def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs):
-    """Generate both inductive and trandcutive split for a dataset. 
-    
-    This function takes in a PyG Data and outputs train, val and test sets for both inductive and transductive settings. 
+    """Generate comparable inductive and transductive splits.
 
     Parameters
     ----------
     data : torch_geometric.data.Data
-        Source network
-    query : int or list or torch.Tensor, optional
-        Node id(s) of cold-start node(s). Must be an int or a list of integeres or a 1 dimesnional tensor of integers.
+        Undirected source graph.
+    query : int or sequence of int or torch.Tensor, optional
+        Cold-start node IDs.
     test_ratio : float, optional
-        If a query is not provided, uses test ratio to select a number of query nodes.
+        Fraction used for automatic query selection.
     train_ratio : float, optional
-        After test sets are sampled, uses this ratio to calculate training and validation sets.
+        Fraction of remaining edges assigned to training.
         
     Returns
     -------
-    train : torch_geometric.data.Data
-        Training network.
-    val : torch_geometric.data.Data
-        Validation network.
-    test_transductive : torch_geometric.data.Data
-        Transductive testing network. `edge_label_index` is generated to be the same size as the inductive_split's
-    test_inductive : torch_geometric.data.Data
-        Inductive testing network. `edge_label_index`ontains only the edges incident on query. Has the same `edge_index` as transductive split.
+    tuple of torch_geometric.data.Data
+        Training, validation, transductive-test, and inductive-test splits.
     """    
 
 #check if parameters are valid
@@ -154,29 +161,23 @@ def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8
 
 
 def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs):
-    """Perform inductive split for a dataset. AKA cold-start, node-disjoint, unseen-node, held-out-node.
-    
-    This function takes in a PyG Data and outputs train, val and test inductive splits. Split is "train rest" unless specified otherwise. 
-    Split is generated such that any edges incident on query node(s) are reserved for the test set. Remaining Edges are split between training and validation.
-    If a query is not specified, it is generated automatically using the test_ratio.
+    """Hold out edges incident to cold-start query nodes.
 
     Parameters
     ----------
     data : torch_geometric.data.Data
-        Source network
-    query : int or list or torch.Tensor, optional
-        Node id(s) of cold-start node(s). Must be an int or a list of integeres or a 1 dimesnional tensor of integers.
-    
+        Undirected source graph.
+    query : int or sequence of int or torch.Tensor, optional
+        Cold-start node IDs.
+    test_ratio : float, optional
+        Fraction used for automatic query selection.
+    train_ratio : float, optional
+        Fraction of remaining edges assigned to training.
         
     Returns
     -------
-    train : torch_geometric.data.Data
-        Training network.
-    val : torch_geometric.data.Data
-        Validation network.
-    test : torch_geometric.data.Data
-        Testing network. Contains only the edges incident on query.
-
+    tuple of torch_geometric.data.Data
+        Training, validation, and inductive-test splits.
     """
 
     #check if parameters are valid
@@ -260,19 +261,17 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
     return train, val, test
 
 def calculate_reduced_features(data, dim = 128, reduction_method = 'pca', **kwargs):
-    '''
-    This function adds an attribute `data.x_reduced` do the provided data object. Where `x_reduced` is the dimension-reduced feature matrix.
-    It also saves the calculated dimensionality reduction model to `data.dim_reduction` that can be used for future applications to new data.
+    """Fit a reducer and attach reduced node features to a graph.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     data : torch_geometric.data.Data
-        Source network to be operated on. 
+        Graph containing node features in ``x``.
     dim : int, optional
-        Number of dimensions to reduce the features to. Default is 128.
+        Number of output dimensions.
     reduction_method : str, optional
-        Reduction model to be used. Must be one of 'pca'. Default is pca
-    '''
+        Reduction method. Currently only ``"pca"`` is supported.
+    """
 
     valid_reduction_methods = ['pca']
     if not reduction_method in valid_reduction_methods:
@@ -284,16 +283,15 @@ def calculate_reduced_features(data, dim = 128, reduction_method = 'pca', **kwar
         data.x_reduced = torch.tensor(data.dim_reduction.fit_transform(data.x.cpu()), dtype=torch.float).to(data.x.device)
 
 def update_reduced_features(data, reduction_model = None, **kwargs):
-    '''
-    This function appliess the previously trained dimensionality reduction method to new data
-    
-    Parameters:
-    -----------
+    """Update reduced node features using a fitted reducer.
+
+    Parameters
+    ----------
     data : torch_geometric.data.Data
-        Network to be operated on.
-    reduction_model : object, optional
-        If provided, the function will use this model instead of the one that is saved on the `data.dim_reduction`
-    '''
+        Graph containing node features in ``x``.
+    reduction_model : sklearn.decomposition.PCA, optional
+        Reducer to use. Defaults to ``data.dim_reduction``.
+    """
     if reduction_model == None:
         reduction_model = data.dim_reduction
 

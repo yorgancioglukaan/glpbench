@@ -3,6 +3,20 @@ import torch
 from torch_geometric.utils import negative_sampling
 
 class AGAE_Model(torch.nn.Module):
+    """Asymmetric graph autoencoder.
+
+    Parameters
+    ----------
+    in_channels : int
+        Input feature dimension.
+    hidden_channels : int
+        Hidden feature dimension.
+    out_channels : int
+        Latent feature dimension.
+    conv_layer_type : str, optional
+        Message-passing layer type.
+    """
+
     def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
         super().__init__()
 
@@ -21,19 +35,36 @@ class AGAE_Model(torch.nn.Module):
              raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv'")           
 
     def encode(self, x, edge_index):
+        """Encode nodes into latent representations."""
         x = self.conv1(x, edge_index).relu()
         x = self.conv2(x, edge_index)
         return x
 
     def decode(self, z, edge_label_index, x_reduced):
+        """Score edges using latent sources and feature-based targets."""
         return (z[edge_label_index[0]] * x_reduced[edge_label_index[1]]).sum(dim=-1)
 
     def decode_all(self, z, x_reduced):
+        """Return node pairs with reconstruction scores above 0.5."""
         prob_adj = z @ x_reduced.t()
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
 class GAE_Model(torch.nn.Module):
+    """Symmetric graph autoencoder.
+
+    Parameters
+    ----------
+    in_channels : int
+        Input feature dimension.
+    hidden_channels : int
+        Hidden feature dimension.
+    out_channels : int
+        Latent feature dimension.
+    conv_layer_type : str, optional
+        Message-passing layer type.
+    """
+
     def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
         super().__init__()
 
@@ -52,48 +83,51 @@ class GAE_Model(torch.nn.Module):
              raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv'")
 
     def encode(self, x, edge_index):
+        """Encode nodes into latent representations."""
         x = self.conv1(x, edge_index).relu()
         x = self.conv2(x, edge_index)
         return x
 
     def decode(self, z, edge_label_index):
+        """Score edges using pairwise latent dot products."""
         return (z[edge_label_index[0]] * z[edge_label_index[1]]).sum(dim=-1)
 
     def decode_all(self, z):
+        """Return node pairs with reconstruction scores above 0.5."""
         prob_adj = z @ z.t()
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
 class LinkPrediction:
-    '''
-    Default Link Prediction module for all types of graph auto encoder variants
+    """Train and evaluate graph-autoencoder link predictors.
 
-    ...
+    Parameters
+    ----------
+    train_data : torch_geometric.data.Data
+        Graph used for training.
 
-    Attributes:
-    -----------
+    Attributes
+    ----------
     model_type : str
-        symmetric, asymmetric, and other variants
+        Symmetric or asymmetric architecture.
     optimizer : torch.optim.Optimizer
-        torch.optim.Adam by default
-    criterion : torch.nn.ModuleHolder
-        toch.nn.BCEWithLogitsLoss by default
+        Model optimizer.
+    criterion : torch.nn.Module
+        Binary classification loss.
     model : torch.nn.Module
-        underlying graph auto-encoder model
-
-    
-    '''
+        Underlying graph autoencoder.
+    """
 
     def __init__(self, train_data, **kwargs):
-        '''
-        Constructor for LinkPrediction object
+        """Initialize a link-prediction trainer.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         train_data : torch_geometric.data.Data
-            Training data to be used for back-propagation
-        
-        '''
+            Graph used for training.
+        **kwargs
+            Model type, layer type, and channel dimensions.
+        """
 
         
         self.train_data = train_data
@@ -123,21 +157,18 @@ class LinkPrediction:
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
     def train(self, train_data = None):
-        '''
-        Trains the model for one epoch by performing one round of back-propagation using `self.training_data`
+        """Train the model for one epoch.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         train_data : torch_geometric.data.Data, optional
-            If supplied with a training data, the method uses it for back propagation. 
-            Otherwise it uses `self.train_data` provided during construction.
+            Training graph. Defaults to the graph supplied at construction.
 
-        Returns:
-        --------
-        loss : float
-            output of the loss function calculated before back-propagation
-
-        '''
+        Returns
+        -------
+        torch.Tensor
+            Scalar training loss.
+        """
 
         if train_data == None:
              train_data = self.train_data
@@ -172,15 +203,18 @@ class LinkPrediction:
 
     @torch.no_grad()
     def test(self, data):
-        '''
-        Uses trained model to predict for the provided test data
+        """Predict edge probabilities for a labeled graph split.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         data : torch_geometric.data.Data
-            test data to make predictions for. Assumes edge_label and edge_label_index are present.
+            Graph containing ``edge_label_index``.
 
-        '''
+        Returns
+        -------
+        torch.Tensor
+            Predicted edge probabilities.
+        """
         self.model.eval()
         z = self.model.encode(data.x, data.edge_index)
         if self.model_type == "asymmetric":
