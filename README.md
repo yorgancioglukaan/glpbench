@@ -92,6 +92,15 @@ train, val, test_transductive, test_inductive = generate_comparable_splits(
 )
 ```
 
+Available reduction methods are `pca`, `truncated-svd`, and
+`sparse-random-projection`. For example:
+
+```bash
+python main.py coauthor-cs out/results.csv \
+  --model-type asymmetric \
+  --reduction-method truncated-svd
+```
+
 `generate_comparable_splits()` creates transductive and inductive test sets with matching message-passing graphs and equal numbers of labeled edges. `utils.inductive_split()` is available when only a cold-start split is needed.
 
 ### Link-prediction models

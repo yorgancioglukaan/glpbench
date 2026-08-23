@@ -4,11 +4,14 @@ from collections.abc import Callable
 
 import numpy as np
 import torch
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.random_projection import SparseRandomProjection
 
 
 _REDUCER_FACTORIES: dict[str, Callable] = {
     "pca": PCA,
+    "sparse-random-projection": SparseRandomProjection,
+    "truncated-svd": TruncatedSVD,
 }
 
 

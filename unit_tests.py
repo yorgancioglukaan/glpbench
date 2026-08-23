@@ -82,9 +82,52 @@ class TestFeatureReduction(unittest.TestCase):
         self.assertTrue(torch.equal(data.x_reduced, data.x[:, :1]))
 
     def test_registry_and_invalid_method(self):
-        self.assertEqual(feature_reduction.available_reduction_methods(), ("pca",))
+        self.assertEqual(feature_reduction.available_reduction_methods(), (
+            "pca", "sparse-random-projection", "truncated-svd"
+        ))
         with self.assertRaisesRegex(ValueError, "Unknown reduction method"):
             feature_reduction.fit_reducer(torch.ones(3, 2), method="unknown")
+
+    def test_registered_reducers_transform_unseen_nodes(self):
+        features = torch.tensor([
+            [1.0, 0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0, 1.0],
+            [2.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 4.0],
+            [1.0, 2.0, 1.0, 0.0],
+            [3.0, 0.0, 0.0, 1.0],
+        ])
+        fit_mask = torch.tensor([True, True, True, True, False, False])
+        for method in ("truncated-svd", "sparse-random-projection"):
+            with self.subTest(method=method):
+                reducer = feature_reduction.fit_reducer(
+                    features,
+                    fit_nodes=fit_mask,
+                    method=method,
+                    n_components=2,
+                    random_state=11,
+                )
+                transformed = feature_reduction.transform_features(
+                    features, reducer
+                )
+                self.assertEqual(transformed.shape, (6, 2))
+                self.assertTrue(torch.isfinite(transformed).all())
+                self.assertEqual(reducer.reduction_method, method)
+
+    def test_stochastic_reducers_are_reproducible(self):
+        features = torch.arange(40, dtype=torch.float).reshape(8, 5)
+        for method in ("truncated-svd", "sparse-random-projection"):
+            with self.subTest(method=method):
+                first = feature_reduction.fit_reducer(
+                    features, method=method, n_components=2, random_state=5
+                )
+                second = feature_reduction.fit_reducer(
+                    features, method=method, n_components=2, random_state=5
+                )
+                self.assertTrue(torch.allclose(
+                    feature_reduction.transform_features(features, first),
+                    feature_reduction.transform_features(features, second),
+                ))
 
     def test_boolean_fit_mask_must_match_node_count(self):
         with self.assertRaisesRegex(ValueError, "one entry per node"):
