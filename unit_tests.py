@@ -132,6 +132,21 @@ class TestLinkPrediction(unittest.TestCase):
                     model = model_class(3, 4, 2, conv_layer_type=layer_name)
                     self.assertIsInstance(model.conv1, layer_class)
                     self.assertIsInstance(model.conv2, layer_class)
+                    self.assertIsInstance(model, link_prediction.LinkPredictionModel)
+
+    def test_models_share_data_aware_decoder_interface(self):
+        data = self._training_data()
+        symmetric = link_prediction.GAE_Model(3, 4, 2, conv_layer_type="GCNConv")
+        asymmetric = link_prediction.AGAE_Model(3, 4, 2, conv_layer_type="GCNConv")
+        z = torch.ones((data.num_nodes, 2))
+
+        symmetric_scores = symmetric.decode_edges(z, data.edge_label_index, data)
+        asymmetric_scores = asymmetric.decode_edges(z, data.edge_label_index, data)
+
+        self.assertEqual(symmetric_scores.shape, data.edge_label.shape)
+        self.assertEqual(asymmetric_scores.shape, data.edge_label.shape)
+        self.assertEqual(symmetric.regularization_loss().item(), 0.0)
+        self.assertEqual(asymmetric.regularization_loss().item(), 0.0)
 
     def test_invalid_model_and_convolution_types(self):
         data = self._training_data()
@@ -141,6 +156,11 @@ class TestLinkPrediction(unittest.TestCase):
             link_prediction.AGAE_Model(3, 4, 2, conv_layer_type="InvalidConv")
         with self.assertRaises(ValueError):
             link_prediction.LinkPrediction(data, model_type="invalid")
+
+    def test_available_model_types_come_from_registry(self):
+        self.assertEqual(
+            link_prediction.available_model_types(), ("symmetric", "asymmetric")
+        )
 
     def test_encoder_output_shapes_are_finite(self):
         data = self._training_data()
@@ -282,6 +302,11 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertTrue(any(
             not torch.equal(old, new) for old, new in zip(before, predictor.model.parameters())
         ))
+        self.assertTrue(torch.allclose(
+            loss,
+            predictor.last_reconstruction_loss + predictor.last_regularization_loss,
+        ))
+        self.assertEqual(predictor.last_regularization_loss.item(), 0.0)
         mock_sampling.assert_called_once_with(
             edge_index=data.edge_index,
             num_nodes=data.num_nodes,
@@ -615,6 +640,34 @@ class TestMainPipeline(unittest.TestCase):
             ("asymmetric", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
+
+    @patch("main.load_dataset")
+    def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["asymmetric", "asymmetric"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+            )
+
+            main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["model_type"] for row in rows}, {"asymmetric"})
 
 if __name__ == "__main__":
     unittest.main()

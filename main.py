@@ -13,7 +13,7 @@ from sklearn.metrics import (
 )
 
 from experiment_logging import CSVResultLogger, ExperimentResult
-from link_prediction import LinkPrediction
+from link_prediction import LinkPrediction, available_model_types
 from utils import calculate_reduced_features, generate_comparable_splits
 
 
@@ -43,9 +43,10 @@ def parse_args():
     parser.add_argument("--data-root", default="data/Planetoid")
     parser.add_argument(
         "--model-type",
-        choices=("symmetric", "asymmetric"),
+        choices=available_model_types(),
+        action="append",
         default=None,
-        help="model architecture; omit to run both",
+        help="architecture to run; repeat to select multiple, or omit to run all",
     )
     parser.add_argument(
         "--conv-layer-type",
@@ -105,10 +106,12 @@ def run_experiment(args):
     test_inductive = test_inductive.to(device)
 
     logger = CSVResultLogger(args.out_filepath)
-    model_types = (
-        (args.model_type,) if args.model_type is not None
-        else ("symmetric", "asymmetric")
-    )
+    if args.model_type is None:
+        model_types = available_model_types()
+    elif isinstance(args.model_type, str):
+        model_types = (args.model_type,)
+    else:
+        model_types = tuple(dict.fromkeys(args.model_type))
     for model_type in model_types:
         torch.manual_seed(args.seed)
         predictor = LinkPrediction(

@@ -37,7 +37,23 @@ def _gatv2_layers(in_channels, hidden_channels, out_channels, kwargs):
     return conv1, conv2
 
 
-class AGAE_Model(torch.nn.Module):
+class LinkPredictionModel(torch.nn.Module):
+    """Base interface for link-prediction model architectures."""
+
+    def decode_edges(self, z, edge_label_index, data):
+        """Score labeled edges using any model-specific data."""
+        raise NotImplementedError
+
+    def reconstruction_loss(self, logits, labels, criterion):
+        """Calculate the edge reconstruction loss."""
+        return criterion(logits, labels)
+
+    def regularization_loss(self):
+        """Return an optional architecture-specific regularization term."""
+        return next(self.parameters()).new_zeros(())
+
+
+class AGAE_Model(LinkPredictionModel):
     """Asymmetric graph autoencoder.
 
     Parameters
@@ -84,13 +100,17 @@ class AGAE_Model(torch.nn.Module):
         """Score edges using latent sources and feature-based targets."""
         return (z[edge_label_index[0]] * x_reduced[edge_label_index[1]]).sum(dim=-1)
 
+    def decode_edges(self, z, edge_label_index, data):
+        """Score edges using reduced features from a graph split."""
+        return self.decode(z, edge_label_index, data.x_reduced)
+
     def decode_all(self, z, x_reduced):
         """Return node pairs with reconstruction scores above 0.5."""
         prob_adj = z @ x_reduced.t()
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
-class GAE_Model(torch.nn.Module):
+class GAE_Model(LinkPredictionModel):
     """Symmetric graph autoencoder.
 
     Parameters
@@ -137,11 +157,26 @@ class GAE_Model(torch.nn.Module):
         """Score edges using pairwise latent dot products."""
         return (z[edge_label_index[0]] * z[edge_label_index[1]]).sum(dim=-1)
 
+    def decode_edges(self, z, edge_label_index, data):
+        """Score edges from latent representations."""
+        return self.decode(z, edge_label_index)
+
     def decode_all(self, z):
         """Return node pairs with reconstruction scores above 0.5."""
         prob_adj = z @ z.t()
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
+
+_MODEL_REGISTRY = {
+    "symmetric": GAE_Model,
+    "asymmetric": AGAE_Model,
+}
+
+
+def available_model_types():
+    """Return the registered link-prediction architecture names."""
+    return tuple(_MODEL_REGISTRY)
+
 
 class LinkPrediction:
     """Train and evaluate graph-autoencoder link predictors.
@@ -188,21 +223,16 @@ class LinkPrediction:
             }
         }
 
-        self.model = None
-        if self.model_type == "symmetric":
-             self.model = GAE_Model(in_channels=train_data.num_features, 
-                                    hidden_channels=hidden_channels,
-                                    out_channels=out_channels,
-                                    conv_layer_type= conv_layer_type,
-                                    **model_kwargs)
-        elif self.model_type == "asymmetric":
-             self.model = AGAE_Model(in_channels=train_data.num_features, 
-                                    hidden_channels=hidden_channels,
-                                    out_channels=out_channels,
-                                    conv_layer_type= conv_layer_type,
-                                    **model_kwargs)
-        else:
+        if self.model_type not in _MODEL_REGISTRY:
              raise ValueError("Unexpected model type: " + self.model_type)
+        model_class = _MODEL_REGISTRY[self.model_type]
+        self.model = model_class(
+            in_channels=train_data.num_features,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            conv_layer_type=conv_layer_type,
+            **model_kwargs,
+        )
 
         self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=0.01)
         self.criterion = torch.nn.BCEWithLogitsLoss()
@@ -243,11 +273,12 @@ class LinkPrediction:
             train_data.edge_label.new_zeros(neg_edge_index.size(1))
         ], dim=0)
 
-        if self.model_type == "asymmetric":
-            out = self.model.decode(z, edge_label_index, train_data.x_reduced).view(-1)
-        else:
-            out = self.model.decode(z, edge_label_index).view(-1)
-        loss = self.criterion(out, edge_label)
+        out = self.model.decode_edges(z, edge_label_index, train_data).view(-1)
+        self.last_reconstruction_loss = self.model.reconstruction_loss(
+            out, edge_label, self.criterion
+        )
+        self.last_regularization_loss = self.model.regularization_loss()
+        loss = self.last_reconstruction_loss + self.last_regularization_loss
         loss.backward()
         self.optimizer.step()
         return loss
@@ -268,9 +299,6 @@ class LinkPrediction:
         """
         self.model.eval()
         z = self.model.encode(data.x, data.edge_index)
-        if self.model_type == "asymmetric":
-            out = self.model.decode(z, data.edge_label_index, data.x_reduced)
-        else:
-            out = self.model.decode(z, data.edge_label_index)
+        out = self.model.decode_edges(z, data.edge_label_index, data)
         out = out.view(-1).sigmoid()
         return out
