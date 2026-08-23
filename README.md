@@ -32,6 +32,7 @@ python main.py citeseer out/results.csv \
   --conv-layer-type GATv2Conv \
   --hidden-channels 128 \
   --out-channels 64 \
+  --reduction-method pca \
   --decoder-hidden-channels 64 \
   --decoder-dropout 0.2 \
   --kl-weight 1.0 \
@@ -74,12 +75,16 @@ data = load_dataset("cora", root="data", device="cpu")
 
 ### Features and graph splits
 
-`utils.calculate_reduced_features()` fits PCA and stores the reduced features in `data.x_reduced`:
+`utils.calculate_reduced_features()` fits a registered feature reducer and stores the transformed features in `data.x_reduced`. Pass a node mask to fit without exposing inductive query features:
 
 ```python
+import torch
+
 from utils import calculate_reduced_features, generate_comparable_splits
 
-calculate_reduced_features(data, dim=64)
+fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
+fit_mask[[10, 25, 40]] = False
+calculate_reduced_features(data, dim=64, fit_nodes=fit_mask)
 train, val, test_transductive, test_inductive = generate_comparable_splits(
     data,
     query=[10, 25, 40],

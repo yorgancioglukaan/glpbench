@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 import csv
 import json
+import random
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -9,10 +10,87 @@ import torch
 import utils
 import datasets
 import main
+import feature_reduction
 from experiment_logging import CSVResultLogger, ExperimentResult
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import link_prediction
+
+
+class TestFeatureReduction(unittest.TestCase):
+    class SpyReducer:
+        def __init__(self, n_components, random_state=None, **kwargs):
+            self.n_components = n_components
+            self.random_state = random_state
+            self.kwargs = kwargs
+            self.fit_calls = []
+            self.transform_calls = []
+
+        def fit(self, features):
+            self.fit_calls.append(features.copy())
+            return self
+
+        def transform(self, features):
+            self.transform_calls.append(features.copy())
+            return features[:, :self.n_components]
+
+    def test_fit_uses_selected_nodes_and_transform_uses_all_nodes(self):
+        features = torch.tensor([
+            [1.0, 10.0, 100.0],
+            [2.0, 20.0, 200.0],
+            [3.0, 30.0, 300.0],
+            [4.0, 40.0, 400.0],
+        ])
+        fit_mask = torch.tensor([True, False, True, False])
+        with patch.dict(
+            feature_reduction._REDUCER_FACTORIES,
+            {"spy": self.SpyReducer},
+            clear=True,
+        ):
+            reducer = feature_reduction.fit_reducer(
+                features,
+                fit_nodes=fit_mask,
+                method="spy",
+                n_components=2,
+                random_state=7,
+                custom_option=True,
+            )
+            transformed = feature_reduction.transform_features(features, reducer)
+
+        self.assertEqual(len(reducer.fit_calls), 1)
+        self.assertTrue(
+            torch.equal(torch.from_numpy(reducer.fit_calls[0]), features[fit_mask])
+        )
+        self.assertEqual(len(reducer.transform_calls), 1)
+        self.assertTrue(
+            torch.equal(torch.from_numpy(reducer.transform_calls[0]), features)
+        )
+        self.assertEqual(transformed.shape, (4, 2))
+        self.assertEqual(reducer.random_state, 7)
+        self.assertEqual(reducer.kwargs, {"custom_option": True})
+
+    def test_update_uses_transform_without_refitting(self):
+        data = Data(x=torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+        reducer = self.SpyReducer(n_components=1)
+        reducer.fit(data.x.numpy())
+        data.feature_reducer = reducer
+
+        utils.update_reduced_features(data)
+
+        self.assertEqual(len(reducer.fit_calls), 1)
+        self.assertEqual(len(reducer.transform_calls), 1)
+        self.assertTrue(torch.equal(data.x_reduced, data.x[:, :1]))
+
+    def test_registry_and_invalid_method(self):
+        self.assertEqual(feature_reduction.available_reduction_methods(), ("pca",))
+        with self.assertRaisesRegex(ValueError, "Unknown reduction method"):
+            feature_reduction.fit_reducer(torch.ones(3, 2), method="unknown")
+
+    def test_boolean_fit_mask_must_match_node_count(self):
+        with self.assertRaisesRegex(ValueError, "one entry per node"):
+            feature_reduction.fit_reducer(
+                torch.ones(3, 2), fit_nodes=torch.tensor([True, False])
+            )
 
 class TestInductiveSplit(unittest.TestCase):
     @staticmethod
@@ -842,7 +920,8 @@ class TestMainPipeline(unittest.TestCase):
 
     @patch("main.load_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
-        mock_load.return_value = self._graph()
+        graph = self._graph()
+        mock_load.return_value = graph
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -867,6 +946,19 @@ class TestMainPipeline(unittest.TestCase):
                 rows = list(csv.DictReader(csv_file))
         self.assertEqual(len(rows), 2)
         self.assertEqual({row["model_type"] for row in rows}, {"asymmetric"})
+        query = random.Random(args.seed).sample(
+            torch.unique(graph.edge_index).tolist(), args.query_size
+        )
+        fit_mask = torch.ones(graph.num_nodes, dtype=torch.bool)
+        fit_mask[query] = False
+        expected_mean = graph.x[fit_mask].mean(dim=0).numpy()
+        self.assertTrue(
+            (graph.feature_reducer.mean_ == expected_mean).all()
+        )
+        for row in rows:
+            self.assertEqual(
+                json.loads(row["extra_fields"])["reduction_method"], "pca"
+            )
 
 if __name__ == "__main__":
     unittest.main()

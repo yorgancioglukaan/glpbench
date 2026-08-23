@@ -14,6 +14,7 @@ from sklearn.metrics import (
 from tqdm.auto import tqdm
 
 from experiment_logging import CSVResultLogger, ExperimentResult
+from feature_reduction import available_reduction_methods
 from link_prediction import LinkPrediction, available_model_types
 from utils import calculate_reduced_features, generate_comparable_splits
 
@@ -56,6 +57,12 @@ def parse_args():
     )
     parser.add_argument("--hidden-channels", type=int, default=128)
     parser.add_argument("--out-channels", type=int, default=64)
+    parser.add_argument(
+        "--reduction-method",
+        choices=available_reduction_methods(),
+        default="pca",
+        help="node-feature reduction method used by asymmetric models",
+    )
     parser.add_argument("--decoder-hidden-channels", type=int, default=None)
     parser.add_argument("--decoder-dropout", type=float, default=0.0)
     parser.add_argument("--kl-weight", type=float, default=1.0)
@@ -106,19 +113,30 @@ def run_experiment(args):
         normalize_features=args.normalize_features,
         device="cpu",
     )
-    if "asymmetric" in model_types:
-        report("Calculating reduced node features...")
-        if args.out_channels > min(data.num_nodes, data.num_features):
-            raise ValueError(
-                "out_channels cannot exceed the smaller of num_nodes and num_features"
-            )
-        calculate_reduced_features(data, dim=args.out_channels)
-
     # Select seeded, non-isolated query nodes.
     candidate_queries = torch.unique(data.edge_index).tolist()
     if args.query_size > len(candidate_queries):
         raise ValueError("query_size exceeds the number of non-isolated nodes")
     query = random.sample(candidate_queries, args.query_size)
+
+    reduction_method = getattr(args, "reduction_method", "pca")
+    if "asymmetric" in model_types:
+        report("Calculating reduced node features...")
+        fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
+        fit_mask[query] = False
+        num_fit_nodes = int(fit_mask.sum())
+        if args.out_channels > min(num_fit_nodes, data.num_features):
+            raise ValueError(
+                "out_channels cannot exceed the smaller of the number of "
+                "non-query nodes and num_features"
+            )
+        calculate_reduced_features(
+            data,
+            dim=args.out_channels,
+            reduction_method=reduction_method,
+            fit_nodes=fit_mask,
+            random_state=args.seed,
+        )
 
     report("Generating comparable graph splits...")
     train, _, test_transductive, test_inductive = generate_comparable_splits(
@@ -183,7 +201,7 @@ def run_experiment(args):
         ):
             probabilities = predictor.test(test_data)
             metrics = calculate_metrics(test_data.edge_label, probabilities)
-            extra_fields = {}
+            extra_fields = {"reduction_method": reduction_method}
             if model_type == "mlp":
                 extra_fields.update({
                     "decoder_hidden_channels": decoder_hidden_channels,

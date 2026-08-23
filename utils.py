@@ -3,7 +3,7 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.utils import is_undirected
 import random
-from sklearn.decomposition import PCA
+from feature_reduction import attach_reduced_features, fit_reducer
 
 
 def _sample_inductive_negative_edges(data, positive_edges, query):
@@ -260,7 +260,10 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
 
     return train, val, test
 
-def calculate_reduced_features(data, dim = 128, reduction_method = 'pca', **kwargs):
+def calculate_reduced_features(
+    data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,
+    **kwargs
+):
     """Fit a reducer and attach reduced node features to a graph.
 
     Parameters
@@ -270,17 +273,20 @@ def calculate_reduced_features(data, dim = 128, reduction_method = 'pca', **kwar
     dim : int, optional
         Number of output dimensions.
     reduction_method : str, optional
-        Reduction method. Currently only ``"pca"`` is supported.
+        Registered reduction method.
+    fit_nodes : sequence or torch.Tensor, optional
+        Node indices or mask used to fit the reducer.
     """
 
-    valid_reduction_methods = ['pca']
-    if not reduction_method in valid_reduction_methods:
-        raise ValueError(f"reduction method should be one of {', '.join(valid_reduction_methods)}")
-
-    if reduction_method == 'pca':
-        data.dim_reduction = PCA(n_components=dim)
-        data.dim_reduction.fit(data.x)
-        data.x_reduced = torch.tensor(data.dim_reduction.fit_transform(data.x.cpu()), dtype=torch.float).to(data.x.device)
+    reducer = fit_reducer(
+        data.x,
+        fit_nodes=fit_nodes,
+        method=reduction_method,
+        n_components=dim,
+        random_state=random_state,
+        **kwargs,
+    )
+    return attach_reduced_features(data, reducer)
 
 def update_reduced_features(data, reduction_model = None, **kwargs):
     """Update reduced node features using a fitted reducer.
@@ -289,11 +295,13 @@ def update_reduced_features(data, reduction_model = None, **kwargs):
     ----------
     data : torch_geometric.data.Data
         Graph containing node features in ``x``.
-    reduction_model : sklearn.decomposition.PCA, optional
+    reduction_model : object, optional
         Reducer to use. Defaults to ``data.dim_reduction``.
     """
-    if reduction_model == None:
-        reduction_model = data.dim_reduction
-
-    if isinstance(reduction_model, PCA):
-        data.x_reduced = torch.tensor(reduction_model.fit_transform(data.x.cpu()), dtype=torch.float).to(data.x.device)
+    if reduction_model is None:
+        reduction_model = getattr(
+            data, "feature_reducer", getattr(data, "dim_reduction", None)
+        )
+    if reduction_model is None:
+        raise ValueError("data does not contain a fitted feature reducer")
+    return attach_reduced_features(data, reduction_model)
