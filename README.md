@@ -9,6 +9,8 @@ where $\hat{A}$ is the reconstructed adjacency matrix and $X_{reduced}$ is the d
 
 Models are evaluated on transductive splits (edge-uniform), where edges are held out, and inductive splits (Cold-start), where all edges incident to selected query nodes are held out to simulate cold-start prediction.
 
+![Model performance using GCNConv](assets/all_on_gcn.png)
+
 ## Running an experiment
 
 Run an experiment with a supported Planetoid dataset:
