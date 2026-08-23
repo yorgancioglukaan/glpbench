@@ -159,8 +159,121 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_available_model_types_come_from_registry(self):
         self.assertEqual(
-            link_prediction.available_model_types(), ("symmetric", "asymmetric")
+            link_prediction.available_model_types(),
+            ("symmetric", "asymmetric", "mlp", "variational"),
         )
+
+    def test_mlp_decoder_is_symmetric_and_trainable(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="mlp",
+            conv_layer_type="GCNConv",
+            hidden_channels=4,
+            out_channels=2,
+            decoder_hidden_channels=5,
+            decoder_dropout=0.0,
+        )
+        z = predictor.model.encode(data.x, data.edge_index)
+        reversed_edges = data.edge_label_index.flip(0)
+
+        scores = predictor.model.decode(z, data.edge_label_index)
+        reversed_scores = predictor.model.decode(z, reversed_edges)
+        decoder_before = [
+            parameter.detach().clone()
+            for parameter in predictor.model.edge_decoder.parameters()
+        ]
+        loss = predictor.train(data)
+
+        self.assertTrue(torch.allclose(scores, reversed_scores))
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(any(
+            not torch.equal(before, after)
+            for before, after in zip(
+                decoder_before, predictor.model.edge_decoder.parameters()
+            )
+        ))
+
+    def test_mlp_decoder_validates_configuration(self):
+        data = self._training_data()
+        with self.assertRaises(ValueError):
+            link_prediction.LinkPrediction(
+                data, model_type="mlp", decoder_hidden_channels=0
+            )
+        with self.assertRaises(ValueError):
+            link_prediction.LinkPrediction(
+                data, model_type="mlp", decoder_dropout=1.0
+            )
+
+    def test_variational_model_samples_trains_and_infers_deterministically(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="variational",
+            conv_layer_type="GCNConv",
+            hidden_channels=4,
+            out_channels=2,
+            kl_weight=0.5,
+        )
+
+        predictor.model.train()
+        first_sample = predictor.model.encode(data.x, data.edge_index)
+        second_sample = predictor.model.encode(data.x, data.edge_index)
+        self.assertEqual(predictor.model.mu.shape, (data.num_nodes, 2))
+        self.assertEqual(predictor.model.logstd.shape, (data.num_nodes, 2))
+        self.assertFalse(torch.equal(first_sample, second_sample))
+
+        loss = predictor.train(data)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreaterEqual(predictor.last_regularization_loss.item(), 0.0)
+        self.assertTrue(torch.allclose(
+            loss,
+            predictor.last_reconstruction_loss + predictor.last_regularization_loss,
+        ))
+
+        predictor.model.eval()
+        first_mean = predictor.model.encode(data.x, data.edge_index)
+        second_mean = predictor.model.encode(data.x, data.edge_index)
+        self.assertTrue(torch.equal(first_mean, second_mean))
+        self.assertTrue(torch.equal(first_mean, predictor.model.mu))
+
+    def test_variational_kl_weight_scales_regularization(self):
+        data = self._training_data()
+        model = link_prediction.VGAE_Model(
+            3, 4, 2, conv_layer_type="GCNConv", kl_weight=1.0
+        )
+        model.encode(data.x, data.edge_index)
+        base_loss = model.regularization_loss()
+        model.kl_weight = 2.0
+        self.assertTrue(torch.allclose(model.regularization_loss(), 2 * base_loss))
+        with self.assertRaises(ValueError):
+            link_prediction.VGAE_Model(
+                3, 4, 2, conv_layer_type="GCNConv", kl_weight=-1
+            )
+
+    def test_new_baselines_support_all_convolution_types(self):
+        data = self._training_data()
+        for model_type in ("mlp", "variational"):
+            for conv_layer_type in (
+                "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"
+            ):
+                with self.subTest(
+                    model_type=model_type, conv_layer_type=conv_layer_type
+                ):
+                    predictor = link_prediction.LinkPrediction(
+                        data,
+                        model_type=model_type,
+                        conv_layer_type=conv_layer_type,
+                        hidden_channels=4,
+                        out_channels=2,
+                    )
+                    predictor.model.eval()
+                    encoded = predictor.model.encode(data.x, data.edge_index)
+                    scores = predictor.model.decode_edges(
+                        encoded, data.edge_label_index, data
+                    )
+                    self.assertEqual(encoded.shape, (data.num_nodes, 2))
+                    self.assertEqual(scores.shape, data.edge_label.shape)
 
     def test_encoder_output_shapes_are_finite(self):
         data = self._training_data()
@@ -638,6 +751,10 @@ class TestMainPipeline(unittest.TestCase):
             ("symmetric", "inductive"),
             ("asymmetric", "transductive"),
             ("asymmetric", "inductive"),
+            ("mlp", "transductive"),
+            ("mlp", "inductive"),
+            ("variational", "transductive"),
+            ("variational", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
 

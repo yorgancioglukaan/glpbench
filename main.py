@@ -11,6 +11,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from tqdm.auto import tqdm
 
 from experiment_logging import CSVResultLogger, ExperimentResult
 from link_prediction import LinkPrediction, available_model_types
@@ -55,11 +56,17 @@ def parse_args():
     )
     parser.add_argument("--hidden-channels", type=int, default=128)
     parser.add_argument("--out-channels", type=int, default=64)
+    parser.add_argument("--decoder-hidden-channels", type=int, default=None)
+    parser.add_argument("--decoder-dropout", type=float, default=0.0)
+    parser.add_argument("--kl-weight", type=float, default=1.0)
     parser.add_argument("--query-size", type=int, default=10)
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--verbose", action="store_true", help="show experiment progress"
+    )
     parser.add_argument(
         "--normalize-features", action=argparse.BooleanOptionalAction, default=True
     )
@@ -78,19 +85,34 @@ def run_experiment(args):
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
+    verbose = getattr(args, "verbose", False)
 
-    # Load and prepare the source graph on CPU for splitting and PCA.
+    def report(message):
+        if verbose:
+            tqdm.write(message)
+
+    if args.model_type is None:
+        model_types = available_model_types()
+    elif isinstance(args.model_type, str):
+        model_types = (args.model_type,)
+    else:
+        model_types = tuple(dict.fromkeys(args.model_type))
+
+    # Load and prepare the source graph on CPU for splitting.
+    report(f"Loading {args.dataset}...")
     data = load_dataset(
         args.dataset,
         root=args.data_root,
         normalize_features=args.normalize_features,
         device="cpu",
     )
-    if args.out_channels > min(data.num_nodes, data.num_features):
-        raise ValueError(
-            "out_channels cannot exceed the smaller of num_nodes and num_features"
-        )
-    calculate_reduced_features(data, dim=args.out_channels)
+    if "asymmetric" in model_types:
+        report("Calculating reduced node features...")
+        if args.out_channels > min(data.num_nodes, data.num_features):
+            raise ValueError(
+                "out_channels cannot exceed the smaller of num_nodes and num_features"
+            )
+        calculate_reduced_features(data, dim=args.out_channels)
 
     # Select seeded, non-isolated query nodes.
     candidate_queries = torch.unique(data.edge_index).tolist()
@@ -98,6 +120,7 @@ def run_experiment(args):
         raise ValueError("query_size exceeds the number of non-isolated nodes")
     query = random.sample(candidate_queries, args.query_size)
 
+    report("Generating comparable graph splits...")
     train, _, test_transductive, test_inductive = generate_comparable_splits(
         data, query=query, train_ratio=args.train_ratio
     )
@@ -106,13 +129,19 @@ def run_experiment(args):
     test_inductive = test_inductive.to(device)
 
     logger = CSVResultLogger(args.out_filepath)
-    if args.model_type is None:
-        model_types = available_model_types()
-    elif isinstance(args.model_type, str):
-        model_types = (args.model_type,)
-    else:
-        model_types = tuple(dict.fromkeys(args.model_type))
-    for model_type in model_types:
+    decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
+    decoder_dropout = getattr(args, "decoder_dropout", 0.0)
+    kl_weight = getattr(args, "kl_weight", 1.0)
+    model_progress = tqdm(
+        model_types,
+        desc="Architectures",
+        unit="model",
+        disable=not verbose,
+        position=0,
+    )
+    for model_type in model_progress:
+        model_progress.set_postfix_str(model_type)
+        report(f"Training {model_type} model...")
         torch.manual_seed(args.seed)
         predictor = LinkPrediction(
             train,
@@ -120,18 +149,48 @@ def run_experiment(args):
             conv_layer_type=args.conv_layer_type,
             hidden_channels=args.hidden_channels,
             out_channels=args.out_channels,
+            decoder_hidden_channels=decoder_hidden_channels,
+            decoder_dropout=decoder_dropout,
+            kl_weight=kl_weight,
         )
         predictor.model = predictor.model.to(device)
         last_loss = None
-        for _ in range(args.epochs):
+        epoch_progress = tqdm(
+            range(args.epochs),
+            desc=f"{model_type} epochs",
+            unit="epoch",
+            disable=not verbose,
+            leave=False,
+            position=1,
+        )
+        for _ in epoch_progress:
             last_loss = predictor.train()
+            if verbose:
+                epoch_progress.set_postfix(
+                    loss=f"{last_loss.detach().item():.4f}",
+                    reconstruction=(
+                        f"{predictor.last_reconstruction_loss.detach().item():.4f}"
+                    ),
+                    regularization=(
+                        f"{predictor.last_regularization_loss.detach().item():.4f}"
+                    ),
+                )
 
+        report(f"Evaluating {model_type} model...")
         for split_type, test_data in (
             ("transductive", test_transductive),
             ("inductive", test_inductive),
         ):
             probabilities = predictor.test(test_data)
             metrics = calculate_metrics(test_data.edge_label, probabilities)
+            extra_fields = {}
+            if model_type == "mlp":
+                extra_fields.update({
+                    "decoder_hidden_channels": decoder_hidden_channels,
+                    "decoder_dropout": decoder_dropout,
+                })
+            elif model_type == "variational":
+                extra_fields["kl_weight"] = kl_weight
             result = ExperimentResult(
                 dataset=data.dataset_name,
                 model_type=model_type,
@@ -144,9 +203,11 @@ def run_experiment(args):
                 epochs=args.epochs,
                 random_seed=args.seed,
                 loss=float(last_loss.detach().cpu()),
+                extra_fields=extra_fields,
                 **metrics,
             )
             logger.log(result)
+    report(f"Results written to {args.out_filepath}")
     return logger.run_id
 
 

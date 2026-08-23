@@ -60,8 +60,10 @@ class ExperimentResult:
         """Validate experiment parameters and metrics."""
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")
-        if self.model_type not in {"symmetric", "asymmetric"}:
-            raise ValueError("model_type must be 'symmetric' or 'asymmetric'")
+        if self.model_type not in {
+            "symmetric", "asymmetric", "mlp", "variational"
+        }:
+            raise ValueError("model_type is not supported")
         if self.split_type not in {"inductive", "transductive"}:
             raise ValueError("split_type must be 'inductive' or 'transductive'")
         if self.conv_layer_type not in {

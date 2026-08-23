@@ -1,6 +1,6 @@
 # Asymmetric Graph Autoencoder Link Prediction
 
-This project compares conventional graph autoencoders with asymmetric graph autoencoders for link prediction. The symmetric decoder reconstructs links from latent embeddings, while the asymmetric decoder combines latent source embeddings with reduced target-node features. Asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:  
+This project compares conventional, asymmetric, MLP-decoder, and variational graph autoencoders for link prediction. The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner-product, learned symmetric, and probabilistic alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
 
 $$Z.X_{reduced}^{T} = \hat{A}$$
 
@@ -17,7 +17,13 @@ Run an experiment with a supported Planetoid dataset:
 python main.py cora out/results.csv
 ```
 
-When `--model-type` is omitted, the script trains every registered architecture on the same splits. Currently this means symmetric and asymmetric models, producing four result rows under one run ID after evaluation on both test settings.
+When `--model-type` is omitted, the script trains every registered architecture on the same splits. The four current architectures produce eight result rows under one run ID after evaluation on both test settings.
+
+Add `--verbose` to show dataset preparation, architecture progress, epoch progress, and live loss components:
+
+```bash
+python main.py cora out/results.csv --verbose
+```
 
 Common options include:
 
@@ -26,6 +32,9 @@ python main.py citeseer out/results.csv \
   --conv-layer-type GATv2Conv \
   --hidden-channels 128 \
   --out-channels 64 \
+  --decoder-hidden-channels 64 \
+  --decoder-dropout 0.2 \
+  --kl-weight 1.0 \
   --query-size 10 \
   --train-ratio 0.8 \
   --epochs 100 \
@@ -33,12 +42,12 @@ python main.py citeseer out/results.csv \
   --device cpu
 ```
 
-Use `--model-type symmetric` or `--model-type asymmetric` to run only one architecture. Repeat the option to choose several explicitly:
+Available model types are `symmetric`, `asymmetric`, `mlp`, and `variational`. Repeat `--model-type` to choose several explicitly:
 
 ```bash
 python main.py cora \
-  --model-type symmetric \
-  --model-type asymmetric
+  --model-type mlp \
+  --model-type variational
 ```
 
 Supported datasets are Cora, CiteSeer, and PubMed; supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `python main.py --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
@@ -76,7 +85,14 @@ train, val, test_transductive, test_inductive = generate_comparable_splits(
 
 ### Link-prediction models
 
-`link_prediction.GAE_Model` implements the symmetric autoencoder, and `link_prediction.AGAE_Model` implements the asymmetric decoder. `link_prediction.LinkPrediction` provides the main training and inference interface:
+The model classes are:
+
+- `GAE_Model`: inner-product symmetric graph autoencoder.
+- `AGAE_Model`: asymmetric latent-to-feature decoder.
+- `MLP_GAE_Model`: learned symmetric MLP edge decoder.
+- `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
+
+`link_prediction.LinkPrediction` provides the shared training and inference interface:
 
 ```python
 from link_prediction import LinkPrediction
@@ -93,6 +109,18 @@ for _ in range(100):
     loss = predictor.train()
 
 probabilities = predictor.test(test_inductive)
+```
+
+Configure the MLP and variational baselines with `decoder_hidden_channels`, `decoder_dropout`, and `kl_weight`:
+
+```python
+mlp = LinkPrediction(
+    train,
+    model_type="mlp",
+    decoder_hidden_channels=64,
+    decoder_dropout=0.2,
+)
+vgae = LinkPrediction(train, model_type="variational", kl_weight=1.0)
 ```
 
 GATv2-specific options can be passed directly or through `gatv2_kwargs`:

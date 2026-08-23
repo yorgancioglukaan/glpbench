@@ -167,9 +167,135 @@ class GAE_Model(LinkPredictionModel):
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
+
+class MLP_GAE_Model(GAE_Model):
+    """Graph autoencoder with a learned symmetric MLP decoder."""
+
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        conv_layer_type=GCNConv,
+        decoder_hidden_channels=None,
+        decoder_dropout=0.0,
+        **kwargs,
+    ):
+        super().__init__(
+            in_channels,
+            hidden_channels,
+            out_channels,
+            conv_layer_type=conv_layer_type,
+            **kwargs,
+        )
+        if decoder_hidden_channels is None:
+            decoder_hidden_channels = out_channels
+        if not isinstance(decoder_hidden_channels, int) or decoder_hidden_channels <= 0:
+            raise ValueError("decoder_hidden_channels must be a positive integer")
+        if not isinstance(decoder_dropout, (int, float)) or not 0 <= decoder_dropout < 1:
+            raise ValueError("decoder_dropout must be between 0 and 1")
+        self.edge_decoder = torch.nn.Sequential(
+            torch.nn.Linear(2 * out_channels, decoder_hidden_channels),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(decoder_dropout),
+            torch.nn.Linear(decoder_hidden_channels, 1),
+        )
+
+    def decode(self, z, edge_label_index):
+        """Score edges from symmetric pairwise latent features."""
+        source = z[edge_label_index[0]]
+        target = z[edge_label_index[1]]
+        edge_features = torch.cat(
+            [source * target, torch.abs(source - target)], dim=-1
+        )
+        return self.edge_decoder(edge_features).squeeze(-1)
+
+    def decode_all(self, z):
+        """Return node pairs with decoder logits above 0.5."""
+        nodes = torch.arange(z.size(0), device=z.device)
+        edge_index = torch.cartesian_prod(nodes, nodes).t()
+        return edge_index[:, self.decode(z, edge_index) > 0.5]
+
+
+class VGAE_Model(LinkPredictionModel):
+    """Variational graph autoencoder with an inner-product decoder."""
+
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        conv_layer_type=GCNConv,
+        kl_weight=1.0,
+        **kwargs,
+    ):
+        super().__init__()
+        if not isinstance(kl_weight, (int, float)) or kl_weight < 0:
+            raise ValueError("kl_weight must be non-negative")
+        self.kl_weight = kl_weight
+
+        layer_types = {
+            "GCNConv": GCNConv,
+            "GraphConv": GraphConv,
+            "SAGEConv": SAGEConv,
+        }
+        if conv_layer_type in layer_types:
+            layer_class = layer_types[conv_layer_type]
+            self.conv1 = layer_class(in_channels, hidden_channels)
+            self.conv_mu = layer_class(hidden_channels, out_channels)
+            self.conv_logstd = layer_class(hidden_channels, out_channels)
+        elif conv_layer_type == "GATv2Conv":
+            self.conv1, self.conv_mu = _gatv2_layers(
+                in_channels, hidden_channels, out_channels, kwargs
+            )
+            _, self.conv_logstd = _gatv2_layers(
+                in_channels, hidden_channels, out_channels, kwargs
+            )
+        else:
+            raise ValueError(
+                "conv_layer_type must be one of 'GCNConv', 'GraphConv', "
+                "'SAGEConv', 'GATv2Conv'"
+            )
+        self.mu = None
+        self.logstd = None
+
+    def encode(self, x, edge_index):
+        """Sample latent nodes in training and return means in evaluation."""
+        hidden = self.conv1(x, edge_index).relu()
+        self.mu = self.conv_mu(hidden, edge_index)
+        self.logstd = self.conv_logstd(hidden, edge_index).clamp(max=10)
+        if self.training:
+            return self.mu + torch.randn_like(self.logstd) * torch.exp(self.logstd)
+        return self.mu
+
+    def decode(self, z, edge_label_index):
+        """Score edges using pairwise latent dot products."""
+        return (z[edge_label_index[0]] * z[edge_label_index[1]]).sum(dim=-1)
+
+    def decode_edges(self, z, edge_label_index, data):
+        """Score edges from latent representations."""
+        return self.decode(z, edge_label_index)
+
+    def decode_all(self, z):
+        """Return node pairs with reconstruction scores above 0.5."""
+        return ((z @ z.t()) > 0.5).nonzero(as_tuple=False).t()
+
+    def regularization_loss(self):
+        """Return weighted KL divergence from a unit Gaussian prior."""
+        if self.mu is None or self.logstd is None:
+            raise RuntimeError("encode must be called before regularization_loss")
+        kl_loss = -0.5 * torch.mean(torch.sum(
+            1 + 2 * self.logstd - self.mu.pow(2) - torch.exp(2 * self.logstd),
+            dim=1,
+        ))
+        return self.kl_weight * kl_loss
+
+
 _MODEL_REGISTRY = {
     "symmetric": GAE_Model,
     "asymmetric": AGAE_Model,
+    "mlp": MLP_GAE_Model,
+    "variational": VGAE_Model,
 }
 
 
@@ -189,7 +315,7 @@ class LinkPrediction:
     Attributes
     ----------
     model_type : str
-        Symmetric or asymmetric architecture.
+        Registered link-prediction architecture.
     optimizer : torch.optim.Optimizer
         Model optimizer.
     criterion : torch.nn.Module
