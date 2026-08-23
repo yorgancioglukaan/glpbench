@@ -630,7 +630,10 @@ class TestDatasetLoading(unittest.TestCase):
         )
 
     def test_available_datasets_has_stable_names(self):
-        self.assertEqual(datasets.available_datasets(), ["citeseer", "cora", "pubmed"])
+        self.assertEqual(datasets.available_datasets(), [
+            "amazon-computers", "amazon-photo", "citeseer", "coauthor-cs",
+            "cora", "dblp", "deezer-europe", "pubmed", "wikics"
+        ])
 
     @patch("datasets.Planetoid")
     def test_planetoid_names_dispatch_to_canonical_names(self, mock_planetoid):
@@ -653,6 +656,85 @@ class TestDatasetLoading(unittest.TestCase):
                 )
                 self.assertEqual(data.dataset_name, canonical_name)
                 self.assertEqual(data.dataset_family, "Planetoid")
+
+    @patch("datasets.Amazon")
+    def test_amazon_photo_loader_and_aliases(self, mock_amazon):
+        mock_amazon.return_value.__getitem__.return_value = self._graph()
+        for supplied_name in ("amazon-photo", "Amazon Photo", "amazon_photo"):
+            with self.subTest(name=supplied_name):
+                mock_amazon.reset_mock()
+                data = datasets.load_dataset(
+                    supplied_name, root="benchmark-data", normalize_features=False
+                )
+                mock_amazon.assert_called_once_with(
+                    root="benchmark-data", name="Photo"
+                )
+                self.assertEqual(data.dataset_name, "AmazonPhoto")
+                self.assertEqual(data.dataset_family, "Amazon")
+
+    @patch("datasets.Amazon")
+    def test_amazon_computers_loader_and_aliases(self, mock_amazon):
+        mock_amazon.return_value.__getitem__.return_value = self._graph()
+        for supplied_name in (
+            "amazon-computers", "Amazon Computers", "amazon_computers"
+        ):
+            with self.subTest(name=supplied_name):
+                mock_amazon.reset_mock()
+                data = datasets.load_dataset(
+                    supplied_name, root="benchmark-data", normalize_features=False
+                )
+                mock_amazon.assert_called_once_with(
+                    root="benchmark-data", name="Computers"
+                )
+                self.assertEqual(data.dataset_name, "AmazonComputers")
+                self.assertEqual(data.dataset_family, "Amazon")
+
+    @patch("datasets.Coauthor")
+    def test_coauthor_cs_loader_and_aliases(self, mock_coauthor):
+        mock_coauthor.return_value.__getitem__.return_value = self._graph()
+        for supplied_name in ("coauthor-cs", "Coauthor CS", "coauthor_cs"):
+            with self.subTest(name=supplied_name):
+                mock_coauthor.reset_mock()
+                data = datasets.load_dataset(
+                    supplied_name, root="benchmark-data", normalize_features=False
+                )
+                mock_coauthor.assert_called_once_with(root="benchmark-data", name="CS")
+                self.assertEqual(data.dataset_name, "CoauthorCS")
+                self.assertEqual(data.dataset_family, "Coauthor")
+
+    @patch("datasets.CitationFull")
+    def test_dblp_loader(self, mock_citation_full):
+        mock_citation_full.return_value.__getitem__.return_value = self._graph()
+        data = datasets.load_dataset(
+            "DBLP", root="benchmark-data", normalize_features=False
+        )
+        mock_citation_full.assert_called_once_with(
+            root="benchmark-data", name="DBLP", to_undirected=True
+        )
+        self.assertEqual(data.dataset_name, "DBLP")
+        self.assertEqual(data.dataset_family, "CitationFull")
+
+    @patch("datasets.WikiCS")
+    def test_wikics_loader_requests_undirected_graph(self, mock_wikics):
+        mock_wikics.return_value.__getitem__.return_value = self._graph()
+        data = datasets.load_dataset(
+            "wiki-cs", root="benchmark-data", normalize_features=False
+        )
+        mock_wikics.assert_called_once_with(
+            root="benchmark-data", is_undirected=True
+        )
+        self.assertEqual(data.dataset_name, "WikiCS")
+        self.assertEqual(data.dataset_family, "WikiCS")
+
+    @patch("datasets.DeezerEurope")
+    def test_deezer_loader_and_alias(self, mock_deezer):
+        mock_deezer.return_value.__getitem__.return_value = self._graph()
+        data = datasets.load_dataset(
+            "Deezer Europe", root="benchmark-data", normalize_features=False
+        )
+        mock_deezer.assert_called_once_with(root="benchmark-data")
+        self.assertEqual(data.dataset_name, "DeezerEurope")
+        self.assertEqual(data.dataset_family, "Deezer")
 
     @patch("datasets.Planetoid")
     def test_loader_clones_normalizes_and_moves_graph(self, mock_planetoid):

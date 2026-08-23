@@ -4,7 +4,14 @@ from pathlib import Path
 
 import torch
 from torch_geometric.data import Data
-from torch_geometric.datasets import Planetoid
+from torch_geometric.datasets import (
+    Amazon,
+    CitationFull,
+    Coauthor,
+    DeezerEurope,
+    Planetoid,
+    WikiCS,
+)
 from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.utils import is_undirected
 
@@ -22,9 +29,59 @@ def _load_planetoid(name, root):
     return dataset[0].clone(), _PLANETOID_NAMES[name], "Planetoid"
 
 
+def _load_amazon(name, root):
+    """Load an Amazon co-purchase graph."""
+    dataset_name = "Photo" if name == "amazon-photo" else "Computers"
+    dataset = Amazon(root=str(root), name=dataset_name)
+    return dataset[0].clone(), f"Amazon{dataset_name}", "Amazon"
+
+
+def _load_coauthor(name, root):
+    """Load the Coauthor CS graph."""
+    dataset = Coauthor(root=str(root), name="CS")
+    return dataset[0].clone(), "CoauthorCS", "Coauthor"
+
+
+def _load_citation_full(name, root):
+    """Load the full DBLP citation graph as undirected."""
+    dataset = CitationFull(root=str(root), name="DBLP", to_undirected=True)
+    return dataset[0].clone(), "DBLP", "CitationFull"
+
+
+def _load_wikics(name, root):
+    """Load WikiCS as an undirected graph."""
+    dataset = WikiCS(root=str(root), is_undirected=True)
+    return dataset[0].clone(), "WikiCS", "WikiCS"
+
+
+def _load_deezer(name, root):
+    """Load the Deezer Europe graph."""
+    dataset = DeezerEurope(root=str(root))
+    return dataset[0].clone(), "DeezerEurope", "Deezer"
+
+
 _DATASET_LOADERS = {
-    name: _load_planetoid for name in _PLANETOID_NAMES
+    **{name: _load_planetoid for name in _PLANETOID_NAMES},
+    "amazon-photo": _load_amazon,
+    "amazon-computers": _load_amazon,
+    "coauthor-cs": _load_coauthor,
+    "dblp": _load_citation_full,
+    "wikics": _load_wikics,
+    "deezer-europe": _load_deezer,
 }
+
+_DATASET_ALIASES = {
+    "".join(character for character in name if character.isalnum()): name
+    for name in _DATASET_LOADERS
+}
+
+
+def _normalize_dataset_name(name):
+    """Normalize case, spaces, underscores, and hyphens in dataset names."""
+    compact_name = "".join(
+        character for character in name.strip().lower() if character.isalnum()
+    )
+    return _DATASET_ALIASES.get(compact_name)
 
 
 def available_datasets():
@@ -38,7 +95,7 @@ def available_datasets():
     return sorted(_DATASET_LOADERS)
 
 
-def load_dataset(name, root="data/Planetoid", normalize_features=True, device="cpu"):
+def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     """Load and standardize a benchmark graph.
 
     Parameters
@@ -59,8 +116,8 @@ def load_dataset(name, root="data/Planetoid", normalize_features=True, device="c
     """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("name must be a non-empty string")
-    normalized_name = name.strip().lower()
-    if normalized_name not in _DATASET_LOADERS:
+    normalized_name = _normalize_dataset_name(name)
+    if normalized_name is None:
         choices = ", ".join(available_datasets())
         raise ValueError(f"Unknown dataset '{name}'. Available datasets: {choices}.")
     if not isinstance(root, (str, Path)):

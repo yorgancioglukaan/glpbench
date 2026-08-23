@@ -50,7 +50,13 @@ python main.py cora \
   --model-type variational
 ```
 
-Supported datasets are Cora, CiteSeer, and PubMed; supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `python main.py --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
+Supported datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers, Coauthor CS, DBLP, WikiCS, and Deezer Europe. Supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `python main.py --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
+
+For example, run the Amazon Photo benchmark with:
+
+```bash
+python main.py amazon-photo out/results.csv --verbose
+```
 
 ## API overview
 
@@ -61,7 +67,7 @@ Supported datasets are Cora, CiteSeer, and PubMed; supported convolution layers 
 ```python
 from datasets import load_dataset
 
-data = load_dataset("cora", root="data/Planetoid", device="cpu")
+data = load_dataset("cora", root="data", device="cpu")
 ```
 
 `datasets.available_datasets()` returns the normalized names accepted by the loader.

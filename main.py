@@ -41,7 +41,7 @@ def parse_args():
         "out_filepath", nargs="?", default="out/results.csv",
         help="path to the result CSV",
     )
-    parser.add_argument("--data-root", default="data/Planetoid")
+    parser.add_argument("--data-root", default="data")
     parser.add_argument(
         "--model-type",
         choices=available_model_types(),
