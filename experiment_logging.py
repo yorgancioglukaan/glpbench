@@ -64,7 +64,9 @@ class ExperimentResult:
             raise ValueError("model_type must be 'symmetric' or 'asymmetric'")
         if self.split_type not in {"inductive", "transductive"}:
             raise ValueError("split_type must be 'inductive' or 'transductive'")
-        if self.conv_layer_type not in {"GCNConv", "GraphConv", "SAGEConv"}:
+        if self.conv_layer_type not in {
+            "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"
+        }:
             raise ValueError("conv_layer_type is not supported")
 
         for name in ("hidden_channels", "out_channels", "epochs"):

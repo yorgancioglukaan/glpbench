@@ -1,6 +1,41 @@
-from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
+from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import torch
 from torch_geometric.utils import negative_sampling
+
+
+_GATV2_ARGUMENTS = {
+    "heads",
+    "concat",
+    "negative_slope",
+    "dropout",
+    "add_self_loops",
+    "edge_dim",
+    "fill_value",
+    "bias",
+    "share_weights",
+}
+
+
+def _gatv2_layers(in_channels, hidden_channels, out_channels, kwargs):
+    """Construct dimensionally compatible GATv2 encoder layers."""
+    gatv2_kwargs = kwargs.get("gatv2_kwargs", {})
+    if not isinstance(gatv2_kwargs, dict):
+        raise TypeError("gatv2_kwargs must be a dictionary")
+    gatv2_kwargs = gatv2_kwargs.copy()
+    gatv2_kwargs.update({
+        name: kwargs[name] for name in _GATV2_ARGUMENTS if name in kwargs
+    })
+
+    heads = gatv2_kwargs.get("heads", 1)
+    concat = gatv2_kwargs.get("concat", True)
+    conv1 = GATv2Conv(in_channels, hidden_channels, **gatv2_kwargs)
+    conv1_out_channels = hidden_channels * heads if concat else hidden_channels
+
+    output_kwargs = gatv2_kwargs.copy()
+    output_kwargs.update({"heads": 1, "concat": False})
+    conv2 = GATv2Conv(conv1_out_channels, out_channels, **output_kwargs)
+    return conv1, conv2
+
 
 class AGAE_Model(torch.nn.Module):
     """Asymmetric graph autoencoder.
@@ -14,7 +49,8 @@ class AGAE_Model(torch.nn.Module):
     out_channels : int
         Latent feature dimension.
     conv_layer_type : str, optional
-        Message-passing layer type.
+        Message-passing layer type. GATv2 options may be passed through
+        ``gatv2_kwargs`` or as keyword arguments.
     """
 
     def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
@@ -31,8 +67,12 @@ class AGAE_Model(torch.nn.Module):
         elif conv_layer_type == 'SAGEConv':
                 self.conv1 = SAGEConv(in_channels, hidden_channels)
                 self.conv2 = SAGEConv(hidden_channels, out_channels)
+        elif conv_layer_type == 'GATv2Conv':
+                self.conv1, self.conv2 = _gatv2_layers(
+                    in_channels, hidden_channels, out_channels, kwargs
+                )
         else:
-             raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv'")           
+             raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv', 'GATv2Conv'")
 
     def encode(self, x, edge_index):
         """Encode nodes into latent representations."""
@@ -62,7 +102,8 @@ class GAE_Model(torch.nn.Module):
     out_channels : int
         Latent feature dimension.
     conv_layer_type : str, optional
-        Message-passing layer type.
+        Message-passing layer type. GATv2 options may be passed through
+        ``gatv2_kwargs`` or as keyword arguments.
     """
 
     def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
@@ -79,8 +120,12 @@ class GAE_Model(torch.nn.Module):
         elif conv_layer_type == 'SAGEConv':
                 self.conv1 = SAGEConv(in_channels, hidden_channels)
                 self.conv2 = SAGEConv(hidden_channels, out_channels)
+        elif conv_layer_type == 'GATv2Conv':
+                self.conv1, self.conv2 = _gatv2_layers(
+                    in_channels, hidden_channels, out_channels, kwargs
+                )
         else:
-             raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv'")
+             raise ValueError("conv_layer_type must be one of 'GCNConv', 'GraphConv', 'SAGEConv', 'GATv2Conv'")
 
     def encode(self, x, edge_index):
         """Encode nodes into latent representations."""
@@ -136,6 +181,12 @@ class LinkPrediction:
         hidden_channels = kwargs["hidden_channels"] if "hidden_channels" in kwargs.keys() else 128
         out_channels = kwargs["out_channels"] if "out_channels" in kwargs.keys() else 64
         conv_layer_type= kwargs["conv_layer_type"] if "conv_layer_type" in kwargs.keys() else "GCNConv"
+        model_kwargs = {
+            name: value for name, value in kwargs.items()
+            if name not in {
+                "model_type", "hidden_channels", "out_channels", "conv_layer_type"
+            }
+        }
 
         self.model = None
         if self.model_type == "symmetric":
@@ -143,13 +194,13 @@ class LinkPrediction:
                                     hidden_channels=hidden_channels,
                                     out_channels=out_channels,
                                     conv_layer_type= conv_layer_type,
-                                    kwargs = kwargs)
+                                    **model_kwargs)
         elif self.model_type == "asymmetric":
              self.model = AGAE_Model(in_channels=train_data.num_features, 
                                     hidden_channels=hidden_channels,
                                     out_channels=out_channels,
                                     conv_layer_type= conv_layer_type,
-                                    kwargs = kwargs)
+                                    **model_kwargs)
         else:
              raise ValueError("Unexpected model type: " + self.model_type)
 

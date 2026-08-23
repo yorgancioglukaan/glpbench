@@ -11,7 +11,7 @@ import datasets
 import main
 from experiment_logging import CSVResultLogger, ExperimentResult
 from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv, GraphConv, SAGEConv
+from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import link_prediction
 
 class TestInductiveSplit(unittest.TestCase):
@@ -124,6 +124,7 @@ class TestLinkPrediction(unittest.TestCase):
             "GCNConv": GCNConv,
             "GraphConv": GraphConv,
             "SAGEConv": SAGEConv,
+            "GATv2Conv": GATv2Conv,
         }
         for model_class in (link_prediction.GAE_Model, link_prediction.AGAE_Model):
             for layer_name, layer_class in layer_types.items():
@@ -144,7 +145,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_encoder_output_shapes_are_finite(self):
         data = self._training_data()
         for model_class in (link_prediction.GAE_Model, link_prediction.AGAE_Model):
-            for layer_name in ("GCNConv", "GraphConv", "SAGEConv"):
+            for layer_name in ("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"):
                 with self.subTest(model=model_class.__name__, layer=layer_name):
                     model = model_class(3, 4, 2, conv_layer_type=layer_name)
                     encoded = model.encode(data.x, data.edge_index)
@@ -213,6 +214,57 @@ class TestLinkPrediction(unittest.TestCase):
         predictor = link_prediction.LinkPrediction(self._training_data())
         self.assertIsInstance(predictor.model, link_prediction.GAE_Model)
         self.assertIsInstance(predictor.model.conv1, GCNConv)
+
+    def test_gatv2_options_are_forwarded_and_output_shape_is_preserved(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="asymmetric",
+            conv_layer_type="GATv2Conv",
+            hidden_channels=4,
+            out_channels=2,
+            heads=3,
+            concat=True,
+            dropout=0.2,
+            share_weights=True,
+        )
+
+        self.assertIsInstance(predictor.model.conv1, GATv2Conv)
+        self.assertEqual(predictor.model.conv1.heads, 3)
+        self.assertTrue(predictor.model.conv1.concat)
+        self.assertEqual(predictor.model.conv1.dropout, 0.2)
+        self.assertTrue(predictor.model.conv1.share_weights)
+        self.assertEqual(predictor.model.conv2.heads, 1)
+        self.assertFalse(predictor.model.conv2.concat)
+        encoded = predictor.model.encode(data.x, data.edge_index)
+        self.assertEqual(encoded.shape, (data.num_nodes, 2))
+        loss = predictor.train(data)
+        probabilities = predictor.test(data)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(probabilities.shape, (data.edge_label_index.size(1),))
+
+    def test_gatv2_options_can_be_passed_as_dictionary(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="symmetric",
+            conv_layer_type="GATv2Conv",
+            hidden_channels=4,
+            out_channels=2,
+            gatv2_kwargs={"heads": 2, "concat": False, "dropout": 0.1},
+        )
+
+        self.assertEqual(predictor.model.conv1.heads, 2)
+        self.assertFalse(predictor.model.conv1.concat)
+        self.assertEqual(predictor.model.conv1.dropout, 0.1)
+
+    def test_gatv2_kwargs_must_be_dictionary(self):
+        with self.assertRaisesRegex(TypeError, "gatv2_kwargs"):
+            link_prediction.LinkPrediction(
+                self._training_data(),
+                conv_layer_type="GATv2Conv",
+                gatv2_kwargs="invalid",
+            )
 
     @patch("link_prediction.negative_sampling")
     def test_asymmetric_training_step_updates_parameters(self, mock_sampling):

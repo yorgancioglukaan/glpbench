@@ -49,7 +49,7 @@ def parse_args():
     )
     parser.add_argument(
         "--conv-layer-type",
-        choices=("GCNConv", "GraphConv", "SAGEConv"),
+        choices=("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"),
         default="GCNConv",
     )
     parser.add_argument("--hidden-channels", type=int, default=128)
