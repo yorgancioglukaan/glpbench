@@ -1,19 +1,25 @@
 # Asymmetric Graph Autoencoder Link Prediction
+This project experimentally evaluates the performance of asymmetric graph autoencoder model for link prediction on common benchmark datasets using both transductive (random-edge-sampling) and inductive (cold-start) settings. It provides both a CLI for quickly running experiments and an API to allow other researchers to integrate the asymmetric model into their own research.
 
-This project compares conventional, asymmetric, MLP-decoder, and variational graph autoencoders for link prediction. The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner-product, learned symmetric, and probabilistic alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
+
+[**Asymmetric model**](#what-is-asymmetric-graph-autoencoder)
+| [**CLI Usage**](#running-an-experiment)
+| [**API Usage**](#api-overview)
+
+## What is Asymmetric Graph Autoencoder?
+
+The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner product, learned symmetric, and probabilistic alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
 
 $$Z.X_{reduced}^{T} = \hat{A}$$
 
 where $\hat{A}$ is the reconstructed adjacency matrix and $X_{reduced}$ is the dimensionality-reduced feature matrix.
 
 
-Models are evaluated on transductive splits (edge-uniform), where edges are held out, and inductive splits (Cold-start), where all edges incident to selected query nodes are held out to simulate cold-start prediction.
-
 ![Model performance using GCNConv](assets/all_on_gcn.png)
 
 ## Running an experiment
 
-Run an experiment with a supported Planetoid dataset:
+Run an experiment with a supported dataset:
 
 ```bash
 python main.py cora out/results.csv
