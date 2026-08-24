@@ -8,7 +8,7 @@ This project experimentally evaluates the performance of asymmetric graph autoen
 
 ## What is Asymmetric Graph Autoencoder?
 
-The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner product, learned symmetric, and probabilistic alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
+The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner product, learned symmetric, probabilistic, and feature-only alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
 
 $$Z.X_{reduced}^{T} = \hat{A}$$
 
@@ -25,7 +25,7 @@ Run an experiment with a supported dataset:
 python main.py cora out/results.csv
 ```
 
-When `--model-type` is omitted, the script trains every registered architecture on the same splits. The four current architectures produce eight result rows under one run ID after evaluation on both test settings.
+When `--model-type` is omitted, the script runs every registered architecture on the same splits. The five current architectures produce ten result rows under one run ID after evaluation on both test settings. The feature-cosine baseline is evaluated directly without training.
 
 Add `--verbose` to show dataset preparation, architecture progress, epoch progress, and live loss components:
 
@@ -51,7 +51,7 @@ python main.py citeseer out/results.csv \
   --device cpu
 ```
 
-Available model types are `symmetric`, `asymmetric`, `mlp`, and `variational`. Repeat `--model-type` to choose several explicitly:
+Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 
 ```bash
 python main.py cora \
@@ -119,6 +119,7 @@ The model classes are:
 - `AGAE_Model`: asymmetric latent-to-feature decoder.
 - `MLP_GAE_Model`: learned symmetric MLP edge decoder.
 - `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
+- `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
 
 `link_prediction.LinkPrediction` provides the shared training and inference interface:
 

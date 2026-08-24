@@ -1,5 +1,8 @@
+from dataclasses import dataclass
+
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import torch
+import torch.nn.functional as F
 from torch_geometric.utils import negative_sampling
 
 
@@ -291,11 +294,42 @@ class VGAE_Model(LinkPredictionModel):
         return self.kl_weight * kl_loss
 
 
+class FeatureCosineModel(torch.nn.Module):
+    """Score edges using cosine similarity between node features."""
+
+    def encode(self, x, edge_index):
+        """Return node features without message passing."""
+        return x
+
+    def decode_edges(self, features, edge_label_index, data):
+        """Return cosine similarities mapped to the unit interval."""
+        source = features[edge_label_index[0]]
+        target = features[edge_label_index[1]]
+        similarity = F.cosine_similarity(source, target, dim=-1, eps=1e-8)
+        return (similarity + 1.0) / 2.0
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """Describe construction and training requirements for an architecture."""
+
+    constructor: type[torch.nn.Module]
+    trainable: bool = True
+    uses_conv_layer: bool = True
+    outputs_probabilities: bool = False
+
+
 _MODEL_REGISTRY = {
-    "symmetric": GAE_Model,
-    "asymmetric": AGAE_Model,
-    "mlp": MLP_GAE_Model,
-    "variational": VGAE_Model,
+    "symmetric": ModelSpec(GAE_Model),
+    "asymmetric": ModelSpec(AGAE_Model),
+    "mlp": ModelSpec(MLP_GAE_Model),
+    "variational": ModelSpec(VGAE_Model),
+    "feature-cosine": ModelSpec(
+        FeatureCosineModel,
+        trainable=False,
+        uses_conv_layer=False,
+        outputs_probabilities=True,
+    ),
 }
 
 
@@ -316,8 +350,8 @@ class LinkPrediction:
     ----------
     model_type : str
         Registered link-prediction architecture.
-    optimizer : torch.optim.Optimizer
-        Model optimizer.
+    optimizer : torch.optim.Optimizer or None
+        Model optimizer, or ``None`` for non-trainable predictors.
     criterion : torch.nn.Module
         Binary classification loss.
     model : torch.nn.Module
@@ -351,16 +385,23 @@ class LinkPrediction:
 
         if self.model_type not in _MODEL_REGISTRY:
              raise ValueError("Unexpected model type: " + self.model_type)
-        model_class = _MODEL_REGISTRY[self.model_type]
-        self.model = model_class(
-            in_channels=train_data.num_features,
-            hidden_channels=hidden_channels,
-            out_channels=out_channels,
-            conv_layer_type=conv_layer_type,
-            **model_kwargs,
-        )
+        self.model_spec = _MODEL_REGISTRY[self.model_type]
+        self.trainable = self.model_spec.trainable
+        if self.model_spec.uses_conv_layer:
+            self.model = self.model_spec.constructor(
+                in_channels=train_data.num_features,
+                hidden_channels=hidden_channels,
+                out_channels=out_channels,
+                conv_layer_type=conv_layer_type,
+                **model_kwargs,
+            )
+        else:
+            self.model = self.model_spec.constructor()
 
-        self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=0.01)
+        self.optimizer = (
+            torch.optim.Adam(params=self.model.parameters(), lr=0.01)
+            if self.trainable else None
+        )
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
     def train(self, train_data = None):
@@ -376,6 +417,9 @@ class LinkPrediction:
         torch.Tensor
             Scalar training loss.
         """
+
+        if not self.trainable:
+            raise RuntimeError(f"{self.model_type} is not trainable")
 
         if train_data == None:
              train_data = self.train_data
@@ -426,5 +470,7 @@ class LinkPrediction:
         self.model.eval()
         z = self.model.encode(data.x, data.edge_index)
         out = self.model.decode_edges(z, data.edge_label_index, data)
-        out = out.view(-1).sigmoid()
+        out = out.view(-1)
+        if not self.model_spec.outputs_probabilities:
+            out = out.sigmoid()
         return out

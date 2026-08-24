@@ -18,7 +18,7 @@ class ExperimentResult:
     dataset : str
         Dataset name.
     model_type : str
-        ``"symmetric"`` or ``"asymmetric"``.
+        Registered prediction architecture.
     split_type : str
         ``"inductive"`` or ``"transductive"``.
     conv_layer_type : str
@@ -61,13 +61,14 @@ class ExperimentResult:
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")
         if self.model_type not in {
-            "symmetric", "asymmetric", "mlp", "variational"
+            "symmetric", "asymmetric", "mlp", "variational",
+            "feature-cosine",
         }:
             raise ValueError("model_type is not supported")
         if self.split_type not in {"inductive", "transductive"}:
             raise ValueError("split_type must be 'inductive' or 'transductive'")
         if self.conv_layer_type not in {
-            "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"
+            "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv", "None"
         }:
             raise ValueError("conv_layer_type is not supported")
 

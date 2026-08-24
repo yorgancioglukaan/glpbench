@@ -281,8 +281,52 @@ class TestLinkPrediction(unittest.TestCase):
     def test_available_model_types_come_from_registry(self):
         self.assertEqual(
             link_prediction.available_model_types(),
-            ("symmetric", "asymmetric", "mlp", "variational"),
+            (
+                "symmetric", "asymmetric", "mlp", "variational",
+                "feature-cosine",
+            ),
         )
+
+    def test_feature_cosine_scores_features_without_training(self):
+        data = Data(
+            x=torch.tensor([
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+                [0.0, 0.0],
+            ]),
+            edge_index=torch.tensor([[0, 1], [1, 0]]),
+            edge_label_index=torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3]]),
+        )
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="feature-cosine"
+        )
+
+        probabilities = predictor.test(data)
+
+        self.assertTrue(torch.allclose(
+            probabilities, torch.tensor([1.0, 0.5, 0.0, 0.5])
+        ))
+        self.assertFalse(predictor.trainable)
+        self.assertIsNone(predictor.optimizer)
+        with self.assertRaisesRegex(RuntimeError, "not trainable"):
+            predictor.train()
+
+    def test_feature_cosine_is_symmetric_and_ignores_message_passing_edges(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="feature-cosine"
+        )
+        original = predictor.test(data)
+        reversed_data = data.clone()
+        reversed_data.edge_label_index = data.edge_label_index.flip(0)
+        reversed_data.edge_index = torch.empty((2, 0), dtype=torch.long)
+
+        reversed_scores = predictor.test(reversed_data)
+
+        self.assertTrue(torch.allclose(original, reversed_scores))
+        self.assertTrue(torch.isfinite(original).all())
+        self.assertTrue(((original >= 0) & (original <= 1)).all())
 
     def test_mlp_decoder_is_symmetric_and_trainable(self):
         data = self._training_data()
@@ -958,8 +1002,15 @@ class TestMainPipeline(unittest.TestCase):
             ("mlp", "inductive"),
             ("variational", "transductive"),
             ("variational", "inductive"),
+            ("feature-cosine", "transductive"),
+            ("feature-cosine", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
+        cosine_rows = [
+            row for row in rows if row["model_type"] == "feature-cosine"
+        ]
+        self.assertEqual({row["conv_layer_type"] for row in cosine_rows}, {"None"})
+        self.assertEqual({row["loss"] for row in cosine_rows}, {""})
 
     @patch("main.load_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):

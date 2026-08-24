@@ -159,7 +159,6 @@ def run_experiment(args):
     )
     for model_type in model_progress:
         model_progress.set_postfix_str(model_type)
-        report(f"Training {model_type} model...")
         torch.manual_seed(args.seed)
         predictor = LinkPrediction(
             train,
@@ -173,26 +172,30 @@ def run_experiment(args):
         )
         predictor.model = predictor.model.to(device)
         last_loss = None
-        epoch_progress = tqdm(
-            range(args.epochs),
-            desc=f"{model_type} epochs",
-            unit="epoch",
-            disable=not verbose,
-            leave=False,
-            position=1,
-        )
-        for _ in epoch_progress:
-            last_loss = predictor.train()
-            if verbose:
-                epoch_progress.set_postfix(
-                    loss=f"{last_loss.detach().item():.4f}",
-                    reconstruction=(
-                        f"{predictor.last_reconstruction_loss.detach().item():.4f}"
-                    ),
-                    regularization=(
-                        f"{predictor.last_regularization_loss.detach().item():.4f}"
-                    ),
-                )
+        if predictor.trainable:
+            report(f"Training {model_type} model...")
+            epoch_progress = tqdm(
+                range(args.epochs),
+                desc=f"{model_type} epochs",
+                unit="epoch",
+                disable=not verbose,
+                leave=False,
+                position=1,
+            )
+            for _ in epoch_progress:
+                last_loss = predictor.train()
+                if verbose:
+                    epoch_progress.set_postfix(
+                        loss=f"{last_loss.detach().item():.4f}",
+                        reconstruction=(
+                            f"{predictor.last_reconstruction_loss.detach().item():.4f}"
+                        ),
+                        regularization=(
+                            f"{predictor.last_regularization_loss.detach().item():.4f}"
+                        ),
+                    )
+        else:
+            report(f"Evaluating {model_type} baseline without training...")
 
         report(f"Evaluating {model_type} model...")
         for split_type, test_data in (
@@ -213,14 +216,19 @@ def run_experiment(args):
                 dataset=data.dataset_name,
                 model_type=model_type,
                 split_type=split_type,
-                conv_layer_type=args.conv_layer_type,
+                conv_layer_type=(
+                    args.conv_layer_type if predictor.model_spec.uses_conv_layer
+                    else "None"
+                ),
                 hidden_channels=args.hidden_channels,
                 out_channels=args.out_channels,
                 query_size=args.query_size,
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
-                loss=float(last_loss.detach().cpu()),
+                loss=(
+                    float(last_loss.detach().cpu()) if last_loss is not None else None
+                ),
                 extra_fields=extra_fields,
                 **metrics,
             )
