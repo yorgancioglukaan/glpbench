@@ -6,6 +6,16 @@ import random
 from feature_reduction import attach_reduced_features, fit_reducer
 
 
+def _attach_split_metadata(splits, query, num_nodes, device):
+    """Attach query membership and semantic names to graph splits."""
+    query_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    query_mask[query] = True
+    for split_type, split in splits:
+        split.query_mask = query_mask.clone()
+        split.seen_node_mask = ~query_mask
+        split.split_type = split_type
+
+
 def _sample_inductive_negative_edges(data, positive_edges, query):
     """Sample non-edges targeting the positive edges' query nodes.
 
@@ -156,6 +166,18 @@ def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8
     train, val, test_transductive = link_splitter(temp_data)
     test_inductive.edge_index = test_transductive.edge_index
 
+    _attach_split_metadata(
+        (
+            ("train", train),
+            ("validation", val),
+            ("transductive", test_transductive),
+            ("inductive", test_inductive),
+        ),
+        query,
+        data.num_nodes,
+        data.edge_index.device,
+    )
+
     return train, val, test_transductive, test_inductive
 
 
@@ -257,6 +279,13 @@ def inductive_split(data, query=None, test_ratio=0.1, train_ratio=0.8, **kwargs)
     negative_labels = torch.zeros(n_test_edges)
     test.edge_label = torch.cat([test.edge_label, negative_labels],dim=0)
     test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
+
+    _attach_split_metadata(
+        (("train", train), ("validation", val), ("inductive", test)),
+        query,
+        data.num_nodes,
+        data.edge_index.device,
+    )
 
     return train, val, test
 

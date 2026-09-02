@@ -172,7 +172,16 @@ class TestInductiveSplit(unittest.TestCase):
         #
         with self.assertRaises(TypeError):
             utils.inductive_split(data, [[2,3],[3,4]])
-        utils.inductive_split(data, [5])
+        train, val, test = utils.inductive_split(data, [5])
+        expected_query_mask = torch.tensor([
+            False, False, False, False, False, True
+        ])
+        for split, split_type in (
+            (train, "train"), (val, "validation"), (test, "inductive")
+        ):
+            self.assertEqual(split.split_type, split_type)
+            self.assertTrue(torch.equal(split.query_mask, expected_query_mask))
+            self.assertTrue(torch.equal(split.seen_node_mask, ~expected_query_mask))
 
     def test_inductive_negatives_do_not_overlap_positive_edges(self):
         data = self._undirected_data(
@@ -181,7 +190,7 @@ class TestInductiveSplit(unittest.TestCase):
         )
         query_nodes = {5, 6}
 
-        _, _, test_transductive, test_inductive = utils.generate_comparable_splits(
+        train, val, test_transductive, test_inductive = utils.generate_comparable_splits(
             data, query=list(query_nodes), train_ratio=0.75
         )
 
@@ -198,6 +207,18 @@ class TestInductiveSplit(unittest.TestCase):
         )
         self.assertEqual(negative_edges.size(1), num_positive)
         self.assertEqual(test_transductive.edge_label_index.size(1), 2 * num_positive)
+        expected_query_mask = torch.tensor([
+            False, False, False, False, False, True, True
+        ])
+        for split, split_type in (
+            (train, "train"),
+            (val, "validation"),
+            (test_transductive, "transductive"),
+            (test_inductive, "inductive"),
+        ):
+            self.assertEqual(split.split_type, split_type)
+            self.assertTrue(torch.equal(split.query_mask, expected_query_mask))
+            self.assertTrue(torch.equal(split.seen_node_mask, ~expected_query_mask))
         for source, target in negative_edges.t().tolist():
             self.assertIn(target, query_nodes)
             self.assertNotIn(source, query_nodes)
@@ -603,6 +624,113 @@ class TestLinkPrediction(unittest.TestCase):
         loss = predictor.train()
         self.assertTrue(torch.isfinite(loss))
 
+    def test_train_accepts_precomputed_negative_edges(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="symmetric", hidden_channels=4, out_channels=2
+        )
+        negative_edges = torch.tensor([[0, 4], [3, 1]])
+
+        with patch("link_prediction.negative_sampling") as mock_sampling:
+            loss = predictor.train(
+                data, negative_edge_index=negative_edges
+            )
+
+        self.assertTrue(torch.isfinite(loss))
+        mock_sampling.assert_not_called()
+
+    def test_train_validates_precomputed_negative_edges(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="symmetric", hidden_channels=4, out_channels=2
+        )
+        invalid_edges = (
+            torch.tensor([0, 1]),
+            torch.tensor([[0.0], [1.0]]),
+            torch.tensor([[0], [data.num_nodes]]),
+        )
+        for edge_index in invalid_edges:
+            with self.subTest(edge_index=edge_index):
+                with self.assertRaises((TypeError, ValueError)):
+                    predictor.train(
+                        data, negative_edge_index=edge_index
+                    )
+
+    def test_seeded_negative_sampling_is_reproducible_and_rng_safe(self):
+        data = self._training_data()
+        torch.manual_seed(19)
+        expected_next_random = torch.rand(1)
+        torch.manual_seed(19)
+        random.seed(19)
+        expected_next_python_random = random.random()
+        random.seed(19)
+
+        first = link_prediction.sample_training_negative_edges(data, seed=7)
+        actual_next_random = torch.rand(1)
+        actual_next_python_random = random.random()
+        second = link_prediction.sample_training_negative_edges(data, seed=7)
+
+        self.assertTrue(torch.equal(first, second))
+        self.assertTrue(torch.equal(actual_next_random, expected_next_random))
+        self.assertEqual(actual_next_python_random, expected_next_python_random)
+
+    def test_graph_context_model_can_override_training_loss(self):
+        class ContextModel(link_prediction.LinkPredictionModel):
+            def __init__(
+                self, in_channels, hidden_channels, out_channels, train_data,
+                **kwargs
+            ):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor(1.0))
+                self.constructor_data = train_data
+                self.received_edges = None
+                self.received_labels = None
+
+            def decode_edges(self, z, edge_label_index, data):
+                raise AssertionError("custom training hook should be used")
+
+            def compute_training_loss(
+                self, data, edge_label_index, edge_label, criterion
+            ):
+                self.received_edges = edge_label_index.clone()
+                self.received_labels = edge_label.clone()
+                custom = self.weight.square()
+                return custom, {"custom_alignment": custom}
+
+        data = self._training_data()
+        negative_edges = torch.tensor([[0, 4], [3, 1]])
+        spec = link_prediction.ModelSpec(
+            ContextModel,
+            uses_conv_layer=False,
+            uses_graph_context=True,
+        )
+        with patch.dict(
+            link_prediction._MODEL_REGISTRY, {"context-test": spec}
+        ):
+            predictor = link_prediction.LinkPrediction(
+                data,
+                model_type="context-test",
+                hidden_channels=4,
+                out_channels=2,
+            )
+            loss = predictor.train(
+                negative_edge_index=negative_edges
+            )
+
+        self.assertIs(predictor.model.constructor_data, data)
+        self.assertEqual(
+            set(predictor.last_loss_components), {"custom_alignment"}
+        )
+        self.assertTrue(torch.equal(
+            predictor.model.received_edges,
+            torch.cat([data.edge_label_index, negative_edges], dim=1),
+        ))
+        self.assertTrue(torch.equal(
+            predictor.model.received_labels,
+            torch.tensor([1.0, 1.0, 0.0, 0.0]),
+        ))
+        self.assertTrue(torch.isfinite(loss))
+
     def test_symmetric_training_step_returns_finite_loss(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
@@ -967,8 +1095,14 @@ class TestMainPipeline(unittest.TestCase):
         data.dataset_family = "Test"
         return data
 
+    @patch(
+        "main.sample_training_negative_edges",
+        wraps=link_prediction.sample_training_negative_edges,
+    )
     @patch("main.load_dataset")
-    def test_unspecified_model_type_runs_both_models_on_both_splits(self, mock_load):
+    def test_unspecified_model_type_runs_both_models_on_both_splits(
+        self, mock_load, mock_negative_sampling
+    ):
         mock_load.return_value = self._graph()
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
@@ -1006,6 +1140,11 @@ class TestMainPipeline(unittest.TestCase):
             ("feature-cosine", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
+        self.assertEqual(mock_negative_sampling.call_count, 4)
+        self.assertEqual(
+            [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
+            [args.seed] * 4,
+        )
         cosine_rows = [
             row for row in rows if row["model_type"] == "feature-cosine"
         ]

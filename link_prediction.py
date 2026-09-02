@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import random
 
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import torch
@@ -54,6 +55,19 @@ class LinkPredictionModel(torch.nn.Module):
     def regularization_loss(self):
         """Return an optional architecture-specific regularization term."""
         return next(self.parameters()).new_zeros(())
+
+    def compute_training_loss(
+        self, data, edge_label_index, edge_label, criterion
+    ):
+        """Return the total training loss and named loss components."""
+        z = self.encode(data.x, data.edge_index)
+        logits = self.decode_edges(z, edge_label_index, data).view(-1)
+        reconstruction = self.reconstruction_loss(logits, edge_label, criterion)
+        regularization = self.regularization_loss()
+        return reconstruction + regularization, {
+            "reconstruction": reconstruction,
+            "regularization": regularization,
+        }
 
 
 class AGAE_Model(LinkPredictionModel):
@@ -317,6 +331,7 @@ class ModelSpec:
     trainable: bool = True
     uses_conv_layer: bool = True
     outputs_probabilities: bool = False
+    uses_graph_context: bool = False
 
 
 _MODEL_REGISTRY = {
@@ -336,6 +351,47 @@ _MODEL_REGISTRY = {
 def available_model_types():
     """Return the registered link-prediction architecture names."""
     return tuple(_MODEL_REGISTRY)
+
+
+def sample_training_negative_edges(data, seed=None):
+    """Sample training negatives, optionally without changing RNG state."""
+    def sample_edges():
+        return negative_sampling(
+            edge_index=data.edge_index,
+            num_nodes=data.num_nodes,
+            num_neg_samples=data.edge_label_index.size(1),
+        )
+
+    if seed is None:
+        return sample_edges()
+
+    devices = []
+    if data.edge_index.device.type == "cuda":
+        devices = [data.edge_index.device.index]
+    python_random_state = random.getstate()
+    try:
+        with torch.random.fork_rng(devices=devices):
+            random.seed(seed)
+            torch.manual_seed(seed)
+            return sample_edges()
+    finally:
+        random.setstate(python_random_state)
+
+
+def _validate_negative_edge_index(edge_index, num_nodes, device):
+    """Validate externally supplied negative edges."""
+    if not isinstance(edge_index, torch.Tensor):
+        raise TypeError("negative_edge_index must be a torch.Tensor")
+    if edge_index.dtype != torch.long:
+        raise TypeError("negative_edge_index must have dtype torch.long")
+    if edge_index.ndim != 2 or edge_index.size(0) != 2:
+        raise ValueError("negative_edge_index must have shape [2, num_edges]")
+    if edge_index.device != device:
+        raise ValueError("negative_edge_index must be on the training data device")
+    if edge_index.numel() and (
+        int(edge_index.min()) < 0 or int(edge_index.max()) >= num_nodes
+    ):
+        raise ValueError("negative_edge_index contains an invalid node ID")
 
 
 class LinkPrediction:
@@ -387,13 +443,19 @@ class LinkPrediction:
              raise ValueError("Unexpected model type: " + self.model_type)
         self.model_spec = _MODEL_REGISTRY[self.model_type]
         self.trainable = self.model_spec.trainable
-        if self.model_spec.uses_conv_layer:
-            self.model = self.model_spec.constructor(
-                in_channels=train_data.num_features,
-                hidden_channels=hidden_channels,
-                out_channels=out_channels,
-                conv_layer_type=conv_layer_type,
+        if self.model_spec.uses_conv_layer or self.model_spec.uses_graph_context:
+            constructor_kwargs = {
+                "in_channels": train_data.num_features,
+                "hidden_channels": hidden_channels,
+                "out_channels": out_channels,
                 **model_kwargs,
+            }
+            if self.model_spec.uses_conv_layer:
+                constructor_kwargs["conv_layer_type"] = conv_layer_type
+            if self.model_spec.uses_graph_context:
+                constructor_kwargs["train_data"] = train_data
+            self.model = self.model_spec.constructor(
+                **constructor_kwargs,
             )
         else:
             self.model = self.model_spec.constructor()
@@ -404,13 +466,15 @@ class LinkPrediction:
         )
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
-    def train(self, train_data = None):
+    def train(self, train_data=None, negative_edge_index=None):
         """Train the model for one epoch.
 
         Parameters
         ----------
         train_data : torch_geometric.data.Data, optional
             Training graph. Defaults to the graph supplied at construction.
+        negative_edge_index : torch.Tensor, optional
+            Precomputed negative edges. By default, negatives are sampled.
 
         Returns
         -------
@@ -427,28 +491,33 @@ class LinkPrediction:
 
         self.model.train()
         self.optimizer.zero_grad()
-        z = self.model.encode(train_data.x, train_data.edge_index)
 
-        # We perform a new round of negative sampling for every training epoch:
-        neg_edge_index = negative_sampling(
-            edge_index=train_data.edge_index, num_nodes=train_data.num_nodes,
-            num_neg_samples=train_data.edge_label_index.size(1))
+        if negative_edge_index is None:
+            negative_edge_index = sample_training_negative_edges(train_data)
+        _validate_negative_edge_index(
+            negative_edge_index,
+            train_data.num_nodes,
+            train_data.edge_label_index.device,
+        )
 
         edge_label_index = torch.cat(
-            [train_data.edge_label_index, neg_edge_index],
+            [train_data.edge_label_index, negative_edge_index],
             dim=-1,
         )
         edge_label = torch.cat([
             train_data.edge_label,
-            train_data.edge_label.new_zeros(neg_edge_index.size(1))
+            train_data.edge_label.new_zeros(negative_edge_index.size(1))
         ], dim=0)
 
-        out = self.model.decode_edges(z, edge_label_index, train_data).view(-1)
-        self.last_reconstruction_loss = self.model.reconstruction_loss(
-            out, edge_label, self.criterion
+        loss, components = self.model.compute_training_loss(
+            train_data, edge_label_index, edge_label, self.criterion
         )
-        self.last_regularization_loss = self.model.regularization_loss()
-        loss = self.last_reconstruction_loss + self.last_regularization_loss
+        if not isinstance(components, dict):
+            raise TypeError("training loss components must be a dictionary")
+        self.last_loss_components = components
+        zero = loss.new_zeros(())
+        self.last_reconstruction_loss = components.get("reconstruction", loss)
+        self.last_regularization_loss = components.get("regularization", zero)
         loss.backward()
         self.optimizer.step()
         return loss

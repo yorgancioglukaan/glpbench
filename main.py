@@ -15,7 +15,11 @@ from tqdm.auto import tqdm
 
 from experiment_logging import CSVResultLogger, ExperimentResult
 from feature_reduction import available_reduction_methods
-from link_prediction import LinkPrediction, available_model_types
+from link_prediction import (
+    LinkPrediction,
+    available_model_types,
+    sample_training_negative_edges,
+)
 from utils import calculate_reduced_features, generate_comparable_splits
 
 
@@ -182,18 +186,20 @@ def run_experiment(args):
                 leave=False,
                 position=1,
             )
-            for _ in epoch_progress:
-                last_loss = predictor.train()
+            for epoch in epoch_progress:
+                negative_edges = sample_training_negative_edges(
+                    train, seed=args.seed + epoch
+                )
+                last_loss = predictor.train(
+                    negative_edge_index=negative_edges
+                )
                 if verbose:
-                    epoch_progress.set_postfix(
-                        loss=f"{last_loss.detach().item():.4f}",
-                        reconstruction=(
-                            f"{predictor.last_reconstruction_loss.detach().item():.4f}"
-                        ),
-                        regularization=(
-                            f"{predictor.last_regularization_loss.detach().item():.4f}"
-                        ),
-                    )
+                    component_values = {
+                        name: f"{value.detach().item():.4f}"
+                        for name, value in predictor.last_loss_components.items()
+                    }
+                    component_values["loss"] = f"{last_loss.detach().item():.4f}"
+                    epoch_progress.set_postfix(component_values)
         else:
             report(f"Evaluating {model_type} baseline without training...")
 
