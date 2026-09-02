@@ -1,7 +1,7 @@
 import torch
 import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
-from torch_geometric.utils import is_undirected
+from torch_geometric.utils import is_undirected, negative_sampling
 import random
 from feature_reduction import attach_reduced_features, fit_reducer
 
@@ -164,6 +164,34 @@ def generate_comparable_splits(data, query=None, test_ratio=0.1, train_ratio=0.8
                                       neg_sampling_ratio=1.0)
     
     train, val, test_transductive = link_splitter(temp_data)
+    transductive_positive_mask = test_transductive.edge_label == 1
+    transductive_positive_edges = test_transductive.edge_label_index[
+        :, transductive_positive_mask
+    ]
+    seen_node_mask = torch.ones(
+        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
+    )
+    seen_node_mask[query] = False
+    seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
+    global_to_seen = torch.full(
+        (data.num_nodes,), -1, dtype=torch.long, device=data.edge_index.device
+    )
+    global_to_seen[seen_node_ids] = torch.arange(
+        seen_node_ids.numel(), device=data.edge_index.device
+    )
+    local_negative_edges = negative_sampling(
+        edge_index=global_to_seen[other_edges],
+        num_nodes=seen_node_ids.numel(),
+        num_neg_samples=transductive_positive_edges.size(1),
+    )
+    transductive_negative_edges = seen_node_ids[local_negative_edges]
+    test_transductive.edge_label_index = torch.cat(
+        [transductive_positive_edges, transductive_negative_edges], dim=1
+    )
+    test_transductive.edge_label = torch.cat([
+        test_transductive.edge_label.new_ones(transductive_positive_edges.size(1)),
+        test_transductive.edge_label.new_zeros(transductive_negative_edges.size(1)),
+    ])
     test_inductive.edge_index = test_transductive.edge_index
 
     _attach_split_metadata(

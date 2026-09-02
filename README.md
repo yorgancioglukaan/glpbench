@@ -25,7 +25,7 @@ Run an experiment with a supported dataset:
 python main.py cora out/results.csv
 ```
 
-When `--model-type` is omitted, the script runs every registered architecture on the same splits. The five current architectures produce ten result rows under one run ID after evaluation on both test settings. The feature-cosine baseline is evaluated directly without training.
+When `--model-type` is omitted, the script runs every registered architecture on the same splits. The six current architectures produce twelve result rows under one run ID after evaluation on both test settings. The feature-cosine baseline is evaluated directly without training.
 
 Add `--verbose` to show dataset preparation, architecture progress, epoch progress, and live loss components:
 
@@ -51,7 +51,7 @@ python main.py citeseer out/results.csv \
   --device cpu
 ```
 
-Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
+Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 
 ```bash
 python main.py cora \
@@ -119,6 +119,7 @@ The model classes are:
 - `AGAE_Model`: asymmetric latent-to-feature decoder.
 - `MLP_GAE_Model`: learned symmetric MLP edge decoder.
 - `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
+- `DEALModel`: aligned structural-identity and attribute encoders for inductive prediction.
 - `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
 
 `link_prediction.LinkPrediction` provides the shared training and inference interface:
@@ -151,6 +152,8 @@ mlp = LinkPrediction(
 )
 vgae = LinkPrediction(train, model_type="variational", kl_weight=1.0)
 ```
+
+DEAL loss weights use `theta_ss`, `theta_aa`, and `theta_sa`; inference weights use `lambda_ss`, `lambda_aa`, and `lambda_sa`. The CLI exposes these as `--deal-theta-*` and `--deal-lambda-*`, along with similarity scale and margin options.
 
 GATv2-specific options can be passed directly or through `gatv2_kwargs`:
 

@@ -70,6 +70,14 @@ def parse_args():
     parser.add_argument("--decoder-hidden-channels", type=int, default=None)
     parser.add_argument("--decoder-dropout", type=float, default=0.0)
     parser.add_argument("--kl-weight", type=float, default=1.0)
+    parser.add_argument("--deal-theta-ss", type=float, default=1.0)
+    parser.add_argument("--deal-theta-aa", type=float, default=1.0)
+    parser.add_argument("--deal-theta-sa", type=float, default=1.0)
+    parser.add_argument("--deal-lambda-ss", type=float, default=1.0)
+    parser.add_argument("--deal-lambda-aa", type=float, default=1.0)
+    parser.add_argument("--deal-lambda-sa", type=float, default=1.0)
+    parser.add_argument("--deal-similarity-scale", type=float, default=1.0)
+    parser.add_argument("--deal-similarity-margin", type=float, default=0.0)
     parser.add_argument("--query-size", type=int, default=10)
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
@@ -154,6 +162,16 @@ def run_experiment(args):
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
     decoder_dropout = getattr(args, "decoder_dropout", 0.0)
     kl_weight = getattr(args, "kl_weight", 1.0)
+    deal_config = {
+        "theta_ss": getattr(args, "deal_theta_ss", 1.0),
+        "theta_aa": getattr(args, "deal_theta_aa", 1.0),
+        "theta_sa": getattr(args, "deal_theta_sa", 1.0),
+        "lambda_ss": getattr(args, "deal_lambda_ss", 1.0),
+        "lambda_aa": getattr(args, "deal_lambda_aa", 1.0),
+        "lambda_sa": getattr(args, "deal_lambda_sa", 1.0),
+        "similarity_scale": getattr(args, "deal_similarity_scale", 1.0),
+        "similarity_margin": getattr(args, "deal_similarity_margin", 0.0),
+    }
     model_progress = tqdm(
         model_types,
         desc="Architectures",
@@ -173,6 +191,7 @@ def run_experiment(args):
             decoder_hidden_channels=decoder_hidden_channels,
             decoder_dropout=decoder_dropout,
             kl_weight=kl_weight,
+            **deal_config,
         )
         predictor.model = predictor.model.to(device)
         last_loss = None
@@ -218,6 +237,10 @@ def run_experiment(args):
                 })
             elif model_type == "variational":
                 extra_fields["kl_weight"] = kl_weight
+            elif model_type == "deal":
+                extra_fields.update({
+                    f"deal_{name}": value for name, value in deal_config.items()
+                })
             result = ExperimentResult(
                 dataset=data.dataset_name,
                 model_type=model_type,

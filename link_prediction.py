@@ -308,6 +308,164 @@ class VGAE_Model(LinkPredictionModel):
         return self.kl_weight * kl_loss
 
 
+class DEALModel(LinkPredictionModel):
+    """Deep embedding alignment model for attributed link prediction.
+
+    The structure branch embeds seen node identities, while the attribute
+    branch maps node features into the same latent space. Query nodes have no
+    trainable structural embedding and are scored through their attributes.
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        train_data,
+        theta_ss=1.0,
+        theta_aa=1.0,
+        theta_sa=1.0,
+        lambda_ss=1.0,
+        lambda_aa=1.0,
+        lambda_sa=1.0,
+        similarity_scale=1.0,
+        similarity_margin=0.0,
+        **kwargs,
+    ):
+        super().__init__()
+        self._validate_weights(
+            "theta", (theta_ss, theta_aa, theta_sa), require_all=False
+        )
+        self._validate_weights(
+            "lambda", (lambda_ss, lambda_aa, lambda_sa), require_all=False
+        )
+        if lambda_aa + lambda_sa <= 0:
+            raise ValueError("lambda_aa and lambda_sa cannot both be zero")
+        if not isinstance(similarity_scale, (int, float)) or similarity_scale <= 0:
+            raise ValueError("similarity_scale must be positive")
+        if not isinstance(similarity_margin, (int, float)):
+            raise TypeError("similarity_margin must be numeric")
+
+        query_mask = getattr(train_data, "query_mask", None)
+        seen_node_mask = getattr(train_data, "seen_node_mask", None)
+        for name, mask in (
+            ("query_mask", query_mask), ("seen_node_mask", seen_node_mask)
+        ):
+            if not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool:
+                raise ValueError(f"train_data.{name} must be a boolean tensor")
+            if mask.ndim != 1 or mask.numel() != train_data.num_nodes:
+                raise ValueError(
+                    f"train_data.{name} must have one entry per node"
+                )
+        if not torch.equal(query_mask, ~seen_node_mask):
+            raise ValueError("query_mask and seen_node_mask must be complements")
+
+        seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
+        if seen_node_ids.numel() == 0:
+            raise ValueError("DEAL requires at least one seen node")
+        global_to_seen = torch.full(
+            (train_data.num_nodes,), -1, dtype=torch.long,
+            device=seen_node_ids.device,
+        )
+        global_to_seen[seen_node_ids] = torch.arange(
+            seen_node_ids.numel(), device=seen_node_ids.device
+        )
+        self.register_buffer("query_mask", query_mask.clone())
+        self.register_buffer("seen_node_mask", seen_node_mask.clone())
+        self.register_buffer("seen_node_ids", seen_node_ids)
+        self.register_buffer("global_to_seen", global_to_seen)
+
+        self.structure_embeddings = torch.nn.Embedding(
+            seen_node_ids.numel(), out_channels
+        )
+        self.attribute_encoder = torch.nn.Sequential(
+            torch.nn.Linear(in_channels, hidden_channels),
+            torch.nn.ELU(),
+            torch.nn.Linear(hidden_channels, out_channels),
+            torch.nn.ELU(),
+        )
+        self.theta = (float(theta_ss), float(theta_aa), float(theta_sa))
+        self.lambdas = (float(lambda_ss), float(lambda_aa), float(lambda_sa))
+        self.similarity_scale = float(similarity_scale)
+        self.similarity_margin = float(similarity_margin)
+
+    @staticmethod
+    def _validate_weights(name, weights, require_all=False):
+        """Validate non-negative loss or score weights."""
+        if any(not isinstance(value, (int, float)) for value in weights):
+            raise TypeError(f"{name} weights must be numeric")
+        if any(value < 0 for value in weights):
+            raise ValueError(f"{name} weights must be non-negative")
+        if require_all and any(value == 0 for value in weights):
+            raise ValueError(f"{name} weights must be positive")
+        if sum(weights) <= 0:
+            raise ValueError(f"at least one {name} weight must be positive")
+
+    def encode(self, x, edge_index):
+        """Return structural and attribute representations for all nodes."""
+        structure = x.new_zeros((x.size(0), self.structure_embeddings.embedding_dim))
+        structure[self.seen_node_ids] = self.structure_embeddings.weight
+        return structure, self.attribute_encoder(x)
+
+    def _similarity(self, source, target):
+        """Return scaled cosine-similarity logits."""
+        similarity = F.cosine_similarity(source, target, dim=-1, eps=1e-8)
+        return self.similarity_scale * similarity - self.similarity_margin
+
+    def _component_logits(self, representations, edge_label_index):
+        """Return structure, attribute, and alignment logits."""
+        structure, attributes = representations
+        source, target = edge_label_index
+        return (
+            self._similarity(structure[source], structure[target]),
+            self._similarity(attributes[source], attributes[target]),
+            self._similarity(structure[source], attributes[target]),
+        )
+
+    @staticmethod
+    def _weighted_mean(values, weights):
+        """Combine tensors using normalized non-negative weights."""
+        total_weight = sum(weights)
+        return sum(weight * value for weight, value in zip(weights, values)) / total_weight
+
+    def compute_training_loss(
+        self, data, edge_label_index, edge_label, criterion
+    ):
+        """Calculate DEAL's structure, attribute, and alignment losses."""
+        if not bool(self.seen_node_mask[edge_label_index].all()):
+            raise ValueError("DEAL training edges must contain only seen nodes")
+        representations = self.encode(data.x, data.edge_index)
+        logits = self._component_logits(representations, edge_label_index)
+        losses = tuple(criterion(component, edge_label) for component in logits)
+        total = self._weighted_mean(losses, self.theta)
+        return total, {
+            "structure": losses[0],
+            "attribute": losses[1],
+            "alignment": losses[2],
+        }
+
+    def decode_edges(self, representations, edge_label_index, data):
+        """Score transductive or inductive edges with valid DEAL branches."""
+        component_logits = self._component_logits(representations, edge_label_index)
+        split_type = getattr(data, "split_type", None)
+        if split_type == "transductive":
+            if not bool(self.seen_node_mask[edge_label_index].all()):
+                raise ValueError("transductive DEAL edges must contain only seen nodes")
+            return self._weighted_mean(component_logits, self.lambdas)
+        if split_type == "inductive":
+            source, target = edge_label_index
+            if not bool(self.seen_node_mask[source].all()) or not bool(
+                self.query_mask[target].all()
+            ):
+                raise ValueError(
+                    "inductive DEAL edges must be oriented from seen to query nodes"
+                )
+            return self._weighted_mean(
+                component_logits[1:], self.lambdas[1:]
+            )
+        raise ValueError("DEAL requires a transductive or inductive split_type")
+
+
 class FeatureCosineModel(torch.nn.Module):
     """Score edges using cosine similarity between node features."""
 
@@ -339,6 +497,11 @@ _MODEL_REGISTRY = {
     "asymmetric": ModelSpec(AGAE_Model),
     "mlp": ModelSpec(MLP_GAE_Model),
     "variational": ModelSpec(VGAE_Model),
+    "deal": ModelSpec(
+        DEALModel,
+        uses_conv_layer=False,
+        uses_graph_context=True,
+    ),
     "feature-cosine": ModelSpec(
         FeatureCosineModel,
         trainable=False,
@@ -356,11 +519,30 @@ def available_model_types():
 def sample_training_negative_edges(data, seed=None):
     """Sample training negatives, optionally without changing RNG state."""
     def sample_edges():
-        return negative_sampling(
-            edge_index=data.edge_index,
-            num_nodes=data.num_nodes,
+        seen_node_mask = getattr(data, "seen_node_mask", None)
+        if seen_node_mask is None:
+            return negative_sampling(
+                edge_index=data.edge_index,
+                num_nodes=data.num_nodes,
+                num_neg_samples=data.edge_label_index.size(1),
+            )
+
+        seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
+        global_to_seen = torch.full(
+            (data.num_nodes,), -1, dtype=torch.long, device=data.edge_index.device
+        )
+        global_to_seen[seen_node_ids] = torch.arange(
+            seen_node_ids.numel(), device=data.edge_index.device
+        )
+        local_edge_index = global_to_seen[data.edge_index]
+        if bool((local_edge_index < 0).any()):
+            raise ValueError("training edge_index must contain only seen nodes")
+        local_negatives = negative_sampling(
+            edge_index=local_edge_index,
+            num_nodes=seen_node_ids.numel(),
             num_neg_samples=data.edge_label_index.size(1),
         )
+        return seen_node_ids[local_negatives]
 
     if seed is None:
         return sample_edges()

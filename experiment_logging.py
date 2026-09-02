@@ -62,7 +62,7 @@ class ExperimentResult:
             raise ValueError("dataset must be a non-empty string")
         if self.model_type not in {
             "symmetric", "asymmetric", "mlp", "variational",
-            "feature-cosine",
+            "feature-cosine", "deal",
         }:
             raise ValueError("model_type is not supported")
         if self.split_type not in {"inductive", "transductive"}:

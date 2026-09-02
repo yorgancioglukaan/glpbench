@@ -207,6 +207,10 @@ class TestInductiveSplit(unittest.TestCase):
         )
         self.assertEqual(negative_edges.size(1), num_positive)
         self.assertEqual(test_transductive.edge_label_index.size(1), 2 * num_positive)
+        self.assertTrue(all(
+            node not in query_nodes
+            for node in test_transductive.edge_label_index.flatten().tolist()
+        ))
         expected_query_mask = torch.tensor([
             False, False, False, False, False, True, True
         ])
@@ -261,6 +265,18 @@ class TestLinkPrediction(unittest.TestCase):
             edge_label=torch.ones(2),
         )
 
+    @classmethod
+    def _deal_training_data(cls):
+        data = cls._training_data()
+        data.edge_index = torch.tensor([
+            [0, 1, 1, 2, 2, 3],
+            [1, 0, 2, 1, 3, 2],
+        ])
+        data.query_mask = torch.tensor([False, False, False, False, True])
+        data.seen_node_mask = ~data.query_mask
+        data.split_type = "train"
+        return data
+
     def test_model_construction_for_supported_convolutions(self):
         layer_types = {
             "GCNConv": GCNConv,
@@ -304,9 +320,97 @@ class TestLinkPrediction(unittest.TestCase):
             link_prediction.available_model_types(),
             (
                 "symmetric", "asymmetric", "mlp", "variational",
-                "feature-cosine",
+                "deal", "feature-cosine",
             ),
         )
+
+    def test_deal_has_structural_embeddings_only_for_seen_nodes(self):
+        data = self._deal_training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="deal", hidden_channels=4, out_channels=2
+        )
+
+        structure, attributes = predictor.model.encode(data.x, data.edge_index)
+
+        self.assertEqual(predictor.model.structure_embeddings.num_embeddings, 4)
+        self.assertEqual(predictor.model.global_to_seen[4].item(), -1)
+        self.assertTrue(torch.equal(structure[4], torch.zeros(2)))
+        self.assertEqual(attributes.shape, (data.num_nodes, 2))
+
+    def test_deal_training_uses_three_loss_components(self):
+        data = self._deal_training_data()
+        predictor = link_prediction.LinkPrediction(
+            data, model_type="deal", hidden_channels=4, out_channels=2
+        )
+        negatives = torch.tensor([[0, 3], [2, 0]])
+        before = [
+            parameter.detach().clone() for parameter in predictor.model.parameters()
+        ]
+
+        loss = predictor.train(negative_edge_index=negatives)
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(
+            set(predictor.last_loss_components),
+            {"structure", "attribute", "alignment"},
+        )
+        self.assertTrue(any(
+            not torch.equal(old, new)
+            for old, new in zip(before, predictor.model.parameters())
+        ))
+
+    def test_deal_uses_split_specific_score_components(self):
+        data = self._deal_training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="deal",
+            hidden_channels=4,
+            out_channels=2,
+            lambda_ss=2.0,
+            lambda_aa=3.0,
+            lambda_sa=5.0,
+        )
+        predictor.model.eval()
+        representations = predictor.model.encode(data.x, data.edge_index)
+
+        transductive = data.clone()
+        transductive.split_type = "transductive"
+        transductive.edge_label_index = torch.tensor([[0], [3]])
+        trans_components = predictor.model._component_logits(
+            representations, transductive.edge_label_index
+        )
+        expected_trans = sum(
+            weight * score
+            for weight, score in zip((2.0, 3.0, 5.0), trans_components)
+        ) / 10.0
+
+        inductive = data.clone()
+        inductive.split_type = "inductive"
+        inductive.edge_label_index = torch.tensor([[0], [4]])
+        ind_components = predictor.model._component_logits(
+            representations, inductive.edge_label_index
+        )
+        expected_ind = (
+            3.0 * ind_components[1] + 5.0 * ind_components[2]
+        ) / 8.0
+
+        self.assertTrue(torch.allclose(
+            predictor.test(transductive), expected_trans.sigmoid()
+        ))
+        self.assertTrue(torch.allclose(
+            predictor.test(inductive), expected_ind.sigmoid()
+        ))
+
+    def test_deal_rejects_missing_split_metadata_and_query_training_edges(self):
+        with self.assertRaisesRegex(ValueError, "query_mask"):
+            link_prediction.LinkPrediction(
+                self._training_data(), model_type="deal"
+            )
+
+        data = self._deal_training_data()
+        predictor = link_prediction.LinkPrediction(data, model_type="deal")
+        with self.assertRaisesRegex(ValueError, "only seen nodes"):
+            predictor.train(negative_edge_index=torch.tensor([[0], [4]]))
 
     def test_feature_cosine_scores_features_without_training(self):
         data = Data(
@@ -673,6 +777,13 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertTrue(torch.equal(first, second))
         self.assertTrue(torch.equal(actual_next_random, expected_next_random))
         self.assertEqual(actual_next_python_random, expected_next_python_random)
+
+    def test_training_negative_sampling_excludes_query_nodes(self):
+        data = self._deal_training_data()
+
+        negatives = link_prediction.sample_training_negative_edges(data, seed=7)
+
+        self.assertTrue(bool(data.seen_node_mask[negatives].all()))
 
     def test_graph_context_model_can_override_training_loss(self):
         class ContextModel(link_prediction.LinkPredictionModel):
@@ -1136,20 +1247,27 @@ class TestMainPipeline(unittest.TestCase):
             ("mlp", "inductive"),
             ("variational", "transductive"),
             ("variational", "inductive"),
+            ("deal", "transductive"),
+            ("deal", "inductive"),
             ("feature-cosine", "transductive"),
             ("feature-cosine", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
-        self.assertEqual(mock_negative_sampling.call_count, 4)
+        self.assertEqual(mock_negative_sampling.call_count, 5)
         self.assertEqual(
             [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
-            [args.seed] * 4,
+            [args.seed] * 5,
         )
         cosine_rows = [
             row for row in rows if row["model_type"] == "feature-cosine"
         ]
         self.assertEqual({row["conv_layer_type"] for row in cosine_rows}, {"None"})
         self.assertEqual({row["loss"] for row in cosine_rows}, {""})
+        deal_rows = [row for row in rows if row["model_type"] == "deal"]
+        self.assertEqual({row["conv_layer_type"] for row in deal_rows}, {"None"})
+        deal_config = json.loads(deal_rows[0]["extra_fields"])
+        self.assertEqual(deal_config["deal_theta_ss"], 1.0)
+        self.assertEqual(deal_config["deal_lambda_sa"], 1.0)
 
     @patch("main.load_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
