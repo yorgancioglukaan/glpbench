@@ -41,6 +41,75 @@ def _gatv2_layers(in_channels, hidden_channels, out_channels, kwargs):
     return conv1, conv2
 
 
+def _regularize_none(model, data, z):
+    """Return a zero penalty."""
+    return z.new_zeros(())
+
+
+def _seen_representations(data, z):
+    """Select representations belonging to training-visible nodes."""
+    seen_node_mask = getattr(data, "seen_node_mask", None)
+    return z if seen_node_mask is None else z[seen_node_mask]
+
+
+def _regularize_latent_l2(model, data, z):
+    """Penalize squared latent-vector norms on seen nodes."""
+    return _seen_representations(data, z).square().sum(dim=-1).mean()
+
+
+def _aligned_seen_representations(data, z):
+    """Return dimensionally compatible latent and reduced features."""
+    if not hasattr(data, "x_reduced"):
+        raise ValueError("alignment regularization requires data.x_reduced")
+    if z.size(-1) != data.x_reduced.size(-1):
+        raise ValueError("z and x_reduced must have the same feature dimension")
+    seen_node_mask = getattr(data, "seen_node_mask", None)
+    if seen_node_mask is None:
+        return z, data.x_reduced
+    return z[seen_node_mask], data.x_reduced[seen_node_mask]
+
+
+def _regularize_mse_alignment(model, data, z):
+    """Penalize squared distance from reduced features on seen nodes."""
+    latent, reduced = _aligned_seen_representations(data, z)
+    return F.mse_loss(latent, reduced)
+
+
+def _regularize_cosine_alignment(model, data, z):
+    """Penalize cosine distance from reduced features on seen nodes."""
+    latent, reduced = _aligned_seen_representations(data, z)
+    return 1.0 - F.cosine_similarity(
+        latent, reduced, dim=-1, eps=1e-8
+    ).mean()
+
+
+def _regularize_graph_smoothness(model, data, z):
+    """Penalize latent differences across training graph edges."""
+    edge_index = data.edge_index
+    seen_node_mask = getattr(data, "seen_node_mask", None)
+    if seen_node_mask is not None:
+        seen_edges = seen_node_mask[edge_index].all(dim=0)
+        edge_index = edge_index[:, seen_edges]
+    if edge_index.size(1) == 0:
+        return z.new_zeros(())
+    source, target = edge_index
+    return (z[source] - z[target]).square().sum(dim=-1).mean()
+
+
+_AGAE_REGULARIZERS = {
+    "none": _regularize_none,
+    "latent-l2": _regularize_latent_l2,
+    "mse-alignment": _regularize_mse_alignment,
+    "cosine-alignment": _regularize_cosine_alignment,
+    "graph-smoothness": _regularize_graph_smoothness,
+}
+
+
+def available_agae_regularizers():
+    """Return registered AGAE regularization methods."""
+    return tuple(_AGAE_REGULARIZERS)
+
+
 class LinkPredictionModel(torch.nn.Module):
     """Base interface for link-prediction model architectures."""
 
@@ -86,8 +155,26 @@ class AGAE_Model(LinkPredictionModel):
         ``gatv2_kwargs`` or as keyword arguments.
     """
 
-    def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        conv_layer_type="GCNConv",
+        regularization_type="none",
+        regularization_strength=0.0,
+        **kwargs,
+    ):
         super().__init__()
+
+        if regularization_type not in _AGAE_REGULARIZERS:
+            raise ValueError(f"Unknown AGAE regularization: {regularization_type}")
+        if not isinstance(regularization_strength, (int, float)):
+            raise TypeError("regularization_strength must be numeric")
+        if regularization_strength < 0:
+            raise ValueError("regularization_strength must be non-negative")
+        self.regularization_type = regularization_type
+        self.regularization_strength = float(regularization_strength)
 
         #create convolution layers
 
@@ -126,6 +213,23 @@ class AGAE_Model(LinkPredictionModel):
         prob_adj = z @ x_reduced.t()
         #return the indices of a non-zero element
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
+
+    def compute_training_loss(
+        self, data, edge_label_index, edge_label, criterion
+    ):
+        """Return reconstruction plus the configured regularization loss."""
+        z = self.encode(data.x, data.edge_index)
+        logits = self.decode_edges(z, edge_label_index, data).view(-1)
+        reconstruction = criterion(logits, edge_label)
+        raw_regularization = _AGAE_REGULARIZERS[self.regularization_type](
+            self, data, z
+        )
+        regularization = self.regularization_strength * raw_regularization
+        return reconstruction + regularization, {
+            "reconstruction": reconstruction,
+            "regularization": regularization,
+            "raw_regularization": raw_regularization,
+        }
 
 class GAE_Model(LinkPredictionModel):
     """Symmetric graph autoencoder.
@@ -614,10 +718,17 @@ class LinkPrediction:
         hidden_channels = kwargs["hidden_channels"] if "hidden_channels" in kwargs.keys() else 128
         out_channels = kwargs["out_channels"] if "out_channels" in kwargs.keys() else 64
         conv_layer_type= kwargs["conv_layer_type"] if "conv_layer_type" in kwargs.keys() else "GCNConv"
+        learning_rate = kwargs.get("learning_rate", 0.01)
+        weight_decay = kwargs.get("weight_decay", 0.0)
+        if not isinstance(learning_rate, (int, float)) or learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if not isinstance(weight_decay, (int, float)) or weight_decay < 0:
+            raise ValueError("weight_decay must be non-negative")
         model_kwargs = {
             name: value for name, value in kwargs.items()
             if name not in {
-                "model_type", "hidden_channels", "out_channels", "conv_layer_type"
+                "model_type", "hidden_channels", "out_channels", "conv_layer_type",
+                "learning_rate", "weight_decay",
             }
         }
 
@@ -643,7 +754,11 @@ class LinkPrediction:
             self.model = self.model_spec.constructor()
 
         self.optimizer = (
-            torch.optim.Adam(params=self.model.parameters(), lr=0.01)
+            torch.optim.Adam(
+                params=self.model.parameters(),
+                lr=float(learning_rate),
+                weight_decay=float(weight_decay),
+            )
             if self.trainable else None
         )
         self.criterion = torch.nn.BCEWithLogitsLoss()

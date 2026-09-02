@@ -44,6 +44,8 @@ python main.py citeseer out/results.csv \
   --decoder-hidden-channels 64 \
   --decoder-dropout 0.2 \
   --kl-weight 1.0 \
+  --learning-rate 0.01 \
+  --weight-decay 0.0 \
   --query-size 10 \
   --train-ratio 0.8 \
   --epochs 100 \
@@ -152,6 +154,23 @@ mlp = LinkPrediction(
 )
 vgae = LinkPrediction(train, model_type="variational", kl_weight=1.0)
 ```
+
+AGAE supports `none`, `latent-l2`, `mse-alignment`, `cosine-alignment`, and
+`graph-smoothness` regularization. Repeat `--agae-regularization` to compare
+several methods on the same graph splits and negative samples:
+
+```bash
+python main.py cora out/regularization.csv \
+  --model-type asymmetric \
+  --agae-regularization none \
+  --agae-regularization latent-l2 \
+  --agae-regularization cosine-alignment \
+  --regularization-strength 0.001
+```
+
+Use `--weight-decay` to evaluate Adam weight decay separately or in
+combination with an explicit AGAE penalty. Regularization settings are stored
+in dedicated result columns.
 
 DEAL loss weights use `theta_ss`, `theta_aa`, and `theta_sa`; inference weights use `lambda_ss`, `lambda_aa`, and `lambda_sa`. The CLI exposes these as `--deal-theta-*` and `--deal-lambda-*`, along with similarity scale and margin options.
 

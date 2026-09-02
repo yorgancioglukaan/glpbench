@@ -35,6 +35,12 @@ class ExperimentResult:
         Number of training epochs.
     random_seed : int
         Random seed used by the experiment.
+    regularization_type : str, optional
+        AGAE regularization method.
+    regularization_strength : float, optional
+        Explicit regularization coefficient.
+    weight_decay : float, optional
+        Adam weight-decay coefficient.
     """
 
     dataset: str
@@ -47,6 +53,9 @@ class ExperimentResult:
     train_ratio: float
     epochs: int
     random_seed: int
+    regularization_type: str = "none"
+    regularization_strength: float = 0.0
+    weight_decay: float = 0.0
     roc_auc: float | None = None
     average_precision: float | None = None
     loss: float | None = None
@@ -71,6 +80,13 @@ class ExperimentResult:
             "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv", "None"
         }:
             raise ValueError("conv_layer_type is not supported")
+        if self.regularization_type not in {
+            "none", "latent-l2", "mse-alignment", "cosine-alignment",
+            "graph-smoothness",
+        }:
+            raise ValueError("regularization_type is not supported")
+        if self.model_type != "asymmetric" and self.regularization_type != "none":
+            raise ValueError("explicit regularization is only supported by asymmetric")
 
         for name in ("hidden_channels", "out_channels", "epochs"):
             if not isinstance(getattr(self, name), int) or getattr(self, name) <= 0:
@@ -82,6 +98,14 @@ class ExperimentResult:
 
         if not isinstance(self.train_ratio, (int, float)) or not 0 <= self.train_ratio <= 1:
             raise ValueError("train_ratio must be between 0 and 1")
+        for name in ("regularization_strength", "weight_decay"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.model_type != "asymmetric" and self.regularization_strength != 0:
+            raise ValueError(
+                "regularization_strength is only supported by asymmetric"
+            )
         for name in ("roc_auc", "average_precision", "accuracy", "precision", "recall", "f1"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, (int, float)) or not 0 <= value <= 1):
@@ -118,6 +142,9 @@ class CSVResultLogger:
         "train_ratio",
         "epochs",
         "random_seed",
+        "regularization_type",
+        "regularization_strength",
+        "weight_decay",
         "roc_auc",
         "average_precision",
         "loss",

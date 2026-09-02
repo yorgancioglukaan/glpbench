@@ -597,6 +597,107 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertTrue(torch.equal(scores, torch.tensor([10.0, 6.0])))
         self.assertNotEqual(scores[0].item(), scores[1].item())
 
+    def test_available_agae_regularizers_come_from_registry(self):
+        self.assertEqual(
+            link_prediction.available_agae_regularizers(),
+            (
+                "none", "latent-l2", "mse-alignment",
+                "cosine-alignment", "graph-smoothness",
+            ),
+        )
+
+    def test_agae_regularizers_are_finite_and_nonnegative(self):
+        data = self._deal_training_data()
+        z = torch.tensor([
+            [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 1.0],
+            [1000.0, -1000.0],
+        ])
+        model = link_prediction.AGAE_Model(3, 4, 2)
+
+        for name, regularizer in link_prediction._AGAE_REGULARIZERS.items():
+            with self.subTest(regularizer=name):
+                penalty = regularizer(model, data, z)
+                self.assertEqual(penalty.ndim, 0)
+                self.assertTrue(torch.isfinite(penalty))
+                self.assertGreaterEqual(penalty.item(), 0.0)
+
+    def test_agae_node_regularizers_exclude_query_nodes(self):
+        data = self._deal_training_data()
+        z = torch.ones((data.num_nodes, 2))
+        baseline = {
+            name: link_prediction._AGAE_REGULARIZERS[name](None, data, z)
+            for name in ("latent-l2", "mse-alignment", "cosine-alignment")
+        }
+        z[4] = torch.tensor([1e6, -1e6])
+        data.x_reduced[4] = torch.tensor([-1e6, 1e6])
+
+        for name, expected in baseline.items():
+            with self.subTest(regularizer=name):
+                actual = link_prediction._AGAE_REGULARIZERS[name](None, data, z)
+                self.assertTrue(torch.allclose(actual, expected))
+
+    def test_agae_regularization_strength_scales_only_penalty(self):
+        data = self._deal_training_data()
+        model = link_prediction.AGAE_Model(
+            3, 4, 2,
+            regularization_type="latent-l2",
+            regularization_strength=1.0,
+        )
+        criterion = torch.nn.BCEWithLogitsLoss()
+        edges = torch.tensor([[0, 1, 0, 3], [1, 2, 2, 0]])
+        labels = torch.tensor([1.0, 1.0, 0.0, 0.0])
+
+        first_total, first_components = model.compute_training_loss(
+            data, edges, labels, criterion
+        )
+        model.regularization_strength = 2.0
+        second_total, second_components = model.compute_training_loss(
+            data, edges, labels, criterion
+        )
+
+        self.assertTrue(torch.allclose(
+            second_components["regularization"],
+            2 * first_components["regularization"],
+        ))
+        self.assertTrue(torch.allclose(
+            first_components["reconstruction"],
+            second_components["reconstruction"],
+        ))
+        self.assertTrue(torch.allclose(
+            first_total,
+            first_components["reconstruction"]
+            + first_components["regularization"],
+        ))
+        self.assertTrue(torch.allclose(
+            second_total,
+            second_components["reconstruction"]
+            + second_components["regularization"],
+        ))
+
+    def test_agae_regularization_and_optimizer_configuration_are_validated(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="asymmetric",
+            learning_rate=0.005,
+            weight_decay=0.01,
+        )
+        self.assertEqual(predictor.optimizer.param_groups[0]["lr"], 0.005)
+        self.assertEqual(predictor.optimizer.param_groups[0]["weight_decay"], 0.01)
+
+        invalid_configs = (
+            {"regularization_type": "unknown"},
+            {"regularization_strength": -1.0},
+            {"learning_rate": 0.0},
+            {"weight_decay": -1.0},
+        )
+        for config in invalid_configs:
+            with self.subTest(config=config):
+                with self.assertRaises((TypeError, ValueError)):
+                    link_prediction.LinkPrediction(
+                        data, model_type="asymmetric", **config
+                    )
+
     def test_decode_all_applies_score_threshold(self):
         symmetric = link_prediction.GAE_Model(2, 2, 2, conv_layer_type="GCNConv")
         asymmetric = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
@@ -913,7 +1014,25 @@ class TestExperimentLogging(unittest.TestCase):
             self.assertTrue(rows[0]["timestamp_utc"].endswith("+00:00"))
             self.assertEqual(rows[0]["dataset"], "Cora")
             self.assertEqual(float(rows[0]["roc_auc"]), 0.91)
+            self.assertEqual(rows[0]["regularization_type"], "none")
+            self.assertEqual(float(rows[0]["regularization_strength"]), 0.0)
+            self.assertEqual(float(rows[0]["weight_decay"]), 0.0)
             self.assertEqual(json.loads(rows[0]["extra_fields"]), {"learning_rate": 0.01})
+
+    def test_result_validates_asymmetric_regularization_fields(self):
+        result = self._result(
+            regularization_type="cosine-alignment",
+            regularization_strength=0.1,
+            weight_decay=0.001,
+        )
+        self.assertEqual(result.regularization_type, "cosine-alignment")
+
+        with self.assertRaisesRegex(ValueError, "only supported by asymmetric"):
+            self._result(
+                model_type="symmetric",
+                regularization_type="latent-l2",
+                regularization_strength=0.1,
+            )
 
     def test_logger_appends_without_repeating_header(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1310,6 +1429,57 @@ class TestMainPipeline(unittest.TestCase):
             self.assertEqual(
                 json.loads(row["extra_fields"])["reduction_method"], "pca"
             )
+
+    @patch(
+        "main.sample_training_negative_edges",
+        wraps=link_prediction.sample_training_negative_edges,
+    )
+    @patch("main.load_dataset")
+    def test_asymmetric_run_expands_requested_regularizers(
+        self, mock_load, mock_negative_sampling
+    ):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "regularization.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["asymmetric"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                agae_regularization=["none", "latent-l2"],
+                regularization_strength=0.1,
+                learning_rate=0.005,
+                weight_decay=0.01,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+            )
+
+            main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(
+            {row["regularization_type"] for row in rows},
+            {"none", "latent-l2"},
+        )
+        self.assertEqual(
+            {float(row["regularization_strength"]) for row in rows}, {0.1}
+        )
+        self.assertEqual({float(row["weight_decay"]) for row in rows}, {0.01})
+        self.assertEqual(mock_negative_sampling.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
+            [args.seed, args.seed],
+        )
 
 if __name__ == "__main__":
     unittest.main()

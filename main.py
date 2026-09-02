@@ -17,6 +17,7 @@ from experiment_logging import CSVResultLogger, ExperimentResult
 from feature_reduction import available_reduction_methods
 from link_prediction import (
     LinkPrediction,
+    available_agae_regularizers,
     available_model_types,
     sample_training_negative_edges,
 )
@@ -70,6 +71,16 @@ def parse_args():
     parser.add_argument("--decoder-hidden-channels", type=int, default=None)
     parser.add_argument("--decoder-dropout", type=float, default=0.0)
     parser.add_argument("--kl-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--agae-regularization",
+        choices=available_agae_regularizers(),
+        action="append",
+        default=None,
+        help="AGAE regularizer; repeat to compare several",
+    )
+    parser.add_argument("--regularization-strength", type=float, default=0.0)
+    parser.add_argument("--learning-rate", type=float, default=0.01)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--deal-theta-ss", type=float, default=1.0)
     parser.add_argument("--deal-theta-aa", type=float, default=1.0)
     parser.add_argument("--deal-theta-sa", type=float, default=1.0)
@@ -100,6 +111,15 @@ def run_experiment(args):
         raise ValueError("epochs must be a positive integer")
     if not 0 < args.train_ratio < 1:
         raise ValueError("train_ratio must be between 0 and 1")
+    regularization_strength = getattr(args, "regularization_strength", 0.0)
+    learning_rate = getattr(args, "learning_rate", 0.01)
+    weight_decay = getattr(args, "weight_decay", 0.0)
+    if regularization_strength < 0:
+        raise ValueError("regularization_strength must be non-negative")
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive")
+    if weight_decay < 0:
+        raise ValueError("weight_decay must be non-negative")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -116,6 +136,34 @@ def run_experiment(args):
         model_types = (args.model_type,)
     else:
         model_types = tuple(dict.fromkeys(args.model_type))
+
+    selected_regularizers = getattr(args, "agae_regularization", None)
+    if selected_regularizers is None:
+        selected_regularizers = ("none",)
+    elif isinstance(selected_regularizers, str):
+        selected_regularizers = (selected_regularizers,)
+    else:
+        selected_regularizers = tuple(dict.fromkeys(selected_regularizers))
+    if not selected_regularizers:
+        raise ValueError("at least one AGAE regularization method is required")
+    unknown_regularizers = set(selected_regularizers).difference(
+        available_agae_regularizers()
+    )
+    if unknown_regularizers:
+        raise ValueError(
+            f"Unknown AGAE regularization: {sorted(unknown_regularizers)[0]}"
+        )
+    if "asymmetric" not in model_types and selected_regularizers != ("none",):
+        raise ValueError(
+            "AGAE regularization requires the asymmetric model type"
+        )
+    experiment_configs = [
+        (model_type, regularization_type)
+        for model_type in model_types
+        for regularization_type in (
+            selected_regularizers if model_type == "asymmetric" else ("none",)
+        )
+    ]
 
     # Load and prepare the source graph on CPU for splitting.
     report(f"Loading {args.dataset}...")
@@ -173,17 +221,19 @@ def run_experiment(args):
         "similarity_margin": getattr(args, "deal_similarity_margin", 0.0),
     }
     model_progress = tqdm(
-        model_types,
+        experiment_configs,
         desc="Architectures",
         unit="model",
         disable=not verbose,
         position=0,
     )
-    for model_type in model_progress:
-        model_progress.set_postfix_str(model_type)
+    for model_type, regularization_type in model_progress:
+        progress_label = model_type
+        if model_type == "asymmetric":
+            progress_label += f"/{regularization_type}"
+        model_progress.set_postfix_str(progress_label)
         torch.manual_seed(args.seed)
-        predictor = LinkPrediction(
-            train,
+        predictor_kwargs = dict(
             model_type=model_type,
             conv_layer_type=args.conv_layer_type,
             hidden_channels=args.hidden_channels,
@@ -191,15 +241,23 @@ def run_experiment(args):
             decoder_hidden_channels=decoder_hidden_channels,
             decoder_dropout=decoder_dropout,
             kl_weight=kl_weight,
+            learning_rate=learning_rate,
+            weight_decay=(weight_decay if model_type == "asymmetric" else 0.0),
             **deal_config,
         )
+        if model_type == "asymmetric":
+            predictor_kwargs.update({
+                "regularization_type": regularization_type,
+                "regularization_strength": regularization_strength,
+            })
+        predictor = LinkPrediction(train, **predictor_kwargs)
         predictor.model = predictor.model.to(device)
         last_loss = None
         if predictor.trainable:
-            report(f"Training {model_type} model...")
+            report(f"Training {progress_label} model...")
             epoch_progress = tqdm(
                 range(args.epochs),
-                desc=f"{model_type} epochs",
+                desc=f"{progress_label} epochs",
                 unit="epoch",
                 disable=not verbose,
                 leave=False,
@@ -222,7 +280,7 @@ def run_experiment(args):
         else:
             report(f"Evaluating {model_type} baseline without training...")
 
-        report(f"Evaluating {model_type} model...")
+        report(f"Evaluating {progress_label} model...")
         for split_type, test_data in (
             ("transductive", test_transductive),
             ("inductive", test_inductive),
@@ -255,6 +313,11 @@ def run_experiment(args):
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
+                regularization_type=regularization_type,
+                regularization_strength=(
+                    regularization_strength if model_type == "asymmetric" else 0.0
+                ),
+                weight_decay=(weight_decay if model_type == "asymmetric" else 0.0),
                 loss=(
                     float(last_loss.detach().cpu()) if last_loss is not None else None
                 ),
