@@ -144,6 +144,110 @@ class TestInductiveSplit(unittest.TestCase):
             num_nodes=num_nodes,
         )
 
+    def test_automatic_query_selection_is_reproducible_and_sorted(self):
+        data = self._undirected_data(
+            8,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+             (6, 7), (7, 0), (0, 4), (2, 6)],
+        )
+        first = utils.select_query_nodes(data, query_size=3, seed=17)
+        second = utils.select_query_nodes(data, query_size=3, seed=17)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, sorted(first))
+        self.assertEqual(len(first), 3)
+        self.assertNotEqual(
+            first,
+            utils.select_query_nodes(data, query_size=3, seed=18),
+        )
+
+    def test_automatic_query_selection_uses_fraction_and_excludes_isolates(self):
+        data = self._undirected_data(
+            6, [(0, 1), (1, 2), (2, 3), (3, 4)]
+        )
+        query = utils.select_query_nodes(
+            data, query_fraction=0.4, seed=5
+        )
+
+        self.assertEqual(len(query), 2)
+        self.assertNotIn(5, query)
+
+    def test_automatic_query_selection_preserves_global_rng_state(self):
+        data = self._undirected_data(
+            6, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]
+        )
+        random.seed(1234)
+        state = random.getstate()
+
+        utils.select_query_nodes(data, query_size=2, seed=9)
+
+        self.assertEqual(random.getstate(), state)
+
+    def test_every_automatic_query_has_a_visible_neighbor(self):
+        data = self._undirected_data(
+            7, [(0, 1), (2, 3), (3, 4), (4, 5), (5, 6), (6, 2)]
+        )
+        query = utils.select_query_nodes(data, query_size=2, seed=2)
+        query_set = set(query)
+        neighbors = {node: set() for node in range(data.num_nodes)}
+        for source, target in data.edge_index.t().tolist():
+            neighbors[source].add(target)
+
+        self.assertTrue(all(neighbors[node] - query_set for node in query))
+
+    def test_query_selection_validates_configuration_and_explicit_queries(self):
+        data = self._undirected_data(
+            5, [(0, 1), (1, 2), (2, 3), (3, 4)]
+        )
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            utils.select_query_nodes(data, seed=1)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            utils.select_query_nodes(
+                data, query_size=1, query_fraction=0.2, seed=1
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            utils.inductive_split(data, query=[1, 1])
+        with self.assertRaisesRegex(ValueError, "outside the graph"):
+            utils.inductive_split(data, query=[5])
+        with self.assertRaisesRegex(ValueError, "outside the query set"):
+            utils.inductive_split(data, query=[0, 1])
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            utils.select_query_nodes(data, query_size=0, seed=1)
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            utils.select_query_nodes(data, query_fraction=1.0, seed=1)
+
+        two_node_graph = self._undirected_data(2, [(0, 1)])
+        with self.assertRaisesRegex(ValueError, "retains a visible neighbor"):
+            utils.select_query_nodes(
+                two_node_graph, query_size=2, seed=1, max_attempts=2
+            )
+
+    def test_split_functions_support_automatic_query_selection(self):
+        data = self._undirected_data(
+            8,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+             (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7)],
+        )
+        train, val, test_transductive, test_inductive = (
+            utils.generate_comparable_splits(
+                data, query_size=1, seed=11, train_ratio=0.75
+            )
+        )
+
+        expected_query = utils.select_query_nodes(
+            data, query_size=1, seed=11
+        )
+        for split in (train, val, test_transductive, test_inductive):
+            actual_query = split.query_mask.nonzero(as_tuple=False).view(-1).tolist()
+            self.assertEqual(actual_query, expected_query)
+        self.assertTrue(torch.equal(
+            test_transductive.edge_index, test_inductive.edge_index
+        ))
+        self.assertEqual(
+            test_transductive.edge_label_index.size(1),
+            test_inductive.edge_label_index.size(1),
+        )
+
     def test_query_int(self):
         data = self._undirected_data(4, [(0, 1), (1, 2), (2, 3)])
         #negative input should throw ValueError
@@ -237,7 +341,95 @@ class TestInductiveSplit(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "no eligible non-neighbor"):
             utils.inductive_split(data, query=[3])
-        
+
+
+class TestSeenNegativeSampling(unittest.TestCase):
+    @staticmethod
+    def _undirected_data(num_nodes, edges):
+        directed_edges = edges + [(target, source) for source, target in edges]
+        return Data(
+            edge_index=torch.tensor(
+                directed_edges, dtype=torch.long
+            ).t().contiguous(),
+            num_nodes=num_nodes,
+        )
+
+    def test_samples_unique_visible_non_edges_from_original_graph(self):
+        data = self._undirected_data(
+            7,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0),
+             (0, 6), (2, 6)],
+        )
+        seen_mask = torch.tensor(
+            [True, True, True, True, True, True, False]
+        )
+
+        negatives = utils._sample_seen_negative_edges(
+            data, seen_mask, num_samples=5, seed=17
+        )
+
+        original_positives = {
+            tuple(sorted(edge)) for edge in data.edge_index.t().tolist()
+        }
+        sampled_pairs = {tuple(edge) for edge in negatives.t().tolist()}
+        self.assertEqual(negatives.shape, (2, 5))
+        self.assertEqual(len(sampled_pairs), 5)
+        self.assertTrue(bool(seen_mask[negatives].all()))
+        self.assertTrue(bool((negatives[0] < negatives[1]).all()))
+        self.assertTrue(sampled_pairs.isdisjoint(original_positives))
+
+    def test_seed_is_reproducible_without_changing_global_rng_state(self):
+        data = self._undirected_data(
+            6, [(0, 1), (1, 2), (2, 3), (3, 4)]
+        )
+        seen_mask = torch.ones(data.num_nodes, dtype=torch.bool)
+        torch.manual_seed(1234)
+        random.seed(1234)
+        initial_torch_state = torch.random.get_rng_state().clone()
+        initial_python_state = random.getstate()
+
+        first = utils._sample_seen_negative_edges(
+            data, seen_mask, num_samples=4, seed=9
+        )
+        second = utils._sample_seen_negative_edges(
+            data, seen_mask, num_samples=4, seed=9
+        )
+
+        self.assertTrue(torch.equal(first, second))
+        self.assertTrue(torch.equal(
+            torch.random.get_rng_state(), initial_torch_state
+        ))
+        self.assertEqual(random.getstate(), initial_python_state)
+
+    def test_rejects_requests_larger_than_available_non_edges(self):
+        data = self._undirected_data(
+            5,
+            [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3),
+             (3, 4)],
+        )
+        seen_mask = torch.tensor([True, True, True, True, False])
+
+        with self.assertRaisesRegex(ValueError, "only 0 eligible"):
+            utils._sample_seen_negative_edges(
+                data, seen_mask, num_samples=1, seed=3
+            )
+
+    def test_validates_mask_and_supports_zero_samples(self):
+        data = self._undirected_data(4, [(0, 1), (1, 2)])
+        seen_mask = torch.tensor([True, True, True, False])
+
+        empty = utils._sample_seen_negative_edges(
+            data, seen_mask, num_samples=0, seed=1
+        )
+        self.assertEqual(empty.shape, (2, 0))
+        with self.assertRaisesRegex(TypeError, "boolean dtype"):
+            utils._sample_seen_negative_edges(
+                data, seen_mask.long(), num_samples=1
+            )
+        with self.assertRaisesRegex(ValueError, "one entry per node"):
+            utils._sample_seen_negative_edges(
+                data, seen_mask[:-1], num_samples=1
+            )
 
 class TestLinkPrediction(unittest.TestCase):
     @staticmethod

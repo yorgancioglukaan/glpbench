@@ -53,6 +53,10 @@ python main.py citeseer out/results.csv \
   --device cpu
 ```
 
+Use `--query-fraction` instead of `--query-size` to select a fraction of
+eligible, non-isolated nodes. The two options are mutually exclusive; when
+both are omitted, the CLI selects 10 query nodes.
+
 Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 
 ```bash
@@ -90,14 +94,19 @@ data = load_dataset("cora", root="data", device="cpu")
 ```python
 import torch
 
-from utils import calculate_reduced_features, generate_comparable_splits
+from utils import (
+    calculate_reduced_features,
+    generate_comparable_splits,
+    select_query_nodes,
+)
 
+query = select_query_nodes(data, query_size=3, seed=42)
 fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
-fit_mask[[10, 25, 40]] = False
+fit_mask[query] = False
 calculate_reduced_features(data, dim=64, fit_nodes=fit_mask)
 train, val, test_transductive, test_inductive = generate_comparable_splits(
     data,
-    query=[10, 25, 40],
+    query=query,
     train_ratio=0.8,
 )
 ```
@@ -111,7 +120,12 @@ python main.py coauthor-cs out/results.csv \
   --reduction-method truncated-svd
 ```
 
-`generate_comparable_splits()` creates transductive and inductive test sets with matching message-passing graphs and equal numbers of labeled edges. `utils.inductive_split()` is available when only a cold-start split is needed.
+`select_query_nodes()` performs deterministic automatic selection while ensuring
+that every query retains at least one visible neighbor. Both split functions can
+also select queries directly by accepting `query_size` or `query_fraction` with
+a `seed`. `generate_comparable_splits()` creates transductive and inductive test
+sets with matching message-passing graphs and equal numbers of labeled edges.
+`utils.inductive_split()` is available when only a cold-start split is needed.
 
 ### Link-prediction models
 

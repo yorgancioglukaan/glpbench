@@ -21,7 +21,11 @@ from link_prediction import (
     available_model_types,
     sample_training_negative_edges,
 )
-from utils import calculate_reduced_features, generate_comparable_splits
+from utils import (
+    calculate_reduced_features,
+    generate_comparable_splits,
+    select_query_nodes,
+)
 
 
 def calculate_metrics(labels, probabilities):
@@ -89,7 +93,9 @@ def parse_args():
     parser.add_argument("--deal-lambda-sa", type=float, default=1.0)
     parser.add_argument("--deal-similarity-scale", type=float, default=1.0)
     parser.add_argument("--deal-similarity-margin", type=float, default=0.0)
-    parser.add_argument("--query-size", type=int, default=10)
+    query_group = parser.add_mutually_exclusive_group()
+    query_group.add_argument("--query-size", type=int, default=None)
+    query_group.add_argument("--query-fraction", type=float, default=None)
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
@@ -105,8 +111,10 @@ def parse_args():
 
 def run_experiment(args):
     """Run one training experiment and log both test settings."""
-    if args.query_size <= 0:
-        raise ValueError("query_size must be a positive integer")
+    query_size = getattr(args, "query_size", None)
+    query_fraction = getattr(args, "query_fraction", None)
+    if query_size is None and query_fraction is None:
+        query_size = 10
     if args.epochs <= 0:
         raise ValueError("epochs must be a positive integer")
     if not 0 < args.train_ratio < 1:
@@ -173,11 +181,12 @@ def run_experiment(args):
         normalize_features=args.normalize_features,
         device="cpu",
     )
-    # Select seeded, non-isolated query nodes.
-    candidate_queries = torch.unique(data.edge_index).tolist()
-    if args.query_size > len(candidate_queries):
-        raise ValueError("query_size exceeds the number of non-isolated nodes")
-    query = random.sample(candidate_queries, args.query_size)
+    query = select_query_nodes(
+        data,
+        query_size=query_size,
+        query_fraction=query_fraction,
+        seed=args.seed,
+    )
 
     reduction_method = getattr(args, "reduction_method", "pca")
     if "asymmetric" in model_types:
@@ -309,7 +318,7 @@ def run_experiment(args):
                 ),
                 hidden_channels=args.hidden_channels,
                 out_channels=args.out_channels,
-                query_size=args.query_size,
+                query_size=len(query),
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
