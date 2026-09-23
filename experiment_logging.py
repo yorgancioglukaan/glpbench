@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -35,6 +36,8 @@ class ExperimentResult:
         Number of training epochs.
     random_seed : int
         Random seed used by the experiment.
+    training_time_seconds : float, optional
+        Total wall-clock time spent in the training epoch loop.
     regularization_type : str, optional
         AGAE regularization method.
     regularization_strength : float, optional
@@ -53,6 +56,7 @@ class ExperimentResult:
     train_ratio: float
     epochs: int
     random_seed: int
+    training_time_seconds: float | None = None
     regularization_type: str = "none"
     regularization_strength: float = 0.0
     weight_decay: float = 0.0
@@ -95,6 +99,15 @@ class ExperimentResult:
             raise ValueError("query_size must be a non-negative integer")
         if not isinstance(self.random_seed, int) or self.random_seed < 0:
             raise ValueError("random_seed must be a non-negative integer")
+        if self.training_time_seconds is not None and (
+            not isinstance(self.training_time_seconds, (int, float))
+            or isinstance(self.training_time_seconds, bool)
+            or not math.isfinite(self.training_time_seconds)
+            or self.training_time_seconds < 0
+        ):
+            raise ValueError(
+                "training_time_seconds must be a finite non-negative number"
+            )
 
         if not isinstance(self.train_ratio, (int, float)) or not 0 <= self.train_ratio <= 1:
             raise ValueError("train_ratio must be between 0 and 1")
@@ -142,6 +155,7 @@ class CSVResultLogger:
         "train_ratio",
         "epochs",
         "random_seed",
+        "training_time_seconds",
         "regularization_type",
         "regularization_strength",
         "weight_decay",

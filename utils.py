@@ -367,6 +367,18 @@ def _sample_seen_negative_edges(data, seen_node_mask, num_samples, seed=None):
     return seen_node_ids[local_negatives].to(dtype=edge_dtype)
 
 
+def _set_negative_edges(split, negative_edges):
+    """Append negative edges and rebuild binary edge labels."""
+    positive_edges = split.edge_label_index
+    split.edge_label_index = torch.cat(
+        [positive_edges, negative_edges], dim=1
+    )
+    split.edge_label = torch.cat([
+        split.edge_label.new_ones(positive_edges.size(1)),
+        split.edge_label.new_zeros(negative_edges.size(1)),
+    ])
+
+
 def generate_comparable_splits(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
     query_fraction=None, seed=None, **kwargs
@@ -446,39 +458,34 @@ def generate_comparable_splits(
     temp_data = data.clone()
     temp_data.edge_index = other_edges
 
-    link_splitter = T.RandomLinkSplit(num_val=1.0-train_ratio, num_test=n_test_edges, 
-                                      add_negative_train_samples=False, is_undirected=True,
-                                      neg_sampling_ratio=1.0)
+    link_splitter = T.RandomLinkSplit(
+        num_val=1.0 - train_ratio,
+        num_test=n_test_edges,
+        add_negative_train_samples=False,
+        is_undirected=True,
+        neg_sampling_ratio=0.0,
+    )
     
     train, val, test_transductive = link_splitter(temp_data)
-    transductive_positive_mask = test_transductive.edge_label == 1
-    transductive_positive_edges = test_transductive.edge_label_index[
-        :, transductive_positive_mask
-    ]
     seen_node_mask = torch.ones(
         data.num_nodes, dtype=torch.bool, device=data.edge_index.device
     )
     seen_node_mask[query] = False
-    seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
-    global_to_seen = torch.full(
-        (data.num_nodes,), -1, dtype=torch.long, device=data.edge_index.device
+    validation_negative_edges = _sample_seen_negative_edges(
+        data,
+        seen_node_mask,
+        num_samples=val.edge_label_index.size(1),
+        seed=seed,
     )
-    global_to_seen[seen_node_ids] = torch.arange(
-        seen_node_ids.numel(), device=data.edge_index.device
+    _set_negative_edges(val, validation_negative_edges)
+
+    transductive_negative_edges = _sample_seen_negative_edges(
+        data,
+        seen_node_mask,
+        num_samples=test_transductive.edge_label_index.size(1),
+        seed=None if seed is None else seed + 1,
     )
-    local_negative_edges = negative_sampling(
-        edge_index=global_to_seen[other_edges],
-        num_nodes=seen_node_ids.numel(),
-        num_neg_samples=transductive_positive_edges.size(1),
-    )
-    transductive_negative_edges = seen_node_ids[local_negative_edges]
-    test_transductive.edge_label_index = torch.cat(
-        [transductive_positive_edges, transductive_negative_edges], dim=1
-    )
-    test_transductive.edge_label = torch.cat([
-        test_transductive.edge_label.new_ones(transductive_positive_edges.size(1)),
-        test_transductive.edge_label.new_zeros(transductive_negative_edges.size(1)),
-    ])
+    _set_negative_edges(test_transductive, transductive_negative_edges)
     test_inductive.edge_index = test_transductive.edge_index
 
     _attach_split_metadata(
@@ -559,14 +566,31 @@ def inductive_split(
     other_edges = data.edge_index[:, ~mask]
 
     # split train/val edges
-    link_splitter = T.RandomLinkSplit(num_val=1.0-train_ratio, num_test=0, 
-                                      add_negative_train_samples=False, is_undirected=True)
+    link_splitter = T.RandomLinkSplit(
+        num_val=1.0 - train_ratio,
+        num_test=0,
+        add_negative_train_samples=False,
+        is_undirected=True,
+        neg_sampling_ratio=0.0,
+    )
     temp_data = data.clone()
     test = data.clone()
     temp_data.edge_index = other_edges
 
 
     train, val, _ = link_splitter(temp_data)
+
+    seen_node_mask = torch.ones(
+        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
+    )
+    seen_node_mask[query] = False
+    validation_negative_edges = _sample_seen_negative_edges(
+        data,
+        seen_node_mask,
+        num_samples=val.edge_label_index.size(1),
+        seed=seed,
+    )
+    _set_negative_edges(val, validation_negative_edges)
 
     directed_test_edges = test_edges[:, ~torch.isin(test_edges[0, :], query_tensor)]
     test.edge_index = other_edges

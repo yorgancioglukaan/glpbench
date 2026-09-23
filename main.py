@@ -2,6 +2,7 @@ import torch
 from datasets import load_dataset
 import argparse
 import random
+import time
 
 from sklearn.metrics import (
     accuracy_score,
@@ -41,6 +42,19 @@ def calculate_metrics(labels, probabilities):
         "recall": recall_score(labels, predictions, zero_division=0),
         "f1": f1_score(labels, predictions, zero_division=0),
     }
+
+
+def _synchronize_device(device):
+    """Wait for queued accelerator work before recording a timestamp."""
+    device = torch.device(device)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif (
+        device.type == "mps"
+        and hasattr(torch, "mps")
+        and hasattr(torch.mps, "synchronize")
+    ):
+        torch.mps.synchronize()
 
 
 def parse_args():
@@ -209,7 +223,7 @@ def run_experiment(args):
 
     report("Generating comparable graph splits...")
     train, _, test_transductive, test_inductive = generate_comparable_splits(
-        data, query=query, train_ratio=args.train_ratio
+        data, query=query, train_ratio=args.train_ratio, seed=args.seed
     )
     train = train.to(device)
     test_transductive = test_transductive.to(device)
@@ -262,6 +276,7 @@ def run_experiment(args):
         predictor = LinkPrediction(train, **predictor_kwargs)
         predictor.model = predictor.model.to(device)
         last_loss = None
+        training_time_seconds = None
         if predictor.trainable:
             report(f"Training {progress_label} model...")
             epoch_progress = tqdm(
@@ -272,6 +287,8 @@ def run_experiment(args):
                 leave=False,
                 position=1,
             )
+            _synchronize_device(device)
+            training_start = time.perf_counter()
             for epoch in epoch_progress:
                 negative_edges = sample_training_negative_edges(
                     train, seed=args.seed + epoch
@@ -286,6 +303,8 @@ def run_experiment(args):
                     }
                     component_values["loss"] = f"{last_loss.detach().item():.4f}"
                     epoch_progress.set_postfix(component_values)
+            _synchronize_device(device)
+            training_time_seconds = time.perf_counter() - training_start
         else:
             report(f"Evaluating {model_type} baseline without training...")
 
@@ -322,6 +341,7 @@ def run_experiment(args):
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
+                training_time_seconds=training_time_seconds,
                 regularization_type=regularization_type,
                 regularization_strength=(
                     regularization_strength if model_type == "asymmetric" else 0.0

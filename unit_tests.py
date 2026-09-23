@@ -303,6 +303,10 @@ class TestInductiveSplit(unittest.TestCase):
         positive_edges = {
             tuple(sorted(edge)) for edge in data.edge_index.t().tolist()
         }
+        validation_negatives = val.edge_label_index[:, val.edge_label == 0]
+        transductive_negatives = test_transductive.edge_label_index[
+            :, test_transductive.edge_label == 0
+        ]
 
         self.assertTrue(torch.equal(test_inductive.edge_index, test_transductive.edge_index))
         self.assertEqual(
@@ -315,6 +319,21 @@ class TestInductiveSplit(unittest.TestCase):
             node not in query_nodes
             for node in test_transductive.edge_label_index.flatten().tolist()
         ))
+        self.assertEqual(
+            validation_negatives.size(1), int(val.edge_label.sum().item())
+        )
+        self.assertTrue(all(
+            node not in query_nodes
+            for node in validation_negatives.flatten().tolist()
+        ))
+        self.assertEqual(
+            len({tuple(edge) for edge in validation_negatives.t().tolist()}),
+            validation_negatives.size(1),
+        )
+        for edge in validation_negatives.t().tolist():
+            self.assertNotIn(tuple(sorted(edge)), positive_edges)
+        for edge in transductive_negatives.t().tolist():
+            self.assertNotIn(tuple(sorted(edge)), positive_edges)
         expected_query_mask = torch.tensor([
             False, False, False, False, False, True, True
         ])
@@ -1185,6 +1204,7 @@ class TestExperimentLogging(unittest.TestCase):
             "train_ratio": 0.8,
             "epochs": 100,
             "random_seed": 42,
+            "training_time_seconds": 12.5,
             "roc_auc": 0.91,
             "average_precision": 0.87,
         }
@@ -1206,6 +1226,7 @@ class TestExperimentLogging(unittest.TestCase):
             self.assertTrue(rows[0]["timestamp_utc"].endswith("+00:00"))
             self.assertEqual(rows[0]["dataset"], "Cora")
             self.assertEqual(float(rows[0]["roc_auc"]), 0.91)
+            self.assertEqual(float(rows[0]["training_time_seconds"]), 12.5)
             self.assertEqual(rows[0]["regularization_type"], "none")
             self.assertEqual(float(rows[0]["regularization_strength"]), 0.0)
             self.assertEqual(float(rows[0]["weight_decay"]), 0.0)
@@ -1325,6 +1346,9 @@ class TestExperimentLogging(unittest.TestCase):
             {"train_ratio": 1.1},
             {"roc_auc": -0.1},
             {"loss": -1.0},
+            {"training_time_seconds": -1.0},
+            {"training_time_seconds": float("inf")},
+            {"training_time_seconds": float("nan")},
         ]
         for values in invalid_values:
             with self.subTest(values=values), self.assertRaises(ValueError):
@@ -1564,6 +1588,22 @@ class TestMainPipeline(unittest.TestCase):
             ("feature-cosine", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
+        trainable_rows = [
+            row for row in rows if row["model_type"] != "feature-cosine"
+        ]
+        self.assertTrue(all(
+            float(row["training_time_seconds"]) >= 0
+            for row in trainable_rows
+        ))
+        for model_type in {
+            row["model_type"] for row in trainable_rows
+        }:
+            model_runtimes = {
+                row["training_time_seconds"]
+                for row in trainable_rows
+                if row["model_type"] == model_type
+            }
+            self.assertEqual(len(model_runtimes), 1)
         self.assertEqual(mock_negative_sampling.call_count, 5)
         self.assertEqual(
             [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
@@ -1574,6 +1614,9 @@ class TestMainPipeline(unittest.TestCase):
         ]
         self.assertEqual({row["conv_layer_type"] for row in cosine_rows}, {"None"})
         self.assertEqual({row["loss"] for row in cosine_rows}, {""})
+        self.assertEqual(
+            {row["training_time_seconds"] for row in cosine_rows}, {""}
+        )
         deal_rows = [row for row in rows if row["model_type"] == "deal"]
         self.assertEqual({row["conv_layer_type"] for row in deal_rows}, {"None"})
         deal_config = json.loads(deal_rows[0]["extra_fields"])
