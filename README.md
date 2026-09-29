@@ -85,6 +85,17 @@ count remains the maximum budget, and the best checkpoint is restored in all
 cases. Logged training time includes training, validation, and checkpoint
 selection.
 
+Repeat `--seed` to run paired repetitions in one invocation:
+
+```bash
+python main.py cora out/results.csv --seed 1 --seed 2 --seed 3
+```
+
+Alternatively, `--num-seeds 10` runs seeds 0 through 9. All rows from the
+invocation share a `run_id`; repetitions of the same model and hyperparameter
+configuration share a stable `configuration_id`. Data splits and evaluation
+negatives are generated once per seed and reused across architectures.
+
 Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 
 ```bash

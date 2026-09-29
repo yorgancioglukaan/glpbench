@@ -16,7 +16,11 @@ from sklearn.metrics import (
 )
 from tqdm.auto import tqdm
 
-from experiment_logging import CSVResultLogger, ExperimentResult
+from experiment_logging import (
+    CSVResultLogger,
+    ExperimentResult,
+    make_configuration_id,
+)
 from feature_reduction import available_reduction_methods
 from link_prediction import (
     LinkPrediction,
@@ -59,6 +63,39 @@ def _synchronize_device(device):
         torch.mps.synchronize()
 
 
+def _resolve_seeds(args):
+    """Return validated seeds from explicit or generated CLI settings."""
+    supplied_seeds = getattr(args, "seed", None)
+    num_seeds = getattr(args, "num_seeds", None)
+    if num_seeds is not None:
+        if supplied_seeds not in (None, []):
+            raise ValueError("seed and num_seeds cannot be combined")
+        if (
+            not isinstance(num_seeds, int)
+            or isinstance(num_seeds, bool)
+            or num_seeds <= 0
+        ):
+            raise ValueError("num_seeds must be a positive integer")
+        return tuple(range(num_seeds))
+
+    if supplied_seeds is None:
+        seeds = (42,)
+    elif isinstance(supplied_seeds, int) and not isinstance(supplied_seeds, bool):
+        seeds = (supplied_seeds,)
+    else:
+        seeds = tuple(supplied_seeds)
+    if not seeds:
+        raise ValueError("at least one seed is required")
+    if any(
+        not isinstance(seed, int) or isinstance(seed, bool) or seed < 0
+        for seed in seeds
+    ):
+        raise ValueError("seeds must be non-negative integers")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("seeds must be unique")
+    return seeds
+
+
 @dataclass(frozen=True)
 class TrainingSummary:
     """Store fixed-budget training and checkpoint-selection outcomes."""
@@ -78,6 +115,7 @@ def _train_with_checkpoint_selection(
     predictor, train_data, validation_data, *, epochs, seed,
     selection_metric, device, early_stopping_patience=None,
     early_stopping_min_delta=0.0, verbose=False, progress_label="model",
+    progress_position=1,
 ):
     """Train with validation checkpointing and optional early stopping."""
     if selection_metric not in {"roc_auc", "average_precision"}:
@@ -106,7 +144,7 @@ def _train_with_checkpoint_selection(
         unit="epoch",
         disable=not verbose,
         leave=False,
-        position=1,
+        position=progress_position,
     )
     best_state = None
     best_epoch = None
@@ -263,7 +301,20 @@ def parse_args():
         default=0.0,
         help="minimum validation improvement when early stopping is enabled",
     )
-    parser.add_argument("--seed", type=int, default=42)
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument(
+        "--seed",
+        type=int,
+        action="append",
+        default=None,
+        help="random seed; repeat to run multiple seeds (default: 42)",
+    )
+    seed_group.add_argument(
+        "--num-seeds",
+        type=int,
+        default=None,
+        help="run generated seeds 0 through N-1",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--verbose", action="store_true", help="show experiment progress"
@@ -298,8 +349,7 @@ def run_experiment(args):
     if weight_decay < 0:
         raise ValueError("weight_decay must be non-negative")
 
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    seeds = _resolve_seeds(args)
     device = torch.device(args.device)
     verbose = getattr(args, "verbose", False)
 
@@ -342,56 +392,15 @@ def run_experiment(args):
         )
     ]
 
-    # Load and prepare the source graph on CPU for splitting.
+    # Load once, then clone before seed-specific preprocessing.
     report(f"Loading {args.dataset}...")
-    data = load_dataset(
+    source_data = load_dataset(
         args.dataset,
         root=args.data_root,
         normalize_features=args.normalize_features,
         device="cpu",
     )
-    query_nodes = select_query_node_sets(
-        data,
-        query_size=query_size,
-        query_fraction=query_fraction,
-        validation_query_size=validation_query_size,
-        validation_query_fraction=validation_query_fraction,
-        seed=args.seed,
-    )
-
     reduction_method = getattr(args, "reduction_method", "pca")
-    if "asymmetric" in model_types:
-        report("Calculating reduced node features...")
-        fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
-        fit_mask[list(query_nodes.validation)] = False
-        fit_mask[list(query_nodes.test)] = False
-        num_fit_nodes = int(fit_mask.sum())
-        if args.out_channels > min(num_fit_nodes, data.num_features):
-            raise ValueError(
-                "out_channels cannot exceed the smaller of the number of "
-                "non-query nodes and num_features"
-            )
-        calculate_reduced_features(
-            data,
-            dim=args.out_channels,
-            reduction_method=reduction_method,
-            fit_nodes=fit_mask,
-            random_state=args.seed,
-        )
-
-    report("Generating comparable graph splits...")
-    splits = generate_comparable_splits(
-        data,
-        query=query_nodes.test,
-        validation_query=query_nodes.validation,
-        train_ratio=args.train_ratio,
-        seed=args.seed,
-    )
-    train = splits.train.to(device)
-    validation = splits.validation.to(device)
-    test_transductive = splits.test_transductive.to(device)
-    test_inductive = splits.test_inductive.to(device)
-
     logger = CSVResultLogger(args.out_filepath)
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
     decoder_dropout = getattr(args, "decoder_dropout", 0.0)
@@ -425,119 +434,208 @@ def run_experiment(args):
         "similarity_scale": getattr(args, "deal_similarity_scale", 1.0),
         "similarity_margin": getattr(args, "deal_similarity_margin", 0.0),
     }
-    model_progress = tqdm(
-        experiment_configs,
-        desc="Architectures",
-        unit="model",
-        disable=not verbose,
+    seed_progress = tqdm(
+        seeds,
+        desc="Seeds",
+        unit="seed",
+        disable=not verbose or len(seeds) == 1,
         position=0,
     )
-    for model_type, regularization_type in model_progress:
-        progress_label = model_type
-        if model_type == "asymmetric":
-            progress_label += f"/{regularization_type}"
-        model_progress.set_postfix_str(progress_label)
-        torch.manual_seed(args.seed)
-        predictor_kwargs = dict(
-            model_type=model_type,
-            conv_layer_type=args.conv_layer_type,
-            hidden_channels=args.hidden_channels,
-            out_channels=args.out_channels,
-            decoder_hidden_channels=decoder_hidden_channels,
-            decoder_dropout=decoder_dropout,
-            kl_weight=kl_weight,
-            learning_rate=learning_rate,
-            weight_decay=(weight_decay if model_type == "asymmetric" else 0.0),
-            **deal_config,
-        )
-        if model_type == "asymmetric":
-            predictor_kwargs.update({
-                "regularization_type": regularization_type,
-                "regularization_strength": regularization_strength,
-            })
-        predictor = LinkPrediction(train, **predictor_kwargs)
-        predictor.model = predictor.model.to(device)
-        if predictor.trainable:
-            report(f"Training {progress_label} model...")
-        else:
-            report(f"Evaluating {model_type} baseline without training...")
-        training_summary = _train_with_checkpoint_selection(
-            predictor,
-            train,
-            validation,
-            epochs=args.epochs,
-            seed=args.seed,
-            selection_metric=selection_metric,
-            device=device,
-            early_stopping_patience=early_stopping_patience,
-            early_stopping_min_delta=early_stopping_min_delta,
-            verbose=verbose,
-            progress_label=progress_label,
+    for seed in seed_progress:
+        random.seed(seed)
+        torch.manual_seed(seed)
+        data = source_data.clone()
+        query_nodes = select_query_node_sets(
+            data,
+            query_size=query_size,
+            query_fraction=query_fraction,
+            validation_query_size=validation_query_size,
+            validation_query_fraction=validation_query_fraction,
+            seed=seed,
         )
 
-        report(f"Evaluating {progress_label} model...")
-        for split_type, test_data in (
-            ("transductive", test_transductive),
-            ("inductive", test_inductive),
-        ):
-            probabilities = predictor.test(test_data)
-            metrics = calculate_metrics(test_data.edge_label, probabilities)
-            extra_fields = {
-                "reduction_method": reduction_method,
-                "validation_query_size": len(query_nodes.validation),
-            }
-            if model_type == "mlp":
-                extra_fields.update({
-                    "decoder_hidden_channels": decoder_hidden_channels,
-                    "decoder_dropout": decoder_dropout,
-                })
-            elif model_type == "variational":
-                extra_fields["kl_weight"] = kl_weight
-            elif model_type == "deal":
-                extra_fields.update({
-                    f"deal_{name}": value for name, value in deal_config.items()
-                })
-            result = ExperimentResult(
-                dataset=data.dataset_name,
+        if "asymmetric" in model_types:
+            report(f"Calculating reduced node features for seed {seed}...")
+            fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
+            fit_mask[list(query_nodes.validation)] = False
+            fit_mask[list(query_nodes.test)] = False
+            num_fit_nodes = int(fit_mask.sum())
+            if args.out_channels > min(num_fit_nodes, data.num_features):
+                raise ValueError(
+                    "out_channels cannot exceed the smaller of the number of "
+                    "non-query nodes and num_features"
+                )
+            calculate_reduced_features(
+                data,
+                dim=args.out_channels,
+                reduction_method=reduction_method,
+                fit_nodes=fit_mask,
+                random_state=seed,
+            )
+
+        report(f"Generating comparable graph splits for seed {seed}...")
+        splits = generate_comparable_splits(
+            data,
+            query=query_nodes.test,
+            validation_query=query_nodes.validation,
+            train_ratio=args.train_ratio,
+            seed=seed,
+        )
+        train = splits.train.to(device)
+        validation = splits.validation.to(device)
+        test_transductive = splits.test_transductive.to(device)
+        test_inductive = splits.test_inductive.to(device)
+
+        model_progress = tqdm(
+            experiment_configs,
+            desc=f"Seed {seed} architectures",
+            unit="model",
+            disable=not verbose,
+            leave=len(seeds) == 1,
+            position=1 if len(seeds) > 1 else 0,
+        )
+        for model_type, regularization_type in model_progress:
+            progress_label = model_type
+            if model_type == "asymmetric":
+                progress_label += f"/{regularization_type}"
+            model_progress.set_postfix_str(progress_label)
+            torch.manual_seed(seed)
+            effective_weight_decay = (
+                weight_decay if model_type == "asymmetric" else 0.0
+            )
+            predictor_kwargs = dict(
                 model_type=model_type,
-                split_type=split_type,
-                conv_layer_type=(
-                    args.conv_layer_type if predictor.model_spec.uses_conv_layer
-                    else "None"
-                ),
+                conv_layer_type=args.conv_layer_type,
                 hidden_channels=args.hidden_channels,
                 out_channels=args.out_channels,
-                query_size=len(query_nodes.test),
-                train_ratio=args.train_ratio,
-                epochs=args.epochs,
-                random_seed=args.seed,
-                training_time_seconds=training_summary.training_time_seconds,
-                epochs_trained=training_summary.epochs_trained,
-                best_epoch=training_summary.best_epoch,
-                selection_metric=training_summary.selection_metric,
-                best_validation_score=(
-                    training_summary.best_validation_score
-                ),
-                early_stopping_patience=(
-                    training_summary.early_stopping_patience
-                ),
-                early_stopping_min_delta=(
-                    training_summary.early_stopping_min_delta
-                ),
-                stopped_early=training_summary.stopped_early,
-                regularization_type=regularization_type,
-                regularization_strength=(
-                    regularization_strength if model_type == "asymmetric" else 0.0
-                ),
-                weight_decay=(weight_decay if model_type == "asymmetric" else 0.0),
-                loss=(
-                    float(training_summary.selected_loss.detach().cpu())
-                    if training_summary.selected_loss is not None else None
-                ),
-                extra_fields=extra_fields,
-                **metrics,
+                decoder_hidden_channels=decoder_hidden_channels,
+                decoder_dropout=decoder_dropout,
+                kl_weight=kl_weight,
+                learning_rate=learning_rate,
+                weight_decay=effective_weight_decay,
+                **deal_config,
             )
-            logger.log(result)
+            if model_type == "asymmetric":
+                predictor_kwargs.update({
+                    "regularization_type": regularization_type,
+                    "regularization_strength": regularization_strength,
+                })
+            predictor = LinkPrediction(train, **predictor_kwargs)
+            predictor.model = predictor.model.to(device)
+            if predictor.trainable:
+                report(f"Training {progress_label} model for seed {seed}...")
+            else:
+                report(
+                    f"Evaluating {model_type} baseline for seed {seed} "
+                    "without training..."
+                )
+            training_summary = _train_with_checkpoint_selection(
+                predictor,
+                train,
+                validation,
+                epochs=args.epochs,
+                seed=seed,
+                selection_metric=selection_metric,
+                device=device,
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_min_delta=early_stopping_min_delta,
+                verbose=verbose,
+                progress_label=f"seed {seed} {progress_label}",
+                progress_position=2 if len(seeds) > 1 else 1,
+            )
+
+            report(f"Evaluating {progress_label} model for seed {seed}...")
+            for split_type, test_data in (
+                ("transductive", test_transductive),
+                ("inductive", test_inductive),
+            ):
+                probabilities = predictor.test(test_data)
+                metrics = calculate_metrics(test_data.edge_label, probabilities)
+                extra_fields = {
+                    "reduction_method": reduction_method,
+                    "validation_query_size": len(query_nodes.validation),
+                    "learning_rate": learning_rate,
+                }
+                if model_type == "mlp":
+                    extra_fields.update({
+                        "decoder_hidden_channels": decoder_hidden_channels,
+                        "decoder_dropout": decoder_dropout,
+                    })
+                elif model_type == "variational":
+                    extra_fields["kl_weight"] = kl_weight
+                elif model_type == "deal":
+                    extra_fields.update({
+                        f"deal_{name}": value
+                        for name, value in deal_config.items()
+                    })
+                effective_conv_layer = (
+                    args.conv_layer_type
+                    if predictor.model_spec.uses_conv_layer else "None"
+                )
+                configuration_id = make_configuration_id({
+                    "dataset": data.dataset_name,
+                    "model_type": model_type,
+                    "split_type": split_type,
+                    "conv_layer_type": effective_conv_layer,
+                    "hidden_channels": args.hidden_channels,
+                    "out_channels": args.out_channels,
+                    "query_size": len(query_nodes.test),
+                    "validation_query_size": len(query_nodes.validation),
+                    "train_ratio": args.train_ratio,
+                    "epochs": args.epochs,
+                    "normalize_features": args.normalize_features,
+                    "regularization_type": regularization_type,
+                    "regularization_strength": (
+                        regularization_strength
+                        if model_type == "asymmetric" else 0.0
+                    ),
+                    "weight_decay": effective_weight_decay,
+                    "selection_metric": selection_metric,
+                    "early_stopping_patience": early_stopping_patience,
+                    "early_stopping_min_delta": early_stopping_min_delta,
+                    "extra_fields": extra_fields,
+                })
+                result = ExperimentResult(
+                    configuration_id=configuration_id,
+                    dataset=data.dataset_name,
+                    model_type=model_type,
+                    split_type=split_type,
+                    conv_layer_type=effective_conv_layer,
+                    hidden_channels=args.hidden_channels,
+                    out_channels=args.out_channels,
+                    query_size=len(query_nodes.test),
+                    train_ratio=args.train_ratio,
+                    epochs=args.epochs,
+                    random_seed=seed,
+                    normalize_features=args.normalize_features,
+                    training_time_seconds=training_summary.training_time_seconds,
+                    epochs_trained=training_summary.epochs_trained,
+                    best_epoch=training_summary.best_epoch,
+                    selection_metric=training_summary.selection_metric,
+                    best_validation_score=(
+                        training_summary.best_validation_score
+                    ),
+                    early_stopping_patience=(
+                        training_summary.early_stopping_patience
+                    ),
+                    early_stopping_min_delta=(
+                        training_summary.early_stopping_min_delta
+                    ),
+                    stopped_early=training_summary.stopped_early,
+                    regularization_type=regularization_type,
+                    regularization_strength=(
+                        regularization_strength
+                        if model_type == "asymmetric" else 0.0
+                    ),
+                    weight_decay=effective_weight_decay,
+                    loss=(
+                        float(training_summary.selected_loss.detach().cpu())
+                        if training_summary.selected_loss is not None else None
+                    ),
+                    extra_fields=extra_fields,
+                    **metrics,
+                )
+                logger.log(result)
     report(f"Results written to {args.out_filepath}")
     return logger.run_id
 

@@ -11,7 +11,11 @@ import utils
 import datasets
 import main
 import feature_reduction
-from experiment_logging import CSVResultLogger, ExperimentResult
+from experiment_logging import (
+    CSVResultLogger,
+    ExperimentResult,
+    make_configuration_id,
+)
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import link_prediction
@@ -1406,7 +1410,23 @@ class TestExperimentLogging(unittest.TestCase):
             self.assertEqual(rows[0]["regularization_type"], "none")
             self.assertEqual(float(rows[0]["regularization_strength"]), 0.0)
             self.assertEqual(float(rows[0]["weight_decay"]), 0.0)
+            self.assertEqual(rows[0]["normalize_features"], "True")
             self.assertEqual(json.loads(rows[0]["extra_fields"]), {"learning_rate": 0.01})
+
+    def test_configuration_id_is_stable_and_order_independent(self):
+        first = make_configuration_id({
+            "dataset": "Cora", "model_type": "asymmetric", "epochs": 100,
+        })
+        second = make_configuration_id({
+            "epochs": 100, "model_type": "asymmetric", "dataset": "Cora",
+        })
+        changed = make_configuration_id({
+            "dataset": "Cora", "model_type": "asymmetric", "epochs": 200,
+        })
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, changed)
+        self.assertEqual(len(first), 64)
 
     def test_result_validates_asymmetric_regularization_fields(self):
         result = self._result(
@@ -1543,6 +1563,8 @@ class TestExperimentLogging(unittest.TestCase):
             {"conv_layer_type": "unknown"},
             {"hidden_channels": 0},
             {"query_size": -1},
+            {"normalize_features": "yes"},
+            {"configuration_id": ""},
             {"train_ratio": 1.1},
             {"roc_auc": -0.1},
             {"loss": -1.0},
@@ -1752,6 +1774,86 @@ class TestMainPipeline(unittest.TestCase):
         data.dataset_name = "Toy"
         data.dataset_family = "Test"
         return data
+
+    def test_seed_resolution_supports_repeated_and_generated_seeds(self):
+        self.assertEqual(
+            main._resolve_seeds(SimpleNamespace(seed=[3, 7], num_seeds=None)),
+            (3, 7),
+        )
+        self.assertEqual(
+            main._resolve_seeds(SimpleNamespace(seed=None, num_seeds=3)),
+            (0, 1, 2),
+        )
+        self.assertEqual(
+            main._resolve_seeds(SimpleNamespace(seed=None, num_seeds=None)),
+            (42,),
+        )
+        with self.assertRaisesRegex(ValueError, "unique"):
+            main._resolve_seeds(SimpleNamespace(seed=[3, 3], num_seeds=None))
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            main._resolve_seeds(SimpleNamespace(seed=[3], num_seeds=2))
+
+    @patch("main.load_dataset")
+    def test_multi_seed_run_preserves_pairing_and_configuration_ids(
+        self, mock_load
+    ):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["symmetric", "feature-cosine"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=[1, 2],
+                num_seeds=None,
+                device="cpu",
+                normalize_features=False,
+            )
+            with patch(
+                "main.generate_comparable_splits",
+                wraps=utils.generate_comparable_splits,
+            ) as mock_splits:
+                run_id = main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+
+        self.assertEqual(mock_load.call_count, 1)
+        self.assertEqual(mock_splits.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["seed"] for call in mock_splits.call_args_list],
+            [1, 2],
+        )
+        query_partitions = [
+            (tuple(call.kwargs["validation_query"]), tuple(call.kwargs["query"]))
+            for call in mock_splits.call_args_list
+        ]
+        self.assertNotEqual(query_partitions[0], query_partitions[1])
+        self.assertEqual(len(rows), 8)
+        self.assertEqual({row["run_id"] for row in rows}, {run_id})
+        self.assertEqual({row["random_seed"] for row in rows}, {"1", "2"})
+        self.assertEqual({row["normalize_features"] for row in rows}, {"False"})
+
+        grouped = {}
+        for row in rows:
+            key = (row["model_type"], row["split_type"])
+            grouped.setdefault(key, []).append(row)
+        self.assertEqual(len(grouped), 4)
+        for repetitions in grouped.values():
+            self.assertEqual(len(repetitions), 2)
+            self.assertEqual(
+                len({row["configuration_id"] for row in repetitions}), 1
+            )
+            self.assertEqual(
+                {row["random_seed"] for row in repetitions}, {"1", "2"}
+            )
 
     @patch("main.load_dataset")
     def test_checkpoint_selection_restores_best_epoch_before_testing(
@@ -2051,7 +2153,11 @@ class TestMainPipeline(unittest.TestCase):
                 normalize_features=False,
             )
 
-            main.run_experiment(args)
+            with patch(
+                "main.calculate_reduced_features",
+                wraps=utils.calculate_reduced_features,
+            ) as mock_reduction:
+                main.run_experiment(args)
 
             with output.open(newline="", encoding="utf-8") as csv_file:
                 rows = list(csv.DictReader(csv_file))
@@ -2064,9 +2170,8 @@ class TestMainPipeline(unittest.TestCase):
         fit_mask[list(query_nodes.validation)] = False
         fit_mask[list(query_nodes.test)] = False
         expected_mean = graph.x[fit_mask].mean(dim=0).numpy()
-        self.assertTrue(
-            (graph.feature_reducer.mean_ == expected_mean).all()
-        )
+        reduced_graph = mock_reduction.call_args.args[0]
+        self.assertTrue((reduced_graph.feature_reducer.mean_ == expected_mean).all())
         for row in rows:
             self.assertEqual(
                 json.loads(row["extra_fields"])["reduction_method"], "pca"

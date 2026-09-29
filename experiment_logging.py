@@ -3,11 +3,23 @@
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+
+def make_configuration_id(configuration):
+    """Return a stable hash for a result-producing configuration."""
+    if not isinstance(configuration, dict):
+        raise TypeError("configuration must be a dictionary")
+    serialized = json.dumps(
+        configuration, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -36,6 +48,10 @@ class ExperimentResult:
         Number of training epochs.
     random_seed : int
         Random seed used by the experiment.
+    normalize_features : bool, optional
+        Whether input node features were normalized.
+    configuration_id : str, optional
+        Stable identifier shared by repetitions of the same configuration.
     training_time_seconds : float, optional
         Total wall-clock time spent training and selecting a checkpoint.
     epochs_trained : int, optional
@@ -70,6 +86,8 @@ class ExperimentResult:
     train_ratio: float
     epochs: int
     random_seed: int
+    normalize_features: bool = True
+    configuration_id: str | None = None
     training_time_seconds: float | None = None
     epochs_trained: int | None = None
     best_epoch: int | None = None
@@ -120,6 +138,13 @@ class ExperimentResult:
             raise ValueError("query_size must be a non-negative integer")
         if not isinstance(self.random_seed, int) or self.random_seed < 0:
             raise ValueError("random_seed must be a non-negative integer")
+        if not isinstance(self.normalize_features, bool):
+            raise ValueError("normalize_features must be a boolean")
+        if self.configuration_id is not None and (
+            not isinstance(self.configuration_id, str)
+            or not self.configuration_id.strip()
+        ):
+            raise ValueError("configuration_id must be a non-empty string")
         if self.training_time_seconds is not None and (
             not isinstance(self.training_time_seconds, (int, float))
             or isinstance(self.training_time_seconds, bool)
@@ -229,6 +254,7 @@ class CSVResultLogger:
 
     FIELDNAMES = [
         "run_id",
+        "configuration_id",
         "timestamp_utc",
         "dataset",
         "model_type",
@@ -240,6 +266,7 @@ class CSVResultLogger:
         "train_ratio",
         "epochs",
         "random_seed",
+        "normalize_features",
         "training_time_seconds",
         "epochs_trained",
         "best_epoch",
