@@ -53,6 +53,7 @@ python main.py citeseer out/results.csv \
   --learning-rate 0.01 \
   --weight-decay 0.0 \
   --query-size 10 \
+  --validation-query-size 10 \
   --train-ratio 0.8 \
   --epochs 100 \
   --seed 42 \
@@ -62,6 +63,11 @@ python main.py citeseer out/results.csv \
 Use `--query-fraction` instead of `--query-size` to select a fraction of
 eligible, non-isolated nodes. The two options are mutually exclusive; when
 both are omitted, the CLI selects 10 query nodes.
+
+Validation uses a disjoint set of cold-start query nodes. Its size defaults to
+the resolved test-query size; use `--validation-query-size` or
+`--validation-query-fraction` to override it. Both query populations are
+excluded from feature-reducer fitting and from the training topology.
 
 Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 

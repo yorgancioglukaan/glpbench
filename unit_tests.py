@@ -195,6 +195,46 @@ class TestInductiveSplit(unittest.TestCase):
 
         self.assertTrue(all(neighbors[node] - query_set for node in query))
 
+    def test_joint_query_selection_is_disjoint_reproducible_and_visible(self):
+        data = self._undirected_data(
+            10,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+             (6, 7), (7, 8), (8, 9), (9, 0), (0, 5), (2, 7)],
+        )
+        random.seed(1234)
+        state = random.getstate()
+
+        first = utils.select_query_node_sets(
+            data, query_size=2, validation_query_size=2, seed=17
+        )
+        second = utils.select_query_node_sets(
+            data, query_size=2, validation_query_size=2, seed=17
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(random.getstate(), state)
+        self.assertTrue(set(first.validation).isdisjoint(first.test))
+        self.assertEqual(list(first.validation), sorted(first.validation))
+        self.assertEqual(list(first.test), sorted(first.test))
+        query_union = set(first.validation) | set(first.test)
+        neighbors = utils._node_neighbors(data)
+        self.assertTrue(all(
+            neighbors[node] - query_union for node in query_union
+        ))
+
+    def test_joint_query_selection_rejects_overlap_and_infeasible_counts(self):
+        data = self._undirected_data(
+            5, [(0, 1), (1, 2), (2, 3), (3, 4)]
+        )
+        with self.assertRaisesRegex(ValueError, "must be disjoint"):
+            utils.select_query_node_sets(
+                data, test_query=[1], validation_query=[1], seed=2
+            )
+        with self.assertRaisesRegex(ValueError, "no feasible"):
+            utils.select_query_node_sets(
+                data, query_size=3, validation_query_size=2, seed=2
+            )
+
     def test_query_selection_validates_configuration_and_explicit_queries(self):
         data = self._undirected_data(
             5, [(0, 1), (1, 2), (2, 3), (3, 4)]
@@ -209,8 +249,10 @@ class TestInductiveSplit(unittest.TestCase):
             utils.inductive_split(data, query=[1, 1])
         with self.assertRaisesRegex(ValueError, "outside the graph"):
             utils.inductive_split(data, query=[5])
-        with self.assertRaisesRegex(ValueError, "outside the query set"):
-            utils.inductive_split(data, query=[0, 1])
+        with self.assertRaisesRegex(ValueError, "training-visible neighbor"):
+            utils.inductive_split(
+                data, query=[0, 1], validation_query=[3, 4]
+            )
         with self.assertRaisesRegex(ValueError, "positive integer"):
             utils.select_query_nodes(data, query_size=0, seed=1)
         with self.assertRaisesRegex(ValueError, "between 0 and 1"):
@@ -234,12 +276,20 @@ class TestInductiveSplit(unittest.TestCase):
             )
         )
 
-        expected_query = utils.select_query_nodes(
+        expected_queries = utils.select_query_node_sets(
             data, query_size=1, seed=11
         )
         for split in (train, val, test_transductive, test_inductive):
-            actual_query = split.query_mask.nonzero(as_tuple=False).view(-1).tolist()
-            self.assertEqual(actual_query, expected_query)
+            actual_test = (
+                split.test_query_mask.nonzero(as_tuple=False).view(-1).tolist()
+            )
+            actual_validation = (
+                split.validation_query_mask.nonzero(as_tuple=False).view(-1).tolist()
+            )
+            self.assertEqual(actual_test, list(expected_queries.test))
+            self.assertEqual(
+                actual_validation, list(expected_queries.validation)
+            )
         self.assertTrue(torch.equal(
             test_transductive.edge_index, test_inductive.edge_index
         ))
@@ -256,7 +306,7 @@ class TestInductiveSplit(unittest.TestCase):
         )
 
         splits = utils.generate_comparable_splits(
-            data, query=[7], seed=3, train_ratio=0.75
+            data, query=[7], validation_query=[6], seed=3, train_ratio=0.75
         )
         unpacked = tuple(splits)
 
@@ -273,7 +323,10 @@ class TestInductiveSplit(unittest.TestCase):
              (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7)],
         )
         splits = utils.generate_comparable_splits(
-            data, query=[7], seed=3, train_ratio=0.75
+            data, query=[7], validation_query=[6], seed=3, train_ratio=0.75
+        )
+        expected_validation_queries = torch.tensor(
+            [False, False, False, False, False, False, True, False]
         )
         expected_test_queries = torch.tensor(
             [False, False, False, False, False, False, False, True]
@@ -281,19 +334,25 @@ class TestInductiveSplit(unittest.TestCase):
 
         expected_roles = (
             (splits.train, "train", "transductive"),
-            (splits.validation, "validation", "transductive"),
+            (splits.validation, "validation", "semi-inductive"),
             (splits.test_transductive, "test", "transductive"),
             (splits.test_inductive, "test", "semi-inductive"),
         )
         for split, stage, setting in expected_roles:
-            self.assertFalse(bool(split.validation_query_mask.any()))
+            self.assertTrue(torch.equal(
+                split.validation_query_mask, expected_validation_queries
+            ))
             self.assertTrue(torch.equal(
                 split.test_query_mask, expected_test_queries
             ))
             self.assertTrue(torch.equal(
-                split.visible_node_mask, ~expected_test_queries
+                split.visible_node_mask,
+                ~(expected_validation_queries | expected_test_queries),
             ))
-            self.assertTrue(torch.equal(split.query_mask, split.test_query_mask))
+            self.assertTrue(torch.equal(
+                split.query_mask,
+                split.validation_query_mask | split.test_query_mask,
+            ))
             self.assertTrue(torch.equal(
                 split.seen_node_mask, split.visible_node_mask
             ))
@@ -309,6 +368,31 @@ class TestInductiveSplit(unittest.TestCase):
                 num_nodes=3,
                 device=torch.device("cpu"),
             )
+
+    def test_comparable_splits_are_reproducible_for_a_fixed_seed(self):
+        data = self._undirected_data(
+            10,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0),
+             (0, 3), (1, 4), (2, 5), (0, 6), (2, 7), (1, 8), (3, 9)],
+        )
+        kwargs = dict(
+            query=[8, 9], validation_query=[6, 7],
+            train_ratio=0.75, seed=21,
+        )
+
+        first = utils.generate_comparable_splits(data, **kwargs)
+        second = utils.generate_comparable_splits(data, **kwargs)
+
+        for first_split, second_split in zip(first, second):
+            for attribute in (
+                "edge_index", "edge_label_index", "edge_label",
+                "visible_node_mask", "validation_query_mask",
+                "test_query_mask",
+            ):
+                self.assertTrue(torch.equal(
+                    getattr(first_split, attribute),
+                    getattr(second_split, attribute),
+                ))
 
     def test_query_int(self):
         data = self._undirected_data(4, [(0, 1), (1, 2), (2, 3)])
@@ -338,14 +422,14 @@ class TestInductiveSplit(unittest.TestCase):
         #
         with self.assertRaises(TypeError):
             utils.inductive_split(data, [[2,3],[3,4]])
-        splits = utils.inductive_split(data, [5])
+        splits = utils.inductive_split(data, [5], validation_query=[4])
         self.assertIsInstance(splits, utils.InductiveSplits)
         train, val, test = splits
         self.assertIs(splits.train, train)
         self.assertIs(splits.validation, val)
         self.assertIs(splits.test_inductive, test)
         expected_query_mask = torch.tensor([
-            False, False, False, False, False, True
+            False, False, False, False, True, True
         ])
         for split, split_type in (
             (train, "train"), (val, "validation"), (test, "inductive")
@@ -356,13 +440,20 @@ class TestInductiveSplit(unittest.TestCase):
 
     def test_inductive_negatives_do_not_overlap_positive_edges(self):
         data = self._undirected_data(
-            7,
-            [(0, 5), (1, 6), (0, 1), (1, 2), (2, 3), (3, 4), (0, 4)],
+            10,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0),
+             (0, 3), (1, 4), (2, 5), (0, 6), (2, 7), (1, 8), (3, 9)],
         )
-        query_nodes = {5, 6}
+        validation_query_nodes = {6, 7}
+        test_query_nodes = {8, 9}
+        query_nodes = validation_query_nodes | test_query_nodes
 
         train, val, test_transductive, test_inductive = utils.generate_comparable_splits(
-            data, query=list(query_nodes), train_ratio=0.75
+            data,
+            query=list(test_query_nodes),
+            validation_query=list(validation_query_nodes),
+            train_ratio=0.75,
+            seed=9,
         )
 
         num_positive = int(test_inductive.edge_label.sum().item())
@@ -389,10 +480,6 @@ class TestInductiveSplit(unittest.TestCase):
         self.assertEqual(
             validation_negatives.size(1), int(val.edge_label.sum().item())
         )
-        self.assertTrue(all(
-            node not in query_nodes
-            for node in validation_negatives.flatten().tolist()
-        ))
         self.assertEqual(
             len({tuple(edge) for edge in validation_negatives.t().tolist()}),
             validation_negatives.size(1),
@@ -401,9 +488,9 @@ class TestInductiveSplit(unittest.TestCase):
             self.assertNotIn(tuple(sorted(edge)), positive_edges)
         for edge in transductive_negatives.t().tolist():
             self.assertNotIn(tuple(sorted(edge)), positive_edges)
-        expected_query_mask = torch.tensor([
-            False, False, False, False, False, True, True
-        ])
+        expected_query_mask = torch.tensor(
+            [False, False, False, False, False, False, True, True, True, True]
+        )
         for split, split_type in (
             (train, "train"),
             (val, "validation"),
@@ -413,12 +500,24 @@ class TestInductiveSplit(unittest.TestCase):
             self.assertEqual(split.split_type, split_type)
             self.assertTrue(torch.equal(split.query_mask, expected_query_mask))
             self.assertTrue(torch.equal(split.seen_node_mask, ~expected_query_mask))
+            self.assertTrue(all(
+                node not in query_nodes
+                for node in split.edge_index.flatten().tolist()
+            ))
         for source, target in negative_edges.t().tolist():
-            self.assertIn(target, query_nodes)
+            self.assertIn(target, test_query_nodes)
             self.assertNotIn(source, query_nodes)
             self.assertNotEqual(source, target)
             self.assertFalse(source in query_nodes and target in query_nodes)
             self.assertNotIn(tuple(sorted((source, target))), positive_edges)
+
+        validation_positives = val.edge_label_index[:, val.edge_label == 1]
+        for source, target in validation_positives.t().tolist():
+            self.assertNotIn(source, query_nodes)
+            self.assertIn(target, validation_query_nodes)
+        for source, target in validation_negatives.t().tolist():
+            self.assertNotIn(source, query_nodes)
+            self.assertIn(target, validation_query_nodes)
 
     def test_inductive_negative_sampling_raises_when_no_candidate_exists(self):
         data = self._undirected_data(
@@ -426,7 +525,9 @@ class TestInductiveSplit(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "no eligible non-neighbor"):
-            utils.inductive_split(data, query=[3])
+            utils._sample_inductive_negative_edges(
+                data, torch.tensor([[0], [3]]), query=[3], seed=1
+            )
 
 
 class TestSeenNegativeSampling(unittest.TestCase):
@@ -1726,11 +1827,12 @@ class TestMainPipeline(unittest.TestCase):
                 rows = list(csv.DictReader(csv_file))
         self.assertEqual(len(rows), 2)
         self.assertEqual({row["model_type"] for row in rows}, {"asymmetric"})
-        query = random.Random(args.seed).sample(
-            torch.unique(graph.edge_index).tolist(), args.query_size
+        query_nodes = utils.select_query_node_sets(
+            graph, query_size=args.query_size, seed=args.seed
         )
         fit_mask = torch.ones(graph.num_nodes, dtype=torch.bool)
-        fit_mask[query] = False
+        fit_mask[list(query_nodes.validation)] = False
+        fit_mask[list(query_nodes.test)] = False
         expected_mean = graph.x[fit_mask].mean(dim=0).numpy()
         self.assertTrue(
             (graph.feature_reducer.mean_ == expected_mean).all()
@@ -1738,6 +1840,9 @@ class TestMainPipeline(unittest.TestCase):
         for row in rows:
             self.assertEqual(
                 json.loads(row["extra_fields"])["reduction_method"], "pca"
+            )
+            self.assertEqual(
+                json.loads(row["extra_fields"])["validation_query_size"], 1
             )
 
     @patch(

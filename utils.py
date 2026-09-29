@@ -74,38 +74,48 @@ def _node_neighbors(data):
     return neighbors
 
 
-def _validate_query_nodes(data, query):
-    """Normalize and validate an explicitly supplied query set."""
+def _normalize_query_nodes(data, query, name="Query"):
+    """Normalize and range-check an explicitly supplied node set."""
     if isinstance(query, bool):
-        raise TypeError("Query must be an int or a 1D list or 1D torch tensor.")
+        raise TypeError(f"{name} must be an int or a 1D list or 1D torch tensor.")
     if isinstance(query, int):
         processed_query = [query]
-    elif isinstance(query, list):
+    elif isinstance(query, (list, tuple)):
         if not all(
             isinstance(item, int) and not isinstance(item, bool)
             for item in query
         ):
-            raise TypeError("Query must be an int or a 1D list or 1D torch tensor.")
-        processed_query = query
+            raise TypeError(
+                f"{name} must be an int or a 1D list or 1D torch tensor."
+            )
+        processed_query = list(query)
     elif isinstance(query, torch.Tensor):
         if query.ndim != 1:
-            raise TypeError("Query must be an int or a 1D list or 1D torch tensor.")
+            raise TypeError(
+                f"{name} must be an int or a 1D list or 1D torch tensor."
+            )
         if query.dtype not in (
             torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8
         ):
-            raise TypeError("Query tensor must use an integer dtype.")
+            raise TypeError(f"{name} tensor must use an integer dtype.")
         processed_query = query.detach().cpu().tolist()
     else:
-        raise TypeError("Query must be an int or a 1D list or 1D torch tensor.")
+        raise TypeError(f"{name} must be an int or a 1D list or 1D torch tensor.")
 
     if not processed_query:
-        raise ValueError("Query must contain at least one node ID.")
+        raise ValueError(f"{name} must contain at least one node ID.")
     if any(node < 0 for node in processed_query):
-        raise ValueError("Query node IDs must be non-negative integers.")
+        raise ValueError(f"{name} node IDs must be non-negative integers.")
     if any(node >= data.num_nodes for node in processed_query):
-        raise ValueError("Query includes node IDs outside the graph.")
+        raise ValueError(f"{name} includes node IDs outside the graph.")
     if len(set(processed_query)) != len(processed_query):
-        raise ValueError("Query contains duplicate node IDs.")
+        raise ValueError(f"{name} contains duplicate node IDs.")
+    return sorted(processed_query)
+
+
+def _validate_query_nodes(data, query):
+    """Normalize and validate an explicitly supplied query set."""
+    processed_query = _normalize_query_nodes(data, query)
 
     query_nodes = set(processed_query)
     neighbors = _node_neighbors(data)
@@ -119,6 +129,147 @@ def _validate_query_nodes(data, query):
             f"set; invalid node IDs: {sorted(invalid)}"
         )
     return sorted(processed_query)
+
+
+def _resolve_query_count(name, size, fraction, num_candidates):
+    """Resolve an exact query count from mutually exclusive size options."""
+    if (size is None) == (fraction is None):
+        raise ValueError(f"Specify exactly one of {name}_size or {name}_fraction.")
+    if size is not None:
+        if not isinstance(size, int) or isinstance(size, bool):
+            raise TypeError(f"{name}_size must be an integer.")
+        if size <= 0:
+            raise ValueError(f"{name}_size must be a positive integer.")
+        resolved_size = size
+    else:
+        if not isinstance(fraction, numbers.Real) or isinstance(fraction, bool):
+            raise TypeError(f"{name}_fraction must be a real number.")
+        if not 0 < fraction < 1:
+            raise ValueError(f"{name}_fraction must be between 0 and 1.")
+        resolved_size = max(
+            1, math.floor(fraction * num_candidates + 0.5)
+        )
+    return resolved_size
+
+
+def select_query_node_sets(
+    data, *, test_query=None, validation_query=None, query_size=None,
+    query_fraction=None, validation_query_size=None,
+    validation_query_fraction=None, seed=None, max_attempts=1000,
+):
+    """Select disjoint validation and test query-node sets.
+
+    Every selected query retains at least one neighbor outside the union of
+    both query sets. If validation sizing is omitted, its node count matches
+    the resolved test-query count.
+    """
+    if not isinstance(data, Data):
+        raise TypeError("data should be of type torch_geometric.data.Data")
+    if isinstance(data, HeteroData):
+        raise NotImplementedError(
+            "Query selection for heterogeneous data is not implemented."
+        )
+    if not is_undirected(data.edge_index):
+        raise NotImplementedError(
+            "Query selection for directed networks is not implemented."
+        )
+    if (
+        not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or max_attempts <= 0
+    ):
+        raise ValueError("max_attempts must be a positive integer.")
+
+    neighbors = _node_neighbors(data)
+    candidates = sorted(node for node, adjacent in enumerate(neighbors) if adjacent)
+    if not candidates:
+        raise ValueError(
+            "Cannot select query nodes from a graph without non-self edges."
+        )
+
+    if test_query is not None:
+        if query_size is not None or query_fraction is not None:
+            raise ValueError(
+                "Explicit test queries cannot be combined with query_size or "
+                "query_fraction."
+            )
+        fixed_test = _normalize_query_nodes(data, test_query, "Test query")
+        test_count = len(fixed_test)
+    else:
+        fixed_test = None
+        test_count = _resolve_query_count(
+            "query", query_size, query_fraction, len(candidates)
+        )
+
+    if validation_query is not None:
+        if (
+            validation_query_size is not None
+            or validation_query_fraction is not None
+        ):
+            raise ValueError(
+                "Explicit validation queries cannot be combined with "
+                "validation query sizing."
+            )
+        fixed_validation = _normalize_query_nodes(
+            data, validation_query, "Validation query"
+        )
+        validation_count = len(fixed_validation)
+    else:
+        fixed_validation = None
+        if (
+            validation_query_size is None
+            and validation_query_fraction is None
+        ):
+            validation_count = test_count
+        else:
+            validation_count = _resolve_query_count(
+                "validation_query",
+                validation_query_size,
+                validation_query_fraction,
+                len(candidates),
+            )
+
+    fixed_test_set = set(fixed_test or ())
+    fixed_validation_set = set(fixed_validation or ())
+    overlap = fixed_test_set & fixed_validation_set
+    if overlap:
+        raise ValueError(
+            "Validation and test query nodes must be disjoint; overlapping "
+            f"node IDs: {sorted(overlap)}"
+        )
+    total_count = test_count + validation_count
+    if total_count >= data.num_nodes or total_count > len(candidates):
+        raise ValueError(
+            "Requested validation and test query counts leave no feasible "
+            "training-visible node partition."
+        )
+
+    rng = random.Random(seed)
+    for _ in range(max_attempts):
+        available = [
+            node for node in candidates
+            if node not in fixed_test_set and node not in fixed_validation_set
+        ]
+        missing_test = test_count - len(fixed_test_set)
+        missing_validation = validation_count - len(fixed_validation_set)
+        if missing_test + missing_validation > len(available):
+            break
+        sampled = rng.sample(available, missing_test + missing_validation)
+        test_nodes = sorted(fixed_test_set | set(sampled[:missing_test]))
+        validation_nodes = sorted(
+            fixed_validation_set | set(sampled[missing_test:])
+        )
+        query_union = set(test_nodes) | set(validation_nodes)
+        if all(neighbors[node].difference(query_union) for node in query_union):
+            return QueryNodeSets(
+                validation=tuple(validation_nodes), test=tuple(test_nodes)
+            )
+
+    raise ValueError(
+        "Could not select disjoint validation and test query nodes for which "
+        f"every query retains a training-visible neighbor after {max_attempts} "
+        "attempts."
+    )
 
 
 def select_query_nodes(
@@ -239,7 +390,35 @@ def _resolve_query_nodes(
     )
 
 
-def _sample_inductive_negative_edges(data, positive_edges, query):
+def _resolve_query_node_sets(
+    data, query, validation_query, *, query_size=None, query_fraction=None,
+    validation_query_size=None, validation_query_fraction=None, seed=None,
+    test_ratio=None,
+):
+    """Resolve disjoint validation and test query sets."""
+    if test_ratio is not None:
+        if query_fraction is not None:
+            raise ValueError("Specify only one of test_ratio and query_fraction.")
+        warnings.warn(
+            "test_ratio is deprecated; use query_fraction instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        query_fraction = test_ratio
+
+    return select_query_node_sets(
+        data,
+        test_query=query,
+        validation_query=validation_query,
+        query_size=query_size,
+        query_fraction=query_fraction,
+        validation_query_size=validation_query_size,
+        validation_query_fraction=validation_query_fraction,
+        seed=seed,
+    )
+
+
+def _sample_inductive_negative_edges(data, positive_edges, query, seed=None):
     """Sample non-edges targeting the positive edges' query nodes.
 
     Parameters
@@ -250,6 +429,8 @@ def _sample_inductive_negative_edges(data, positive_edges, query):
         Positive edges with shape ``[2, num_edges]``.
     query : sequence of int
         Query node IDs excluded from candidate sources.
+    seed : int, optional
+        Local random seed.
 
     Returns
     -------
@@ -266,21 +447,29 @@ def _sample_inductive_negative_edges(data, positive_edges, query):
         neighbors[src].add(tgt)
         neighbors[tgt].add(src)
 
-    negative_sources = []
+    rng = random.Random(seed)
+    sources_by_target = {}
     negative_targets = positive_edges[1].detach().cpu().tolist()
-    for target in negative_targets:
+    for target in set(negative_targets):
+        required = negative_targets.count(target)
         candidates = [
             node for node in range(data.num_nodes)
             if node not in query_nodes
             and node != target
             and node not in neighbors[target]
         ]
-        if not candidates:
+        if len(candidates) < required:
             raise ValueError(
                 f"Cannot sample a negative edge for query node {target}: "
-                "no eligible non-neighbor nodes are available."
+                f"{required} unique negatives are required but only "
+                f"{len(candidates)} eligible non-neighbors are available; "
+                "no eligible non-neighbor can be reused."
             )
-        negative_sources.append(random.choice(candidates))
+        sources_by_target[target] = iter(rng.sample(candidates, required))
+
+    negative_sources = [
+        next(sources_by_target[target]) for target in negative_targets
+    ]
 
     return torch.tensor(
         [negative_sources, negative_targets],
@@ -421,11 +610,69 @@ def _set_negative_edges(split, negative_edges):
     ])
 
 
+def _visible_node_mask(data, query_nodes):
+    """Return the mask of nodes visible during model fitting."""
+    mask = torch.ones(
+        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
+    )
+    mask[list(query_nodes.validation)] = False
+    mask[list(query_nodes.test)] = False
+    return mask
+
+
+def _query_positive_edges(data, query, visible_node_mask):
+    """Return original edges oriented from visible nodes to query nodes."""
+    query_mask = torch.zeros_like(visible_node_mask)
+    query_mask[list(query)] = True
+    source, target = data.edge_index
+    return data.edge_index[
+        :, visible_node_mask[source] & query_mask[target]
+    ]
+
+
+def _semi_inductive_split_data(
+    data, message_passing_edges, positive_edges, all_queries, seed
+):
+    """Build a labeled seen-to-query evaluation split."""
+    split = data.clone()
+    split.edge_index = message_passing_edges
+    split.edge_label_index = positive_edges
+    split.edge_label = torch.ones(
+        positive_edges.size(1), device=data.edge_index.device
+    )
+    negative_edges = _sample_inductive_negative_edges(
+        data, positive_edges, all_queries, seed=seed
+    )
+    _set_negative_edges(split, negative_edges)
+    return split
+
+
+def _apply_random_link_split(data, num_val, num_test, seed):
+    """Apply ``RandomLinkSplit`` without modifying global RNG state."""
+    splitter = T.RandomLinkSplit(
+        num_val=num_val,
+        num_test=num_test,
+        add_negative_train_samples=False,
+        is_undirected=True,
+        neg_sampling_ratio=0.0,
+    )
+    if seed is None:
+        return splitter(data)
+
+    devices = []
+    if data.edge_index.device.type == "cuda":
+        devices = [data.edge_index.device.index]
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(seed)
+        return splitter(data)
+
+
 def generate_comparable_splits(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
-    query_fraction=None, seed=None, **kwargs
+    query_fraction=None, validation_query=None, validation_query_size=None,
+    validation_query_fraction=None, seed=None, **kwargs
 ):
-    """Generate comparable inductive and transductive splits.
+    """Generate training, semi-inductive validation, and paired test splits.
 
     Parameters
     ----------
@@ -441,8 +688,15 @@ def generate_comparable_splits(
         Exact number of automatically selected query nodes.
     query_fraction : float, optional
         Fraction of eligible nodes automatically selected as queries.
+    validation_query : int or sequence of int or torch.Tensor, optional
+        Explicit validation query-node IDs.
+    validation_query_size : int, optional
+        Number of automatically selected validation queries. Defaults to the
+        resolved test-query count.
+    validation_query_fraction : float, optional
+        Fraction of eligible nodes selected as validation queries.
     seed : int, optional
-        Random seed used for automatic query selection.
+        Random seed used for query selection and edge sampling.
         
     Returns
     -------
@@ -451,8 +705,6 @@ def generate_comparable_splits(
         The result also supports tuple unpacking for backward compatibility.
     """    
 
-#check if parameters are valid
-
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
     if isinstance(data, HeteroData):
@@ -460,82 +712,65 @@ def generate_comparable_splits(
     if not is_undirected(data.edge_index):
         raise NotImplementedError("Split for directed networks is not implemented yet.")
 
-    query = _resolve_query_nodes(
+    query_nodes = _resolve_query_node_sets(
         data,
         query,
+        validation_query,
         query_size=query_size,
         query_fraction=query_fraction,
+        validation_query_size=validation_query_size,
+        validation_query_fraction=validation_query_fraction,
         seed=seed,
         test_ratio=test_ratio,
     )
-    query_tensor = torch.tensor(
-        query, dtype=data.edge_index.dtype, device=data.edge_index.device
+    visible_node_mask = _visible_node_mask(data, query_nodes)
+    source, target = data.edge_index
+    visible_edges = data.edge_index[
+        :, visible_node_mask[source] & visible_node_mask[target]
+    ]
+    validation_positive_edges = _query_positive_edges(
+        data, query_nodes.validation, visible_node_mask
     )
-
-    #get edges incident on queries
-   
-    src = data.edge_index[0,:]
-    tgt = data.edge_index[1,:]
-    src_mask = torch.isin(src, query_tensor)
-    tgt_mask = torch.isin(tgt, query_tensor)
-    mask = src_mask | tgt_mask
-    test_edges = data.edge_index[:,mask]
-    other_edges = data.edge_index[:, ~mask]
-
-    test_inductive = data.clone()
-    directed_test_edges = test_edges[:, ~torch.isin(test_edges[0, :], query_tensor)]
-    test_inductive.edge_index = other_edges
-    test_inductive.edge_label_index = directed_test_edges
-    n_test_edges = directed_test_edges.size()[1]
-    test_inductive.edge_label = torch.ones(n_test_edges)
-
-    #negative sampling for test edges
-
-    negative_edges = _sample_inductive_negative_edges(data, directed_test_edges, query)
-    negative_labels = torch.zeros(n_test_edges)
-    test_inductive.edge_label = torch.cat([test_inductive.edge_label, negative_labels],dim=0)
-    test_inductive.edge_label_index = torch.cat([test_inductive.edge_label_index, negative_edges], dim=1)
-
-    # test_transductive, training and validation splits
+    test_positive_edges = _query_positive_edges(
+        data, query_nodes.test, visible_node_mask
+    )
 
     temp_data = data.clone()
-    temp_data.edge_index = other_edges
-
-    link_splitter = T.RandomLinkSplit(
+    temp_data.edge_index = visible_edges
+    train, _, test_transductive = _apply_random_link_split(
+        temp_data,
         num_val=1.0 - train_ratio,
-        num_test=n_test_edges,
-        add_negative_train_samples=False,
-        is_undirected=True,
-        neg_sampling_ratio=0.0,
-    )
-    
-    train, val, test_transductive = link_splitter(temp_data)
-    seen_node_mask = torch.ones(
-        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
-    )
-    seen_node_mask[query] = False
-    validation_negative_edges = _sample_seen_negative_edges(
-        data,
-        seen_node_mask,
-        num_samples=val.edge_label_index.size(1),
+        num_test=test_positive_edges.size(1),
         seed=seed,
     )
-    _set_negative_edges(val, validation_negative_edges)
+
+    validation = _semi_inductive_split_data(
+        data,
+        train.edge_index,
+        validation_positive_edges,
+        tuple(query_nodes.validation) + tuple(query_nodes.test),
+        seed=None if seed is None else seed + 1,
+    )
+    test_inductive = _semi_inductive_split_data(
+        data,
+        test_transductive.edge_index,
+        test_positive_edges,
+        tuple(query_nodes.validation) + tuple(query_nodes.test),
+        seed=None if seed is None else seed + 2,
+    )
 
     transductive_negative_edges = _sample_seen_negative_edges(
         data,
-        seen_node_mask,
+        visible_node_mask,
         num_samples=test_transductive.edge_label_index.size(1),
-        seed=None if seed is None else seed + 1,
+        seed=None if seed is None else seed + 3,
     )
     _set_negative_edges(test_transductive, transductive_negative_edges)
-    test_inductive.edge_index = test_transductive.edge_index
 
-    query_nodes = QueryNodeSets(validation=(), test=tuple(query))
     _attach_split_metadata(
         (
             ("train", "train", "transductive", train),
-            ("validation", "validation", "transductive", val),
+            ("validation", "validation", "semi-inductive", validation),
             ("transductive", "test", "transductive", test_transductive),
             ("inductive", "test", "semi-inductive", test_inductive),
         ),
@@ -544,15 +779,18 @@ def generate_comparable_splits(
         data.edge_index.device,
     )
 
-    return ComparableSplits(train, val, test_transductive, test_inductive)
+    return ComparableSplits(
+        train, validation, test_transductive, test_inductive
+    )
 
 
 
 def inductive_split(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
-    query_fraction=None, seed=None, **kwargs
+    query_fraction=None, validation_query=None, validation_query_size=None,
+    validation_query_fraction=None, seed=None, **kwargs
 ):
-    """Hold out edges incident to cold-start query nodes.
+    """Generate training and semi-inductive validation and test splits.
 
     Parameters
     ----------
@@ -568,8 +806,15 @@ def inductive_split(
         Exact number of automatically selected query nodes.
     query_fraction : float, optional
         Fraction of eligible nodes automatically selected as queries.
+    validation_query : int or sequence of int or torch.Tensor, optional
+        Explicit validation query-node IDs.
+    validation_query_size : int, optional
+        Number of automatically selected validation queries. Defaults to the
+        resolved test-query count.
+    validation_query_fraction : float, optional
+        Fraction of eligible nodes selected as validation queries.
     seed : int, optional
-        Random seed used for automatic query selection.
+        Random seed used for query selection and edge sampling.
         
     Returns
     -------
@@ -578,8 +823,6 @@ def inductive_split(
         supports tuple unpacking for backward compatibility.
     """
 
-    #check if parameters are valid
-
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
     if isinstance(data, HeteroData):
@@ -587,74 +830,58 @@ def inductive_split(
     if not is_undirected(data.edge_index):
         raise NotImplementedError("Split for directed networks is not implemented yet.")
 
-    query = _resolve_query_nodes(
+    query_nodes = _resolve_query_node_sets(
         data,
         query,
+        validation_query,
         query_size=query_size,
         query_fraction=query_fraction,
+        validation_query_size=validation_query_size,
+        validation_query_fraction=validation_query_fraction,
         seed=seed,
         test_ratio=test_ratio,
     )
-    query_tensor = torch.tensor(
-        query, dtype=data.edge_index.dtype, device=data.edge_index.device
+    visible_node_mask = _visible_node_mask(data, query_nodes)
+    source, target = data.edge_index
+    visible_edges = data.edge_index[
+        :, visible_node_mask[source] & visible_node_mask[target]
+    ]
+    validation_positive_edges = _query_positive_edges(
+        data, query_nodes.validation, visible_node_mask
+    )
+    test_positive_edges = _query_positive_edges(
+        data, query_nodes.test, visible_node_mask
     )
 
-
-    #get edges incident on queries
-   
-    src = data.edge_index[0,:]
-    tgt = data.edge_index[1,:]
-    src_mask = torch.isin(src, query_tensor)
-    tgt_mask = torch.isin(tgt, query_tensor)
-    mask = src_mask | tgt_mask
-    test_edges = data.edge_index[:,mask]
-    other_edges = data.edge_index[:, ~mask]
-
-    # split train/val edges
-    link_splitter = T.RandomLinkSplit(
+    temp_data = data.clone()
+    temp_data.edge_index = visible_edges
+    train, _, _ = _apply_random_link_split(
+        temp_data,
         num_val=1.0 - train_ratio,
         num_test=0,
-        add_negative_train_samples=False,
-        is_undirected=True,
-        neg_sampling_ratio=0.0,
-    )
-    temp_data = data.clone()
-    test = data.clone()
-    temp_data.edge_index = other_edges
-
-
-    train, val, _ = link_splitter(temp_data)
-
-    seen_node_mask = torch.ones(
-        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
-    )
-    seen_node_mask[query] = False
-    validation_negative_edges = _sample_seen_negative_edges(
-        data,
-        seen_node_mask,
-        num_samples=val.edge_label_index.size(1),
         seed=seed,
     )
-    _set_negative_edges(val, validation_negative_edges)
 
-    directed_test_edges = test_edges[:, ~torch.isin(test_edges[0, :], query_tensor)]
-    test.edge_index = other_edges
-    test.edge_label_index = directed_test_edges
-    n_test_edges = directed_test_edges.size()[1]
-    test.edge_label = torch.ones(n_test_edges)
+    all_queries = tuple(query_nodes.validation) + tuple(query_nodes.test)
+    validation = _semi_inductive_split_data(
+        data,
+        train.edge_index,
+        validation_positive_edges,
+        all_queries,
+        seed=None if seed is None else seed + 1,
+    )
+    test = _semi_inductive_split_data(
+        data,
+        visible_edges,
+        test_positive_edges,
+        all_queries,
+        seed=None if seed is None else seed + 2,
+    )
 
-    #negative sampling for test edges
-
-    negative_edges = _sample_inductive_negative_edges(data, directed_test_edges, query)
-    negative_labels = torch.zeros(n_test_edges)
-    test.edge_label = torch.cat([test.edge_label, negative_labels],dim=0)
-    test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
-
-    query_nodes = QueryNodeSets(validation=(), test=tuple(query))
     _attach_split_metadata(
         (
             ("train", "train", "transductive", train),
-            ("validation", "validation", "transductive", val),
+            ("validation", "validation", "semi-inductive", validation),
             ("inductive", "test", "semi-inductive", test),
         ),
         query_nodes,
@@ -662,7 +889,7 @@ def inductive_split(
         data.edge_index.device,
     )
 
-    return InductiveSplits(train, val, test)
+    return InductiveSplits(train, validation, test)
 
 def calculate_reduced_features(
     data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,

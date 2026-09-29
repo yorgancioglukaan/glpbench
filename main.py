@@ -25,7 +25,7 @@ from link_prediction import (
 from utils import (
     calculate_reduced_features,
     generate_comparable_splits,
-    select_query_nodes,
+    select_query_node_sets,
 )
 
 
@@ -110,6 +110,13 @@ def parse_args():
     query_group = parser.add_mutually_exclusive_group()
     query_group.add_argument("--query-size", type=int, default=None)
     query_group.add_argument("--query-fraction", type=float, default=None)
+    validation_query_group = parser.add_mutually_exclusive_group()
+    validation_query_group.add_argument(
+        "--validation-query-size", type=int, default=None
+    )
+    validation_query_group.add_argument(
+        "--validation-query-fraction", type=float, default=None
+    )
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
@@ -127,6 +134,10 @@ def run_experiment(args):
     """Run one training experiment and log both test settings."""
     query_size = getattr(args, "query_size", None)
     query_fraction = getattr(args, "query_fraction", None)
+    validation_query_size = getattr(args, "validation_query_size", None)
+    validation_query_fraction = getattr(
+        args, "validation_query_fraction", None
+    )
     if query_size is None and query_fraction is None:
         query_size = 10
     if args.epochs <= 0:
@@ -195,10 +206,12 @@ def run_experiment(args):
         normalize_features=args.normalize_features,
         device="cpu",
     )
-    query = select_query_nodes(
+    query_nodes = select_query_node_sets(
         data,
         query_size=query_size,
         query_fraction=query_fraction,
+        validation_query_size=validation_query_size,
+        validation_query_fraction=validation_query_fraction,
         seed=args.seed,
     )
 
@@ -206,7 +219,8 @@ def run_experiment(args):
     if "asymmetric" in model_types:
         report("Calculating reduced node features...")
         fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
-        fit_mask[query] = False
+        fit_mask[list(query_nodes.validation)] = False
+        fit_mask[list(query_nodes.test)] = False
         num_fit_nodes = int(fit_mask.sum())
         if args.out_channels > min(num_fit_nodes, data.num_features):
             raise ValueError(
@@ -223,7 +237,11 @@ def run_experiment(args):
 
     report("Generating comparable graph splits...")
     splits = generate_comparable_splits(
-        data, query=query, train_ratio=args.train_ratio, seed=args.seed
+        data,
+        query=query_nodes.test,
+        validation_query=query_nodes.validation,
+        train_ratio=args.train_ratio,
+        seed=args.seed,
     )
     train = splits.train.to(device)
     test_transductive = splits.test_transductive.to(device)
@@ -315,7 +333,10 @@ def run_experiment(args):
         ):
             probabilities = predictor.test(test_data)
             metrics = calculate_metrics(test_data.edge_label, probabilities)
-            extra_fields = {"reduction_method": reduction_method}
+            extra_fields = {
+                "reduction_method": reduction_method,
+                "validation_query_size": len(query_nodes.validation),
+            }
             if model_type == "mlp":
                 extra_fields.update({
                     "decoder_hidden_channels": decoder_hidden_channels,
@@ -337,7 +358,7 @@ def run_experiment(args):
                 ),
                 hidden_channels=args.hidden_channels,
                 out_channels=args.out_channels,
-                query_size=len(query),
+                query_size=len(query_nodes.test),
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
