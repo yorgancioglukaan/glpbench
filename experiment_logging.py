@@ -37,7 +37,21 @@ class ExperimentResult:
     random_seed : int
         Random seed used by the experiment.
     training_time_seconds : float, optional
-        Total wall-clock time spent in the training epoch loop.
+        Total wall-clock time spent training and selecting a checkpoint.
+    epochs_trained : int, optional
+        Number of completed training epochs.
+    best_epoch : int, optional
+        One-based epoch of the selected validation checkpoint.
+    selection_metric : str, optional
+        Validation metric used for checkpoint selection.
+    best_validation_score : float, optional
+        Best observed validation score.
+    early_stopping_patience : int, optional
+        Allowed consecutive non-improving epochs, or ``None`` when disabled.
+    early_stopping_min_delta : float, optional
+        Minimum validation-score improvement required when stopping is enabled.
+    stopped_early : bool, optional
+        Whether training ended before the maximum epoch budget.
     regularization_type : str, optional
         AGAE regularization method.
     regularization_strength : float, optional
@@ -57,6 +71,13 @@ class ExperimentResult:
     epochs: int
     random_seed: int
     training_time_seconds: float | None = None
+    epochs_trained: int | None = None
+    best_epoch: int | None = None
+    selection_metric: str | None = None
+    best_validation_score: float | None = None
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
+    stopped_early: bool = False
     regularization_type: str = "none"
     regularization_strength: float = 0.0
     weight_decay: float = 0.0
@@ -108,6 +129,70 @@ class ExperimentResult:
             raise ValueError(
                 "training_time_seconds must be a finite non-negative number"
             )
+        if self.epochs_trained is not None and (
+            not isinstance(self.epochs_trained, int)
+            or isinstance(self.epochs_trained, bool)
+            or not 0 <= self.epochs_trained <= self.epochs
+        ):
+            raise ValueError("epochs_trained must be between zero and epochs")
+        if self.best_epoch is not None and (
+            not isinstance(self.best_epoch, int)
+            or isinstance(self.best_epoch, bool)
+            or self.epochs_trained is None
+            or not 1 <= self.best_epoch <= self.epochs_trained
+        ):
+            raise ValueError("best_epoch must be within the trained epochs")
+        if self.selection_metric not in {None, "roc_auc", "average_precision"}:
+            raise ValueError("selection_metric is not supported")
+        if self.best_validation_score is not None and (
+            not isinstance(self.best_validation_score, (int, float))
+            or isinstance(self.best_validation_score, bool)
+            or not math.isfinite(self.best_validation_score)
+            or not 0 <= self.best_validation_score <= 1
+        ):
+            raise ValueError(
+                "best_validation_score must be a finite value between zero and one"
+            )
+        selection_values = (
+            self.best_epoch,
+            self.selection_metric,
+            self.best_validation_score,
+        )
+        if any(value is None for value in selection_values) and any(
+            value is not None for value in selection_values
+        ):
+            raise ValueError(
+                "best_epoch, selection_metric, and best_validation_score must "
+                "be provided together"
+            )
+        if self.early_stopping_patience is not None and (
+            not isinstance(self.early_stopping_patience, int)
+            or isinstance(self.early_stopping_patience, bool)
+            or self.early_stopping_patience <= 0
+        ):
+            raise ValueError(
+                "early_stopping_patience must be a positive integer"
+            )
+        if (
+            not isinstance(self.early_stopping_min_delta, (int, float))
+            or isinstance(self.early_stopping_min_delta, bool)
+            or not math.isfinite(self.early_stopping_min_delta)
+            or self.early_stopping_min_delta < 0
+        ):
+            raise ValueError(
+                "early_stopping_min_delta must be a finite non-negative number"
+            )
+        if not isinstance(self.stopped_early, bool):
+            raise ValueError("stopped_early must be a boolean")
+        if self.stopped_early and (
+            self.early_stopping_patience is None
+            or self.epochs_trained is None
+            or self.epochs_trained >= self.epochs
+        ):
+            raise ValueError(
+                "stopped_early requires enabled early stopping and fewer "
+                "trained epochs than the maximum"
+            )
 
         if not isinstance(self.train_ratio, (int, float)) or not 0 <= self.train_ratio <= 1:
             raise ValueError("train_ratio must be between 0 and 1")
@@ -156,6 +241,13 @@ class CSVResultLogger:
         "epochs",
         "random_seed",
         "training_time_seconds",
+        "epochs_trained",
+        "best_epoch",
+        "selection_metric",
+        "best_validation_score",
+        "early_stopping_patience",
+        "early_stopping_min_delta",
+        "stopped_early",
         "regularization_type",
         "regularization_strength",
         "weight_decay",

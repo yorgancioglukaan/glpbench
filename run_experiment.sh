@@ -19,6 +19,9 @@ python "${script_dir}/main.py" \
     --query-size 50 \
     --train-ratio 0.8 \
     --epochs 100 \
+    --selection-metric roc_auc \
+    --early-stopping-patience 20 \
+    --early-stopping-min-delta 0.001 \
     --seed 42 \
     --device cpu \
     --normalize-features \

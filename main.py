@@ -1,8 +1,10 @@
 import torch
 from datasets import load_dataset
 import argparse
+import copy
 import random
 import time
+from dataclasses import dataclass
 
 from sklearn.metrics import (
     accuracy_score,
@@ -55,6 +57,130 @@ def _synchronize_device(device):
         and hasattr(torch.mps, "synchronize")
     ):
         torch.mps.synchronize()
+
+
+@dataclass(frozen=True)
+class TrainingSummary:
+    """Store fixed-budget training and checkpoint-selection outcomes."""
+
+    selected_loss: torch.Tensor | None
+    training_time_seconds: float | None
+    epochs_trained: int
+    best_epoch: int | None
+    selection_metric: str | None
+    best_validation_score: float | None
+    early_stopping_patience: int | None
+    early_stopping_min_delta: float
+    stopped_early: bool
+
+
+def _train_with_checkpoint_selection(
+    predictor, train_data, validation_data, *, epochs, seed,
+    selection_metric, device, early_stopping_patience=None,
+    early_stopping_min_delta=0.0, verbose=False, progress_label="model",
+):
+    """Train with validation checkpointing and optional early stopping."""
+    if selection_metric not in {"roc_auc", "average_precision"}:
+        raise ValueError("unsupported checkpoint selection metric")
+    if early_stopping_patience is not None and (
+        not isinstance(early_stopping_patience, int)
+        or isinstance(early_stopping_patience, bool)
+        or early_stopping_patience <= 0
+    ):
+        raise ValueError("early_stopping_patience must be a positive integer")
+    if (
+        not isinstance(early_stopping_min_delta, (int, float))
+        or isinstance(early_stopping_min_delta, bool)
+        or early_stopping_min_delta < 0
+    ):
+        raise ValueError("early_stopping_min_delta must be non-negative")
+    if not predictor.trainable:
+        return TrainingSummary(
+            None, None, 0, None, None, None,
+            early_stopping_patience, float(early_stopping_min_delta), False,
+        )
+
+    epoch_progress = tqdm(
+        range(epochs),
+        desc=f"{progress_label} epochs",
+        unit="epoch",
+        disable=not verbose,
+        leave=False,
+        position=1,
+    )
+    best_state = None
+    best_epoch = None
+    best_score = None
+    stopping_reference_score = None
+    selected_loss = None
+    epochs_without_improvement = 0
+    epochs_trained = 0
+    stopped_early = False
+
+    _synchronize_device(device)
+    training_start = time.perf_counter()
+    for epoch in epoch_progress:
+        negative_edges = sample_training_negative_edges(
+            train_data, seed=seed + epoch
+        )
+        loss = predictor.train(negative_edge_index=negative_edges)
+        validation_probabilities = predictor.test(validation_data)
+        validation_metrics = calculate_metrics(
+            validation_data.edge_label, validation_probabilities
+        )
+        validation_score = float(validation_metrics[selection_metric])
+        if best_score is None or validation_score > best_score:
+            best_score = validation_score
+            best_epoch = epoch + 1
+            best_state = copy.deepcopy(predictor.model.state_dict())
+            selected_loss = loss.detach().clone()
+
+        significant_improvement = (
+            stopping_reference_score is None
+            or validation_score
+            > stopping_reference_score + float(early_stopping_min_delta)
+        )
+        if significant_improvement:
+            stopping_reference_score = validation_score
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+        epochs_trained = epoch + 1
+
+        if verbose:
+            component_values = {
+                name: f"{value.detach().item():.4f}"
+                for name, value in predictor.last_loss_components.items()
+            }
+            component_values.update({
+                "loss": f"{loss.detach().item():.4f}",
+                f"val_{selection_metric}": f"{validation_score:.4f}",
+            })
+            epoch_progress.set_postfix(component_values)
+
+        if (
+            early_stopping_patience is not None
+            and epochs_without_improvement >= early_stopping_patience
+        ):
+            stopped_early = epochs_trained < epochs
+            break
+
+    if best_state is None:
+        raise RuntimeError("training did not produce a validation checkpoint")
+    predictor.model.load_state_dict(best_state)
+    _synchronize_device(device)
+    training_time_seconds = time.perf_counter() - training_start
+    return TrainingSummary(
+        selected_loss=selected_loss,
+        training_time_seconds=training_time_seconds,
+        epochs_trained=epochs_trained,
+        best_epoch=best_epoch,
+        selection_metric=selection_metric,
+        best_validation_score=best_score,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=float(early_stopping_min_delta),
+        stopped_early=stopped_early,
+    )
 
 
 def parse_args():
@@ -119,6 +245,24 @@ def parse_args():
     )
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--selection-metric",
+        choices=("roc_auc", "average_precision"),
+        default="roc_auc",
+        help="semi-inductive validation metric used to select the checkpoint",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="stop after this many non-improving epochs; disabled when omitted",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="minimum validation improvement when early stopping is enabled",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
@@ -244,6 +388,7 @@ def run_experiment(args):
         seed=args.seed,
     )
     train = splits.train.to(device)
+    validation = splits.validation.to(device)
     test_transductive = splits.test_transductive.to(device)
     test_inductive = splits.test_inductive.to(device)
 
@@ -251,6 +396,25 @@ def run_experiment(args):
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
     decoder_dropout = getattr(args, "decoder_dropout", 0.0)
     kl_weight = getattr(args, "kl_weight", 1.0)
+    selection_metric = getattr(args, "selection_metric", "roc_auc")
+    early_stopping_patience = getattr(
+        args, "early_stopping_patience", None
+    )
+    early_stopping_min_delta = getattr(
+        args, "early_stopping_min_delta", 0.0
+    )
+    if early_stopping_patience is not None and (
+        not isinstance(early_stopping_patience, int)
+        or isinstance(early_stopping_patience, bool)
+        or early_stopping_patience <= 0
+    ):
+        raise ValueError("early_stopping_patience must be a positive integer")
+    if (
+        not isinstance(early_stopping_min_delta, (int, float))
+        or isinstance(early_stopping_min_delta, bool)
+        or early_stopping_min_delta < 0
+    ):
+        raise ValueError("early_stopping_min_delta must be non-negative")
     deal_config = {
         "theta_ss": getattr(args, "deal_theta_ss", 1.0),
         "theta_aa": getattr(args, "deal_theta_aa", 1.0),
@@ -293,38 +457,23 @@ def run_experiment(args):
             })
         predictor = LinkPrediction(train, **predictor_kwargs)
         predictor.model = predictor.model.to(device)
-        last_loss = None
-        training_time_seconds = None
         if predictor.trainable:
             report(f"Training {progress_label} model...")
-            epoch_progress = tqdm(
-                range(args.epochs),
-                desc=f"{progress_label} epochs",
-                unit="epoch",
-                disable=not verbose,
-                leave=False,
-                position=1,
-            )
-            _synchronize_device(device)
-            training_start = time.perf_counter()
-            for epoch in epoch_progress:
-                negative_edges = sample_training_negative_edges(
-                    train, seed=args.seed + epoch
-                )
-                last_loss = predictor.train(
-                    negative_edge_index=negative_edges
-                )
-                if verbose:
-                    component_values = {
-                        name: f"{value.detach().item():.4f}"
-                        for name, value in predictor.last_loss_components.items()
-                    }
-                    component_values["loss"] = f"{last_loss.detach().item():.4f}"
-                    epoch_progress.set_postfix(component_values)
-            _synchronize_device(device)
-            training_time_seconds = time.perf_counter() - training_start
         else:
             report(f"Evaluating {model_type} baseline without training...")
+        training_summary = _train_with_checkpoint_selection(
+            predictor,
+            train,
+            validation,
+            epochs=args.epochs,
+            seed=args.seed,
+            selection_metric=selection_metric,
+            device=device,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            verbose=verbose,
+            progress_label=progress_label,
+        )
 
         report(f"Evaluating {progress_label} model...")
         for split_type, test_data in (
@@ -362,14 +511,28 @@ def run_experiment(args):
                 train_ratio=args.train_ratio,
                 epochs=args.epochs,
                 random_seed=args.seed,
-                training_time_seconds=training_time_seconds,
+                training_time_seconds=training_summary.training_time_seconds,
+                epochs_trained=training_summary.epochs_trained,
+                best_epoch=training_summary.best_epoch,
+                selection_metric=training_summary.selection_metric,
+                best_validation_score=(
+                    training_summary.best_validation_score
+                ),
+                early_stopping_patience=(
+                    training_summary.early_stopping_patience
+                ),
+                early_stopping_min_delta=(
+                    training_summary.early_stopping_min_delta
+                ),
+                stopped_early=training_summary.stopped_early,
                 regularization_type=regularization_type,
                 regularization_strength=(
                     regularization_strength if model_type == "asymmetric" else 0.0
                 ),
                 weight_decay=(weight_decay if model_type == "asymmetric" else 0.0),
                 loss=(
-                    float(last_loss.detach().cpu()) if last_loss is not None else None
+                    float(training_summary.selected_loss.detach().cpu())
+                    if training_summary.selected_loss is not None else None
                 ),
                 extra_fields=extra_fields,
                 **metrics,

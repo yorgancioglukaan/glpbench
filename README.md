@@ -56,6 +56,9 @@ python main.py citeseer out/results.csv \
   --validation-query-size 10 \
   --train-ratio 0.8 \
   --epochs 100 \
+  --selection-metric roc_auc \
+  --early-stopping-patience 20 \
+  --early-stopping-min-delta 0.001 \
   --seed 42 \
   --device cpu
 ```
@@ -68,6 +71,19 @@ Validation uses a disjoint set of cold-start query nodes. Its size defaults to
 the resolved test-query size; use `--validation-query-size` or
 `--validation-query-fraction` to override it. Both query populations are
 excluded from feature-reducer fitting and from the training topology.
+
+Trainable models run for the full requested epoch budget. After every epoch,
+the model is evaluated on the semi-inductive validation split, and the best
+checkpoint is restored before either test split is evaluated. Checkpoints use
+ROC-AUC by default; `--selection-metric average_precision` selects by average
+precision instead.
+
+Early stopping is disabled unless `--early-stopping-patience` is supplied.
+When enabled, training stops after that many consecutive epochs without an
+improvement greater than `--early-stopping-min-delta`. The configured epoch
+count remains the maximum budget, and the best checkpoint is restored in all
+cases. Logged training time includes training, validation, and checkpoint
+selection.
 
 Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
 

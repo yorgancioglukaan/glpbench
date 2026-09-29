@@ -1423,6 +1423,30 @@ class TestExperimentLogging(unittest.TestCase):
                 regularization_strength=0.1,
             )
 
+    def test_logger_round_trips_checkpoint_selection_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.csv"
+            CSVResultLogger(path).log(self._result(
+                epochs_trained=50,
+                best_epoch=37,
+                selection_metric="roc_auc",
+                best_validation_score=0.82,
+                early_stopping_patience=10,
+                early_stopping_min_delta=0.001,
+                stopped_early=True,
+            ))
+
+            with path.open(newline="", encoding="utf-8") as csv_file:
+                row = next(csv.DictReader(csv_file))
+
+        self.assertEqual(row["epochs_trained"], "50")
+        self.assertEqual(row["best_epoch"], "37")
+        self.assertEqual(row["selection_metric"], "roc_auc")
+        self.assertEqual(float(row["best_validation_score"]), 0.82)
+        self.assertEqual(row["early_stopping_patience"], "10")
+        self.assertEqual(float(row["early_stopping_min_delta"]), 0.001)
+        self.assertEqual(row["stopped_early"], "True")
+
     def test_logger_appends_without_repeating_header(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "results.csv"
@@ -1525,6 +1549,18 @@ class TestExperimentLogging(unittest.TestCase):
             {"training_time_seconds": -1.0},
             {"training_time_seconds": float("inf")},
             {"training_time_seconds": float("nan")},
+            {"epochs_trained": 101},
+            {"epochs_trained": 10, "best_epoch": 11,
+             "selection_metric": "roc_auc", "best_validation_score": 0.8},
+            {"epochs_trained": 10, "best_epoch": 5},
+            {"selection_metric": "accuracy"},
+            {"best_validation_score": 1.1},
+            {"early_stopping_patience": 0},
+            {"early_stopping_min_delta": -0.1},
+            {"stopped_early": "yes"},
+            {"epochs_trained": 50, "stopped_early": True},
+            {"epochs_trained": 100, "early_stopping_patience": 2,
+             "stopped_early": True},
         ]
         for values in invalid_values:
             with self.subTest(values=values), self.assertRaises(ValueError):
@@ -1717,6 +1753,183 @@ class TestMainPipeline(unittest.TestCase):
         data.dataset_family = "Test"
         return data
 
+    @patch("main.load_dataset")
+    def test_checkpoint_selection_restores_best_epoch_before_testing(
+        self, mock_load
+    ):
+        mock_load.return_value = self._graph()
+        evaluation_calls = []
+
+        class FakePredictor:
+            def __init__(self, train_data, **kwargs):
+                self.trainable = True
+                self.model_spec = SimpleNamespace(uses_conv_layer=True)
+                self.model = torch.nn.Linear(1, 1, bias=False)
+                with torch.no_grad():
+                    self.model.weight.zero_()
+
+            def train(self, negative_edge_index=None):
+                with torch.no_grad():
+                    self.model.weight.add_(1.0)
+                return self.model.weight.detach().reshape(()).clone()
+
+            def test(self, data):
+                epoch = int(self.model.weight.item())
+                evaluation_calls.append((data.split_stage, epoch))
+                correct = torch.where(
+                    data.edge_label == 1,
+                    torch.tensor(0.9, device=data.edge_label.device),
+                    torch.tensor(0.1, device=data.edge_label.device),
+                )
+                if data.split_stage == "validation" and epoch != 2:
+                    return 1.0 - correct
+                return correct
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["symmetric"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=3,
+                selection_metric="roc_auc",
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+            )
+            with patch("main.LinkPrediction", FakePredictor):
+                main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+
+        self.assertEqual(evaluation_calls, [
+            ("validation", 1),
+            ("validation", 2),
+            ("validation", 3),
+            ("test", 2),
+            ("test", 2),
+        ])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["epochs_trained"] for row in rows}, {"3"})
+        self.assertEqual({row["best_epoch"] for row in rows}, {"2"})
+        self.assertEqual({row["selection_metric"] for row in rows}, {"roc_auc"})
+        self.assertEqual(
+            {float(row["best_validation_score"]) for row in rows}, {1.0}
+        )
+        self.assertEqual(
+            {row["early_stopping_patience"] for row in rows}, {""}
+        )
+        self.assertEqual(
+            {float(row["early_stopping_min_delta"]) for row in rows}, {0.0}
+        )
+        self.assertEqual({row["stopped_early"] for row in rows}, {"False"})
+
+    def test_early_stopping_honors_patience_and_restores_best_state(self):
+        class FakePredictor:
+            trainable = True
+
+            def __init__(self):
+                self.model = torch.nn.Linear(1, 1, bias=False)
+                with torch.no_grad():
+                    self.model.weight.zero_()
+
+            def train(self, negative_edge_index=None):
+                with torch.no_grad():
+                    self.model.weight.add_(1.0)
+                return self.model.weight.detach().reshape(()).clone()
+
+            def test(self, data):
+                return torch.tensor([0.5, 0.5])
+
+        predictor = FakePredictor()
+        train_data = Data(edge_index=torch.empty((2, 0), dtype=torch.long))
+        validation_data = Data(edge_label=torch.tensor([1.0, 0.0]))
+        validation_scores = [0.50, 0.70, 0.65, 0.60, 0.90]
+
+        with (
+            patch(
+                "main.sample_training_negative_edges",
+                return_value=torch.empty((2, 0), dtype=torch.long),
+            ) as mock_negatives,
+            patch(
+                "main.calculate_metrics",
+                side_effect=[
+                    {"roc_auc": score} for score in validation_scores
+                ],
+            ) as mock_metrics,
+        ):
+            summary = main._train_with_checkpoint_selection(
+                predictor,
+                train_data,
+                validation_data,
+                epochs=5,
+                seed=4,
+                selection_metric="roc_auc",
+                device="cpu",
+                early_stopping_patience=2,
+            )
+
+        self.assertEqual(summary.epochs_trained, 4)
+        self.assertEqual(summary.best_epoch, 2)
+        self.assertEqual(summary.best_validation_score, 0.70)
+        self.assertTrue(summary.stopped_early)
+        self.assertEqual(predictor.model.weight.item(), 2.0)
+        self.assertEqual(mock_negatives.call_count, 4)
+        self.assertEqual(mock_metrics.call_count, 4)
+
+    def test_early_stopping_min_delta_ignores_small_improvements(self):
+        class FakePredictor:
+            trainable = True
+
+            def __init__(self):
+                self.model = torch.nn.Linear(1, 1, bias=False)
+                with torch.no_grad():
+                    self.model.weight.zero_()
+
+            def train(self, negative_edge_index=None):
+                with torch.no_grad():
+                    self.model.weight.add_(1.0)
+                return self.model.weight.detach().reshape(()).clone()
+
+            def test(self, data):
+                return torch.tensor([0.5, 0.5])
+
+        predictor = FakePredictor()
+        with (
+            patch(
+                "main.sample_training_negative_edges",
+                return_value=torch.empty((2, 0), dtype=torch.long),
+            ),
+            patch(
+                "main.calculate_metrics",
+                side_effect=[{"roc_auc": 0.50}, {"roc_auc": 0.55}],
+            ),
+        ):
+            summary = main._train_with_checkpoint_selection(
+                predictor,
+                Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
+                Data(edge_label=torch.tensor([1.0, 0.0])),
+                epochs=5,
+                seed=4,
+                selection_metric="roc_auc",
+                device="cpu",
+                early_stopping_patience=1,
+                early_stopping_min_delta=0.10,
+            )
+
+        self.assertEqual(summary.epochs_trained, 2)
+        self.assertEqual(summary.best_epoch, 2)
+        self.assertEqual(summary.best_validation_score, 0.55)
+        self.assertEqual(predictor.model.weight.item(), 2.0)
+        self.assertTrue(summary.stopped_early)
+
     @patch(
         "main.sample_training_negative_edges",
         wraps=link_prediction.sample_training_negative_edges,
@@ -1771,6 +1984,13 @@ class TestMainPipeline(unittest.TestCase):
             float(row["training_time_seconds"]) >= 0
             for row in trainable_rows
         ))
+        self.assertEqual(
+            {row["epochs_trained"] for row in trainable_rows}, {"1"}
+        )
+        self.assertEqual({row["best_epoch"] for row in trainable_rows}, {"1"})
+        self.assertEqual(
+            {row["selection_metric"] for row in trainable_rows}, {"roc_auc"}
+        )
         for model_type in {
             row["model_type"] for row in trainable_rows
         }:
@@ -1793,6 +2013,16 @@ class TestMainPipeline(unittest.TestCase):
         self.assertEqual(
             {row["training_time_seconds"] for row in cosine_rows}, {""}
         )
+        self.assertEqual({row["epochs_trained"] for row in cosine_rows}, {"0"})
+        self.assertEqual({row["best_epoch"] for row in cosine_rows}, {""})
+        self.assertEqual({row["selection_metric"] for row in cosine_rows}, {""})
+        self.assertEqual(
+            {row["best_validation_score"] for row in cosine_rows}, {""}
+        )
+        self.assertEqual(
+            {row["early_stopping_patience"] for row in cosine_rows}, {""}
+        )
+        self.assertEqual({row["stopped_early"] for row in cosine_rows}, {"False"})
         deal_rows = [row for row in rows if row["model_type"] == "deal"]
         self.assertEqual({row["conv_layer_type"] for row in deal_rows}, {"None"})
         deal_config = json.loads(deal_rows[0]["extra_fields"])
