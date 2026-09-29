@@ -2,6 +2,7 @@ import torch
 from datasets import load_dataset
 import argparse
 import copy
+import json
 import random
 import time
 from dataclasses import dataclass
@@ -48,6 +49,17 @@ def calculate_metrics(labels, probabilities):
         "recall": recall_score(labels, predictions, zero_division=0),
         "f1": f1_score(labels, predictions, zero_division=0),
     }
+
+
+def _json_object(value):
+    """Parse a JSON object for an argparse option."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise argparse.ArgumentTypeError("must be valid JSON") from error
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("must decode to a JSON object")
+    return parsed
 
 
 def _synchronize_device(device):
@@ -242,6 +254,12 @@ def parse_args():
         choices=("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"),
         default="GCNConv",
     )
+    parser.add_argument(
+        "--gatv2-kwargs",
+        type=_json_object,
+        default=None,
+        help="JSON object of GATv2Conv options",
+    )
     parser.add_argument("--hidden-channels", type=int, default=128)
     parser.add_argument("--out-channels", type=int, default=64)
     parser.add_argument(
@@ -401,6 +419,9 @@ def run_experiment(args):
         device="cpu",
     )
     reduction_method = getattr(args, "reduction_method", "pca")
+    gatv2_kwargs = getattr(args, "gatv2_kwargs", None) or {}
+    if not isinstance(gatv2_kwargs, dict):
+        raise ValueError("gatv2_kwargs must be a dictionary")
     logger = CSVResultLogger(args.out_filepath)
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
     decoder_dropout = getattr(args, "decoder_dropout", 0.0)
@@ -513,6 +534,7 @@ def run_experiment(args):
                 kl_weight=kl_weight,
                 learning_rate=learning_rate,
                 weight_decay=effective_weight_decay,
+                gatv2_kwargs=gatv2_kwargs,
                 **deal_config,
             )
             if model_type == "asymmetric":
@@ -555,7 +577,38 @@ def run_experiment(args):
                     "reduction_method": reduction_method,
                     "validation_query_size": len(query_nodes.validation),
                     "learning_rate": learning_rate,
+                    "device": str(device),
+                    "query_selection": {
+                        "mode": (
+                            "fraction" if query_fraction is not None else "size"
+                        ),
+                        "value": (
+                            query_fraction
+                            if query_fraction is not None else query_size
+                        ),
+                        "resolved_size": len(query_nodes.test),
+                    },
+                    "validation_query_selection": {
+                        "mode": (
+                            "fraction"
+                            if validation_query_fraction is not None
+                            else "size"
+                            if validation_query_size is not None
+                            else "match-test"
+                        ),
+                        "value": (
+                            validation_query_fraction
+                            if validation_query_fraction is not None
+                            else validation_query_size
+                        ),
+                        "resolved_size": len(query_nodes.validation),
+                    },
                 }
+                if (
+                    predictor.model_spec.uses_conv_layer
+                    and args.conv_layer_type == "GATv2Conv"
+                ):
+                    extra_fields["gatv2_kwargs"] = gatv2_kwargs
                 if model_type == "mlp":
                     extra_fields.update({
                         "decoder_hidden_channels": decoder_hidden_channels,

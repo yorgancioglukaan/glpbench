@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+import argparse
 import csv
 import json
 import random
@@ -1793,6 +1794,16 @@ class TestMainPipeline(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be combined"):
             main._resolve_seeds(SimpleNamespace(seed=[3], num_seeds=2))
 
+    def test_gatv2_cli_options_require_a_json_object(self):
+        self.assertEqual(
+            main._json_object('{"heads": 2, "dropout": 0.1}'),
+            {"heads": 2, "dropout": 0.1},
+        )
+        with self.assertRaises(argparse.ArgumentTypeError):
+            main._json_object("not-json")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            main._json_object("[1, 2]")
+
     @patch("main.load_dataset")
     def test_multi_seed_run_preserves_pairing_and_configuration_ids(
         self, mock_load
@@ -2125,6 +2136,24 @@ class TestMainPipeline(unittest.TestCase):
             {row["early_stopping_patience"] for row in cosine_rows}, {""}
         )
         self.assertEqual({row["stopped_early"] for row in cosine_rows}, {"False"})
+        common_extra_fields = {
+            "reduction_method", "validation_query_size", "learning_rate",
+            "device", "query_selection", "validation_query_selection",
+        }
+        for row in rows:
+            self.assertTrue(common_extra_fields.issubset(
+                json.loads(row["extra_fields"])
+            ))
+        mlp_config = json.loads(next(
+            row["extra_fields"] for row in rows if row["model_type"] == "mlp"
+        ))
+        self.assertIn("decoder_hidden_channels", mlp_config)
+        self.assertIn("decoder_dropout", mlp_config)
+        variational_config = json.loads(next(
+            row["extra_fields"]
+            for row in rows if row["model_type"] == "variational"
+        ))
+        self.assertIn("kl_weight", variational_config)
         deal_rows = [row for row in rows if row["model_type"] == "deal"]
         self.assertEqual({row["conv_layer_type"] for row in deal_rows}, {"None"})
         deal_config = json.loads(deal_rows[0]["extra_fields"])
@@ -2173,11 +2202,59 @@ class TestMainPipeline(unittest.TestCase):
         reduced_graph = mock_reduction.call_args.args[0]
         self.assertTrue((reduced_graph.feature_reducer.mean_ == expected_mean).all())
         for row in rows:
+            extra_fields = json.loads(row["extra_fields"])
             self.assertEqual(
-                json.loads(row["extra_fields"])["reduction_method"], "pca"
+                extra_fields["reduction_method"], "pca"
             )
             self.assertEqual(
-                json.loads(row["extra_fields"])["validation_query_size"], 1
+                extra_fields["validation_query_size"], 1
+            )
+            self.assertEqual(extra_fields["learning_rate"], 0.01)
+            self.assertEqual(extra_fields["device"], "cpu")
+            self.assertEqual(extra_fields["query_selection"], {
+                "mode": "size", "value": 1, "resolved_size": 1,
+            })
+            self.assertEqual(extra_fields["validation_query_selection"], {
+                "mode": "match-test", "value": None, "resolved_size": 1,
+            })
+
+    @patch("main.load_dataset")
+    def test_gatv2_kwargs_are_passed_to_model_and_logged(self, mock_load):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["symmetric"],
+                conv_layer_type="GATv2Conv",
+                gatv2_kwargs={"heads": 2, "concat": False, "dropout": 0.1},
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+            )
+            with patch(
+                "main.LinkPrediction", wraps=link_prediction.LinkPrediction
+            ) as mock_predictor:
+                main.run_experiment(args)
+
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file))
+
+        self.assertEqual(
+            mock_predictor.call_args.kwargs["gatv2_kwargs"],
+            args.gatv2_kwargs,
+        )
+        for row in rows:
+            self.assertEqual(
+                json.loads(row["extra_fields"])["gatv2_kwargs"],
+                args.gatv2_kwargs,
             )
 
     @patch(

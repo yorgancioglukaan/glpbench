@@ -44,6 +44,7 @@ Common options include:
 ```bash
 python main.py citeseer out/results.csv \
   --conv-layer-type GATv2Conv \
+  --gatv2-kwargs '{"heads": 2, "concat": false, "dropout": 0.1}' \
   --hidden-channels 128 \
   --out-channels 64 \
   --reduction-method pca \
@@ -77,6 +78,11 @@ the model is evaluated on the semi-inductive validation split, and the best
 checkpoint is restored before either test split is evaluated. Checkpoints use
 ROC-AUC by default; `--selection-metric average_precision` selects by average
 precision instead.
+
+GATv2 constructor options can be supplied as a JSON object with
+`--gatv2-kwargs`. Result rows retain these options in `extra_fields` alongside
+the reducer, learning rate, device, query-selection configuration, and any
+architecture-specific decoder, VGAE, DEAL, or regularization settings.
 
 Early stopping is disabled unless `--early-stopping-patience` is supplied.
 When enabled, training stops after that many consecutive epochs without an
