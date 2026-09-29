@@ -222,12 +222,12 @@ def run_experiment(args):
         )
 
     report("Generating comparable graph splits...")
-    train, _, test_transductive, test_inductive = generate_comparable_splits(
+    splits = generate_comparable_splits(
         data, query=query, train_ratio=args.train_ratio, seed=args.seed
     )
-    train = train.to(device)
-    test_transductive = test_transductive.to(device)
-    test_inductive = test_inductive.to(device)
+    train = splits.train.to(device)
+    test_transductive = splits.test_transductive.to(device)
+    test_inductive = splits.test_inductive.to(device)
 
     logger = CSVResultLogger(args.out_filepath)
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)

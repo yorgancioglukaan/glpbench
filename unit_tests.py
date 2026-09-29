@@ -248,6 +248,68 @@ class TestInductiveSplit(unittest.TestCase):
             test_inductive.edge_label_index.size(1),
         )
 
+    def test_comparable_splits_support_named_and_legacy_access(self):
+        data = self._undirected_data(
+            8,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+             (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7)],
+        )
+
+        splits = utils.generate_comparable_splits(
+            data, query=[7], seed=3, train_ratio=0.75
+        )
+        unpacked = tuple(splits)
+
+        self.assertIsInstance(splits, utils.ComparableSplits)
+        self.assertIs(splits.train, unpacked[0])
+        self.assertIs(splits.validation, unpacked[1])
+        self.assertIs(splits.test_transductive, unpacked[2])
+        self.assertIs(splits.test_inductive, unpacked[3])
+
+    def test_split_metadata_exposes_explicit_node_and_split_roles(self):
+        data = self._undirected_data(
+            8,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+             (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7)],
+        )
+        splits = utils.generate_comparable_splits(
+            data, query=[7], seed=3, train_ratio=0.75
+        )
+        expected_test_queries = torch.tensor(
+            [False, False, False, False, False, False, False, True]
+        )
+
+        expected_roles = (
+            (splits.train, "train", "transductive"),
+            (splits.validation, "validation", "transductive"),
+            (splits.test_transductive, "test", "transductive"),
+            (splits.test_inductive, "test", "semi-inductive"),
+        )
+        for split, stage, setting in expected_roles:
+            self.assertFalse(bool(split.validation_query_mask.any()))
+            self.assertTrue(torch.equal(
+                split.test_query_mask, expected_test_queries
+            ))
+            self.assertTrue(torch.equal(
+                split.visible_node_mask, ~expected_test_queries
+            ))
+            self.assertTrue(torch.equal(split.query_mask, split.test_query_mask))
+            self.assertTrue(torch.equal(
+                split.seen_node_mask, split.visible_node_mask
+            ))
+            self.assertEqual(split.split_stage, stage)
+            self.assertEqual(split.split_setting, setting)
+
+    def test_node_role_metadata_rejects_overlapping_query_sets(self):
+        split = Data(num_nodes=3)
+        with self.assertRaisesRegex(ValueError, "must be disjoint"):
+            utils._attach_split_metadata(
+                (("validation", "validation", "semi-inductive", split),),
+                utils.QueryNodeSets(validation=(1,), test=(1,)),
+                num_nodes=3,
+                device=torch.device("cpu"),
+            )
+
     def test_query_int(self):
         data = self._undirected_data(4, [(0, 1), (1, 2), (2, 3)])
         #negative input should throw ValueError
@@ -276,7 +338,12 @@ class TestInductiveSplit(unittest.TestCase):
         #
         with self.assertRaises(TypeError):
             utils.inductive_split(data, [[2,3],[3,4]])
-        train, val, test = utils.inductive_split(data, [5])
+        splits = utils.inductive_split(data, [5])
+        self.assertIsInstance(splits, utils.InductiveSplits)
+        train, val, test = splits
+        self.assertIs(splits.train, train)
+        self.assertIs(splits.validation, val)
+        self.assertIs(splits.test_inductive, test)
         expected_query_mask = torch.tensor([
             False, False, False, False, False, True
         ])
@@ -610,6 +677,14 @@ class TestLinkPrediction(unittest.TestCase):
         ))
         self.assertTrue(torch.allclose(
             predictor.test(inductive), expected_ind.sigmoid()
+        ))
+
+        validation = inductive.clone()
+        validation.split_type = "validation"
+        validation.split_stage = "validation"
+        validation.split_setting = "semi-inductive"
+        self.assertTrue(torch.allclose(
+            predictor.test(validation), expected_ind.sigmoid()
         ))
 
     def test_deal_rejects_missing_split_metadata_and_query_training_edges(self):

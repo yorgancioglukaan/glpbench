@@ -551,12 +551,18 @@ class DEALModel(LinkPredictionModel):
     def decode_edges(self, representations, edge_label_index, data):
         """Score transductive or inductive edges with valid DEAL branches."""
         component_logits = self._component_logits(representations, edge_label_index)
-        split_type = getattr(data, "split_type", None)
-        if split_type == "transductive":
+        split_setting = getattr(data, "split_setting", None)
+        if split_setting is None:
+            legacy_split_type = getattr(data, "split_type", None)
+            split_setting = {
+                "transductive": "transductive",
+                "inductive": "semi-inductive",
+            }.get(legacy_split_type)
+        if split_setting == "transductive":
             if not bool(self.seen_node_mask[edge_label_index].all()):
                 raise ValueError("transductive DEAL edges must contain only seen nodes")
             return self._weighted_mean(component_logits, self.lambdas)
-        if split_type == "inductive":
+        if split_setting == "semi-inductive":
             source, target = edge_label_index
             if not bool(self.seen_node_mask[source].all()) or not bool(
                 self.query_mask[target].all()
@@ -567,7 +573,9 @@ class DEALModel(LinkPredictionModel):
             return self._weighted_mean(
                 component_logits[1:], self.lambdas[1:]
             )
-        raise ValueError("DEAL requires a transductive or inductive split_type")
+        raise ValueError(
+            "DEAL requires a transductive or semi-inductive split setting"
+        )
 
 
 class FeatureCosineModel(torch.nn.Module):

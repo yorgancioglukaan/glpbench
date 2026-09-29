@@ -2,6 +2,7 @@ import math
 import numbers
 import random
 import warnings
+from typing import NamedTuple
 
 import torch
 import torch_geometric.transforms as T
@@ -11,14 +12,55 @@ from torch_geometric.utils import is_undirected, negative_sampling
 from feature_reduction import attach_reduced_features, fit_reducer
 
 
-def _attach_split_metadata(splits, query, num_nodes, device):
-    """Attach query membership and semantic names to graph splits."""
-    query_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
-    query_mask[query] = True
-    for split_type, split in splits:
+class QueryNodeSets(NamedTuple):
+    """Store disjoint validation and test query-node IDs."""
+
+    validation: tuple[int, ...]
+    test: tuple[int, ...]
+
+
+class ComparableSplits(NamedTuple):
+    """Store training, validation, and paired test graph splits."""
+
+    train: Data
+    validation: Data
+    test_transductive: Data
+    test_inductive: Data
+
+
+class InductiveSplits(NamedTuple):
+    """Store training, validation, and inductive-test graph splits."""
+
+    train: Data
+    validation: Data
+    test_inductive: Data
+
+
+def _attach_split_metadata(splits, query_nodes, num_nodes, device):
+    """Attach node-role and split-role metadata to graph splits."""
+    validation_query_mask = torch.zeros(
+        num_nodes, dtype=torch.bool, device=device
+    )
+    test_query_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    validation_query_mask[list(query_nodes.validation)] = True
+    test_query_mask[list(query_nodes.test)] = True
+    if bool((validation_query_mask & test_query_mask).any()):
+        raise ValueError("Validation and test query nodes must be disjoint.")
+
+    query_mask = validation_query_mask | test_query_mask
+    visible_node_mask = ~query_mask
+    for split_type, split_stage, split_setting, split in splits:
+        split.validation_query_mask = validation_query_mask.clone()
+        split.test_query_mask = test_query_mask.clone()
+        split.visible_node_mask = visible_node_mask.clone()
+
+        # Compatibility aliases retained while callers migrate to node roles.
         split.query_mask = query_mask.clone()
-        split.seen_node_mask = ~query_mask
+        split.seen_node_mask = visible_node_mask.clone()
         split.split_type = split_type
+
+        split.split_stage = split_stage
+        split.split_setting = split_setting
 
 
 def _node_neighbors(data):
@@ -404,8 +446,9 @@ def generate_comparable_splits(
         
     Returns
     -------
-    tuple of torch_geometric.data.Data
-        Training, validation, transductive-test, and inductive-test splits.
+    ComparableSplits
+        Named training, validation, transductive-test, and inductive-test splits.
+        The result also supports tuple unpacking for backward compatibility.
     """    
 
 #check if parameters are valid
@@ -488,19 +531,20 @@ def generate_comparable_splits(
     _set_negative_edges(test_transductive, transductive_negative_edges)
     test_inductive.edge_index = test_transductive.edge_index
 
+    query_nodes = QueryNodeSets(validation=(), test=tuple(query))
     _attach_split_metadata(
         (
-            ("train", train),
-            ("validation", val),
-            ("transductive", test_transductive),
-            ("inductive", test_inductive),
+            ("train", "train", "transductive", train),
+            ("validation", "validation", "transductive", val),
+            ("transductive", "test", "transductive", test_transductive),
+            ("inductive", "test", "semi-inductive", test_inductive),
         ),
-        query,
+        query_nodes,
         data.num_nodes,
         data.edge_index.device,
     )
 
-    return train, val, test_transductive, test_inductive
+    return ComparableSplits(train, val, test_transductive, test_inductive)
 
 
 
@@ -529,8 +573,9 @@ def inductive_split(
         
     Returns
     -------
-    tuple of torch_geometric.data.Data
-        Training, validation, and inductive-test splits.
+    InductiveSplits
+        Named training, validation, and inductive-test splits. The result also
+        supports tuple unpacking for backward compatibility.
     """
 
     #check if parameters are valid
@@ -605,14 +650,19 @@ def inductive_split(
     test.edge_label = torch.cat([test.edge_label, negative_labels],dim=0)
     test.edge_label_index = torch.cat([test.edge_label_index, negative_edges], dim=1)
 
+    query_nodes = QueryNodeSets(validation=(), test=tuple(query))
     _attach_split_metadata(
-        (("train", train), ("validation", val), ("inductive", test)),
-        query,
+        (
+            ("train", "train", "transductive", train),
+            ("validation", "validation", "transductive", val),
+            ("inductive", "test", "semi-inductive", test),
+        ),
+        query_nodes,
         data.num_nodes,
         data.edge_index.device,
     )
 
-    return train, val, test
+    return InductiveSplits(train, val, test)
 
 def calculate_reduced_features(
     data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,
