@@ -1,0 +1,76 @@
+# AGAE checkpoint-selection and early-stopping ablation.
+#
+version: 1
+kind: training-policy-ablation
+
+output: out/agae_checkpoint_ablation.csv
+error_output: out/agae_checkpoint_ablation.errors.jsonl
+epoch_history_output: out/agae_checkpoint_ablation_epochs.csv
+data_root: data
+
+# Independent of pilot tuning seeds (100-102) and preliminary benchmark seeds
+# (200-202).
+seeds: [300, 301, 302, 303, 304, 305, 306, 307, 308, 309]
+
+selected_configurations:
+  path: out/pilot_selected_configurations.yaml
+  granularity: [dataset, architecture]
+  require_all_pairs: true
+
+datasets:
+  - amazon-photo
+  - amazon-computers
+  - wikics
+
+models:
+  - asymmetric
+
+splits:
+  protocol: matched-semi-inductive
+  query_fraction: 0.05
+  validation_query_fraction: 0.05
+  train_ratio: 0.8
+  paired_across_policies: true
+
+evaluation:
+  split_types: [transductive, inductive]
+  primary_split: inductive
+  primary_metric: roc_auc
+  secondary_metrics: [average_precision]
+
+training:
+  device: cpu
+  selection_metric: roc_auc
+  log_epoch_history: true
+  epoch_history_metrics: [training_loss, validation_roc_auc]
+
+training_policies:
+  - name: current
+    max_epochs: 100
+    checkpoint: best-validation
+    early_stopping:
+      enabled: true
+      patience: 15
+      min_delta: 0.001
+      minimum_epochs: 0
+
+  - name: full-budget-best
+    max_epochs: 100
+    checkpoint: best-validation
+    early_stopping:
+      enabled: false
+
+  - name: warmup-patience-30
+    max_epochs: 100
+    checkpoint: best-validation
+    early_stopping:
+      enabled: true
+      patience: 30
+      min_delta: 0.001
+      minimum_epochs: 30
+
+  - name: full-budget-final
+    max_epochs: 100
+    checkpoint: final
+    early_stopping:
+      enabled: false

@@ -2,7 +2,7 @@
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import product
 import json
@@ -14,7 +14,12 @@ from tqdm.auto import tqdm
 import yaml
 
 from datasets import available_datasets
-from experiment_logging import CSVResultLogger
+from experiment_logging import (
+    CSVEpochHistoryLogger,
+    CSVResultLogger,
+    EpochHistoryRecord,
+    make_configuration_id,
+)
 from feature_reduction import available_reduction_methods
 from link_prediction import (
     available_agae_regularizers,
@@ -45,6 +50,9 @@ _DEFAULTS = {
     "selection_metric": "roc_auc",
     "early_stopping_patience": None,
     "early_stopping_min_delta": 0.0,
+    "early_stopping_minimum_epochs": 0,
+    "checkpoint_strategy": "best-validation",
+    "training_policy": "default",
     "normalize_features": True,
     "device": "cpu",
     "gatv2_kwargs": None,
@@ -61,7 +69,8 @@ _MODEL_PARAMETER_KEYS = set(_DEFAULTS).difference({
     "query_size", "query_fraction", "validation_query_size",
     "validation_query_fraction", "train_ratio", "epochs",
     "selection_metric", "early_stopping_patience",
-    "early_stopping_min_delta", "normalize_features", "device",
+    "early_stopping_min_delta", "early_stopping_minimum_epochs",
+    "checkpoint_strategy", "training_policy", "normalize_features", "device",
     "conv_layer_type", "reduction_method",
 })
 
@@ -86,6 +95,18 @@ class ModelGrid:
 
 
 @dataclass(frozen=True)
+class TrainingPolicy:
+    """Describe one checkpoint-selection and stopping policy."""
+
+    name: str
+    max_epochs: int
+    checkpoint_strategy: str
+    early_stopping_patience: int | None
+    early_stopping_min_delta: float
+    early_stopping_minimum_epochs: int
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     """Describe a validated benchmark configuration file."""
 
@@ -97,6 +118,10 @@ class BenchmarkConfig:
     models: tuple[ModelGrid, ...]
     error_output: str
     selected_configurations: Path | None = None
+    kind: str = "benchmark"
+    training_policies: tuple[TrainingPolicy, ...] = ()
+    epoch_history_output: str | None = None
+    log_epoch_history: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +160,9 @@ class ExperimentJob:
             parts.append(self.conv_layer_type)
         if get_model_spec(self.model_type).uses_reduced_features:
             parts.extend((self.reduction_method, self.regularization.type))
+        policy = self.parameters.get("training_policy", "default")
+        if policy != "default":
+            parts.append(policy)
         return "/".join(parts)
 
 
@@ -206,6 +234,13 @@ def _validate_defaults(defaults):
         raise ValueError("Unknown default reduction method")
     if resolved["selection_metric"] not in {"roc_auc", "average_precision"}:
         raise ValueError("Unknown selection metric")
+    if resolved["checkpoint_strategy"] not in {"best-validation", "final"}:
+        raise ValueError("Unknown checkpoint strategy")
+    if (
+        not isinstance(resolved["training_policy"], str)
+        or not resolved["training_policy"].strip()
+    ):
+        raise ValueError("training_policy must be a non-empty string")
     if not isinstance(resolved["normalize_features"], bool):
         raise ValueError("normalize_features must be boolean")
     if not isinstance(resolved["epochs"], int) or resolved["epochs"] <= 0:
@@ -349,11 +384,248 @@ def _validate_job_parameters(parameters):
         raise ValueError("early_stopping_patience must be positive")
     if parameters["early_stopping_min_delta"] < 0:
         raise ValueError("early_stopping_min_delta must be non-negative")
+    minimum_epochs = parameters["early_stopping_minimum_epochs"]
+    if (
+        not isinstance(minimum_epochs, int)
+        or isinstance(minimum_epochs, bool)
+        or not 0 <= minimum_epochs <= parameters["epochs"]
+    ):
+        raise ValueError(
+            "early_stopping_minimum_epochs must be between zero and epochs"
+        )
+    if parameters["checkpoint_strategy"] not in {"best-validation", "final"}:
+        raise ValueError("Unknown checkpoint strategy")
+    if (
+        not isinstance(parameters["training_policy"], str)
+        or not parameters["training_policy"].strip()
+    ):
+        raise ValueError("training_policy must be a non-empty string")
     if not isinstance(parameters["device"], str) or not parameters["device"]:
         raise ValueError("device must be a non-empty string")
     gatv2_kwargs = parameters["gatv2_kwargs"]
     if gatv2_kwargs is not None and not isinstance(gatv2_kwargs, dict):
         raise ValueError("gatv2_kwargs must be a mapping")
+
+
+def _selected_configuration_path(raw):
+    """Validate a selected-hyperparameter artifact reference."""
+    selected_raw = _require_mapping(raw, "selected_configurations")
+    unknown = set(selected_raw).difference({
+        "path", "granularity", "require_all_pairs"
+    })
+    if unknown:
+        raise ValueError(
+            "Unknown selected-configuration setting: "
+            f"{sorted(unknown)[0]}"
+        )
+    if selected_raw.get("granularity") != ["dataset", "architecture"]:
+        raise ValueError(
+            "selected configuration granularity must be dataset and architecture"
+        )
+    if selected_raw.get("require_all_pairs") is not True:
+        raise ValueError("selected configurations must require all pairs")
+    selected_value = selected_raw.get("path")
+    if not isinstance(selected_value, str) or not selected_value.strip():
+        raise ValueError("selected_configurations.path must be non-empty")
+    return Path(selected_value)
+
+
+def _parse_training_policy(raw, index):
+    """Validate one training-policy ablation entry."""
+    raw = _require_mapping(raw, f"training_policies[{index}]")
+    unknown = set(raw).difference({
+        "name", "max_epochs", "checkpoint", "early_stopping"
+    })
+    if unknown:
+        raise ValueError(f"Unknown training-policy setting: {sorted(unknown)[0]}")
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("training policy name must be non-empty")
+    max_epochs = raw.get("max_epochs")
+    if (
+        not isinstance(max_epochs, int)
+        or isinstance(max_epochs, bool)
+        or max_epochs <= 0
+    ):
+        raise ValueError("training policy max_epochs must be positive")
+    checkpoint = raw.get("checkpoint")
+    if checkpoint not in {"best-validation", "final"}:
+        raise ValueError("Unknown training-policy checkpoint strategy")
+
+    stopping = _require_mapping(
+        raw.get("early_stopping"),
+        f"training_policies[{index}].early_stopping",
+    )
+    unknown_stopping = set(stopping).difference({
+        "enabled", "patience", "min_delta", "minimum_epochs"
+    })
+    if unknown_stopping:
+        raise ValueError(
+            "Unknown early-stopping setting: "
+            f"{sorted(unknown_stopping)[0]}"
+        )
+    enabled = stopping.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("early_stopping.enabled must be boolean")
+    patience = stopping.get("patience") if enabled else None
+    if enabled and (
+        not isinstance(patience, int)
+        or isinstance(patience, bool)
+        or patience <= 0
+    ):
+        raise ValueError("enabled early stopping requires positive patience")
+    min_delta = stopping.get("min_delta", 0.0)
+    minimum_epochs = stopping.get("minimum_epochs", 0)
+    if (
+        not isinstance(min_delta, (int, float))
+        or isinstance(min_delta, bool)
+        or min_delta < 0
+    ):
+        raise ValueError("early-stopping min_delta must be non-negative")
+    if (
+        not isinstance(minimum_epochs, int)
+        or isinstance(minimum_epochs, bool)
+        or not 0 <= minimum_epochs <= max_epochs
+    ):
+        raise ValueError(
+            "early-stopping minimum_epochs must be between zero and max_epochs"
+        )
+    if not enabled and set(stopping).difference({"enabled"}):
+        raise ValueError(
+            "disabled early stopping cannot define patience, min_delta, or "
+            "minimum_epochs"
+        )
+    return TrainingPolicy(
+        name=name,
+        max_epochs=max_epochs,
+        checkpoint_strategy=checkpoint,
+        early_stopping_patience=patience,
+        early_stopping_min_delta=float(min_delta),
+        early_stopping_minimum_epochs=minimum_epochs,
+    )
+
+
+def _load_training_policy_ablation(raw):
+    """Validate a training-policy ablation configuration."""
+    unknown = set(raw).difference({
+        "version", "kind", "output", "error_output", "epoch_history_output",
+        "data_root", "seeds", "selected_configurations", "datasets", "models",
+        "splits", "evaluation", "training", "training_policies",
+    })
+    if unknown:
+        raise ValueError(f"Unknown ablation setting: {sorted(unknown)[0]}")
+    if raw.get("version") != 1:
+        raise ValueError("training-policy ablations require version 1")
+
+    output = raw.get("output", "out/training_policy_ablation.csv")
+    error_output = raw.get(
+        "error_output", str(Path(output).with_suffix(".errors.jsonl"))
+    )
+    epoch_output = raw.get("epoch_history_output")
+    data_root = raw.get("data_root", "data")
+    for value, name in (
+        (output, "output"), (error_output, "error_output"),
+        (epoch_output, "epoch_history_output"), (data_root, "data_root"),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-empty string")
+
+    seeds = _require_unique_sequence(raw.get("seeds"), "seeds")
+    if any(
+        not isinstance(seed, int) or isinstance(seed, bool) or seed < 0
+        for seed in seeds
+    ):
+        raise ValueError("seeds must be non-negative integers")
+    datasets = tuple(
+        _resolve_dataset_name(name)
+        for name in _require_unique_sequence(raw.get("datasets"), "datasets")
+    )
+
+    splits = _require_mapping(raw.get("splits"), "splits")
+    if set(splits) != {
+        "protocol", "query_fraction", "validation_query_fraction",
+        "train_ratio", "paired_across_policies",
+    }:
+        raise ValueError("splits must define the training-ablation protocol")
+    if splits["protocol"] != "matched-semi-inductive":
+        raise ValueError("unsupported ablation split protocol")
+    if splits["paired_across_policies"] is not True:
+        raise ValueError("ablation splits must be paired across policies")
+
+    evaluation = _require_mapping(raw.get("evaluation"), "evaluation")
+    if set(evaluation).difference({
+        "split_types", "primary_split", "primary_metric", "secondary_metrics"
+    }):
+        raise ValueError("Unknown evaluation setting")
+    if evaluation.get("split_types") != ["transductive", "inductive"]:
+        raise ValueError("ablation must evaluate both split types")
+    if evaluation.get("primary_split") != "inductive":
+        raise ValueError("ablation primary split must be inductive")
+    if evaluation.get("primary_metric") != "roc_auc":
+        raise ValueError("ablation primary metric must be roc_auc")
+    if evaluation.get("secondary_metrics") != ["average_precision"]:
+        raise ValueError("ablation secondary metric must be average_precision")
+
+    training = _require_mapping(raw.get("training"), "training")
+    unknown_training = set(training).difference({
+        "device", "selection_metric", "log_epoch_history",
+        "epoch_history_metrics",
+    })
+    if unknown_training:
+        raise ValueError(f"Unknown training setting: {sorted(unknown_training)[0]}")
+    if training.get("selection_metric") not in {"roc_auc", "average_precision"}:
+        raise ValueError("Unknown selection metric")
+    if not isinstance(training.get("device"), str) or not training["device"]:
+        raise ValueError("training.device must be a non-empty string")
+    if training.get("log_epoch_history") is not True:
+        raise ValueError("training-policy ablation must log epoch history")
+    if training.get("epoch_history_metrics") != [
+        "training_loss", "validation_roc_auc"
+    ]:
+        raise ValueError("unsupported epoch_history_metrics")
+
+    policies_raw = _require_unique_sequence(
+        raw.get("training_policies"), "training_policies"
+    )
+    policies = tuple(
+        _parse_training_policy(policy, index)
+        for index, policy in enumerate(policies_raw)
+    )
+    if len({policy.name for policy in policies}) != len(policies):
+        raise ValueError("training policy names must be unique")
+
+    defaults = _validate_defaults({
+        "query_size": None,
+        "query_fraction": splits["query_fraction"],
+        "validation_query_size": None,
+        "validation_query_fraction": splits["validation_query_fraction"],
+        "train_ratio": splits["train_ratio"],
+        "selection_metric": training["selection_metric"],
+        "device": training["device"],
+    })
+    model_names = _require_unique_sequence(raw.get("models"), "models")
+    if any(not isinstance(name, str) for name in model_names):
+        raise ValueError("ablation models must be architecture names")
+    models = tuple(
+        _parse_model_grid({"type": name}, defaults, index)
+        for index, name in enumerate(model_names)
+    )
+    return BenchmarkConfig(
+        output=output,
+        data_root=data_root,
+        seeds=tuple(seeds),
+        defaults=defaults,
+        datasets=datasets,
+        models=models,
+        error_output=error_output,
+        selected_configurations=_selected_configuration_path(
+            raw.get("selected_configurations")
+        ),
+        kind="training-policy-ablation",
+        training_policies=policies,
+        epoch_history_output=epoch_output,
+        log_epoch_history=True,
+    )
 
 
 def load_benchmark_config(path):
@@ -362,6 +634,8 @@ def load_benchmark_config(path):
     with path.open("r", encoding="utf-8") as config_file:
         raw = yaml.safe_load(config_file)
     raw = _require_mapping(raw, "benchmark configuration")
+    if raw.get("kind") == "training-policy-ablation":
+        return _load_training_policy_ablation(raw)
     unknown = set(raw).difference({
         "version", "output", "error_output", "data_root", "seeds",
         "defaults", "datasets", "models", "kind", "selected_configurations",
@@ -382,28 +656,7 @@ def load_benchmark_config(path):
                 "version-2 configurations must use kind "
                 "'selected-hyperparameter-benchmark'"
             )
-        selected_raw = _require_mapping(
-            selected_raw, "selected_configurations"
-        )
-        unknown_selected = set(selected_raw).difference({
-            "path", "granularity", "require_all_pairs"
-        })
-        if unknown_selected:
-            raise ValueError(
-                "Unknown selected-configuration setting: "
-                f"{sorted(unknown_selected)[0]}"
-            )
-        if selected_raw.get("granularity") != ["dataset", "architecture"]:
-            raise ValueError(
-                "selected configuration granularity must be dataset and "
-                "architecture"
-            )
-        if selected_raw.get("require_all_pairs") is not True:
-            raise ValueError("selected configurations must require all pairs")
-        selected_value = selected_raw.get("path")
-        if not isinstance(selected_value, str) or not selected_value.strip():
-            raise ValueError("selected_configurations.path must be non-empty")
-        selected_path = Path(selected_value)
+        selected_path = _selected_configuration_path(selected_raw)
 
     output = raw.get("output", "out/benchmark.csv")
     data_root = raw.get("data_root", "data")
@@ -567,10 +820,28 @@ def expand_benchmark_config(config):
         selections = _load_selected_configurations(
             config.selected_configurations
         )
-        return tuple(
+        selected_jobs = tuple(
             _selected_experiment_job(config, dataset, model, selections)
             for dataset, model in product(config.datasets, config.models)
         )
+        if not config.training_policies:
+            return selected_jobs
+        jobs = []
+        for job, policy in product(selected_jobs, config.training_policies):
+            parameters = {
+                **job.parameters,
+                "epochs": policy.max_epochs,
+                "training_policy": policy.name,
+                "checkpoint_strategy": policy.checkpoint_strategy,
+                "early_stopping_patience": policy.early_stopping_patience,
+                "early_stopping_min_delta": policy.early_stopping_min_delta,
+                "early_stopping_minimum_epochs": (
+                    policy.early_stopping_minimum_epochs
+                ),
+            }
+            _validate_job_parameters(parameters)
+            jobs.append(replace(job, parameters=parameters))
+        return tuple(jobs)
 
     jobs = []
     for dataset, model in product(config.datasets, config.models):
@@ -611,6 +882,44 @@ def load_completed_results(path):
             if row["configuration_id"]:
                 completed.add((row["configuration_id"], int(row["random_seed"])))
     return completed
+
+
+def _training_configuration_id(job):
+    """Return the ID of the trajectory shared by both test split rows."""
+    parameters = {
+        name: value for name, value in job.parameters.items()
+        if name not in {"out_filepath", "data_root"}
+    }
+    return make_configuration_id({
+        "dataset": job.dataset,
+        "model_type": job.model_type,
+        "conv_layer_type": job.conv_layer_type,
+        "reduction_method": job.reduction_method,
+        "regularization_type": job.regularization.type,
+        "regularization_strength": job.regularization.strength,
+        "parameters": parameters,
+    })
+
+
+def load_completed_epoch_history(path):
+    """Return completed training-configuration, seed, and epoch tuples."""
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    with path.open("r", newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        if reader.fieldnames != CSVEpochHistoryLogger.FIELDNAMES:
+            raise ValueError(
+                "existing CSV schema does not match the epoch logger schema"
+            )
+        return {
+            (
+                row["configuration_id"],
+                int(row["random_seed"]),
+                int(row["epoch"]),
+            )
+            for row in reader
+        }
 
 
 def _append_failure(path, run_id, job, error):
@@ -664,6 +973,16 @@ def execute_benchmark(
         )
 
     completed = load_completed_results(config.output) if resume else set()
+    epoch_logger = None
+    completed_epochs = set()
+    if config.log_epoch_history:
+        epoch_logger = CSVEpochHistoryLogger(
+            config.epoch_history_output, run_id=benchmark_run_id
+        )
+        if resume:
+            completed_epochs = load_completed_epoch_history(
+                config.epoch_history_output
+            )
     succeeded = 0
     failed = 0
     show_progress = verbose or verbose_details
@@ -691,6 +1010,30 @@ def execute_benchmark(
 
     for job in jobs:
         accounted_runs = 0
+        training_configuration_id = _training_configuration_id(job)
+
+        def log_epoch(record):
+            key = (
+                training_configuration_id,
+                record["random_seed"],
+                record["epoch"],
+            )
+            if key in completed_epochs:
+                return
+            epoch_logger.log(EpochHistoryRecord(
+                configuration_id=training_configuration_id,
+                dataset=record["dataset"],
+                model_type=record["model_type"],
+                random_seed=record["random_seed"],
+                training_policy=record["training_policy"],
+                epoch=record["epoch"],
+                training_loss=record["training_loss"],
+                validation_roc_auc=record["validation_roc_auc"],
+                validation_average_precision=(
+                    record["validation_average_precision"]
+                ),
+            ))
+            completed_epochs.add(key)
 
         def handle_progress(event, **event_values):
             nonlocal accounted_runs
@@ -725,9 +1068,10 @@ def execute_benchmark(
                     "progress_callback": handle_progress,
                     "compact_progress": True,
                 })
-            runner(
-                job.to_namespace(verbose=show_progress), **runner_kwargs
-            )
+            namespace = job.to_namespace(verbose=show_progress)
+            if epoch_logger is not None:
+                namespace.epoch_callback = log_epoch
+            runner(namespace, **runner_kwargs)
             succeeded += 1
             if compact_progress and accounted_runs < len(job.seeds):
                 unreported = len(job.seeds) - accounted_runs

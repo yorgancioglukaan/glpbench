@@ -118,22 +118,31 @@ class TrainingSummary:
     training_time_seconds: float | None
     epochs_trained: int
     best_epoch: int | None
+    selected_epoch: int | None
+    checkpoint_strategy: str | None
     selection_metric: str | None
     best_validation_score: float | None
     early_stopping_patience: int | None
     early_stopping_min_delta: float
+    early_stopping_minimum_epochs: int
     stopped_early: bool
 
 
 def train_with_validation_selection(
     predictor, train_data, validation_data, *, epochs, seed,
     selection_metric, device, early_stopping_patience=None,
-    early_stopping_min_delta=0.0, verbose=False, progress_label="model",
-    progress_position=1, compact_progress=False,
+    early_stopping_min_delta=0.0, early_stopping_minimum_epochs=0,
+    checkpoint_strategy="best-validation", verbose=False,
+    progress_label="model", progress_position=1, compact_progress=False,
+    epoch_callback=None,
 ):
     """Train with validation checkpointing and optional early stopping."""
     if selection_metric not in {"roc_auc", "average_precision"}:
         raise ValueError("unsupported checkpoint selection metric")
+    if checkpoint_strategy not in {"best-validation", "final"}:
+        raise ValueError("unsupported checkpoint strategy")
+    if epoch_callback is not None and not callable(epoch_callback):
+        raise ValueError("epoch_callback must be callable")
     if early_stopping_patience is not None and (
         not isinstance(early_stopping_patience, int)
         or isinstance(early_stopping_patience, bool)
@@ -146,10 +155,19 @@ def train_with_validation_selection(
         or early_stopping_min_delta < 0
     ):
         raise ValueError("early_stopping_min_delta must be non-negative")
+    if (
+        not isinstance(early_stopping_minimum_epochs, int)
+        or isinstance(early_stopping_minimum_epochs, bool)
+        or not 0 <= early_stopping_minimum_epochs <= epochs
+    ):
+        raise ValueError(
+            "early_stopping_minimum_epochs must be between zero and epochs"
+        )
     if not predictor.trainable:
         return TrainingSummary(
-            None, None, 0, None, None, None,
-            early_stopping_patience, float(early_stopping_min_delta), False,
+            None, None, 0, None, None, None, None, None,
+            early_stopping_patience, float(early_stopping_min_delta),
+            early_stopping_minimum_epochs, False,
         )
 
     epoch_progress = tqdm(
@@ -165,6 +183,7 @@ def train_with_validation_selection(
     best_score = None
     stopping_reference_score = None
     selected_loss = None
+    final_loss = None
     epochs_without_improvement = 0
     epochs_trained = 0
     stopped_early = False
@@ -176,28 +195,43 @@ def train_with_validation_selection(
             train_data, seed=seed + epoch
         )
         loss = predictor.train(negative_edge_index=negative_edges)
+        final_loss = loss.detach().clone()
         validation_probabilities = predictor.test(validation_data)
         validation_metrics = calculate_metrics(
             validation_data.edge_label, validation_probabilities
         )
         validation_score = float(validation_metrics[selection_metric])
+        if epoch_callback is not None:
+            epoch_callback({
+                "epoch": epoch + 1,
+                "training_loss": float(loss.detach().item()),
+                **{
+                    f"validation_{name}": float(value)
+                    for name, value in validation_metrics.items()
+                },
+            })
         if best_score is None or validation_score > best_score:
             best_score = validation_score
             best_epoch = epoch + 1
             best_state = copy.deepcopy(predictor.model.state_dict())
             selected_loss = loss.detach().clone()
 
-        significant_improvement = (
-            stopping_reference_score is None
-            or validation_score
-            > stopping_reference_score + float(early_stopping_min_delta)
-        )
-        if significant_improvement:
-            stopping_reference_score = validation_score
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
         epochs_trained = epoch + 1
+        stopping_active = (
+            early_stopping_patience is not None
+            and epochs_trained >= max(1, early_stopping_minimum_epochs)
+        )
+        if stopping_active:
+            significant_improvement = (
+                stopping_reference_score is None
+                or validation_score
+                > stopping_reference_score + float(early_stopping_min_delta)
+            )
+            if significant_improvement:
+                stopping_reference_score = validation_score
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
         if verbose:
             component_values = {
@@ -219,7 +253,7 @@ def train_with_validation_selection(
             epoch_progress.set_postfix(component_values)
 
         if (
-            early_stopping_patience is not None
+            stopping_active
             and epochs_without_improvement >= early_stopping_patience
         ):
             stopped_early = epochs_trained < epochs
@@ -227,7 +261,12 @@ def train_with_validation_selection(
 
     if best_state is None:
         raise RuntimeError("training did not produce a validation checkpoint")
-    predictor.model.load_state_dict(best_state)
+    if checkpoint_strategy == "best-validation":
+        predictor.model.load_state_dict(best_state)
+        selected_epoch = best_epoch
+    else:
+        selected_loss = final_loss
+        selected_epoch = epochs_trained
     _synchronize_device(device)
     training_time_seconds = time.perf_counter() - training_start
     return TrainingSummary(
@@ -235,10 +274,13 @@ def train_with_validation_selection(
         training_time_seconds=training_time_seconds,
         epochs_trained=epochs_trained,
         best_epoch=best_epoch,
+        selected_epoch=selected_epoch,
+        checkpoint_strategy=checkpoint_strategy,
         selection_metric=selection_metric,
         best_validation_score=best_score,
         early_stopping_patience=early_stopping_patience,
         early_stopping_min_delta=float(early_stopping_min_delta),
+        early_stopping_minimum_epochs=early_stopping_minimum_epochs,
         stopped_early=stopped_early,
     )
 
@@ -468,6 +510,16 @@ def run_experiment(
     early_stopping_min_delta = getattr(
         args, "early_stopping_min_delta", 0.0
     )
+    early_stopping_minimum_epochs = getattr(
+        args, "early_stopping_minimum_epochs", 0
+    )
+    checkpoint_strategy = getattr(
+        args, "checkpoint_strategy", "best-validation"
+    )
+    training_policy = getattr(args, "training_policy", "default")
+    epoch_callback = getattr(args, "epoch_callback", None)
+    if not isinstance(training_policy, str) or not training_policy.strip():
+        raise ValueError("training_policy must be a non-empty string")
     if early_stopping_patience is not None and (
         not isinstance(early_stopping_patience, int)
         or isinstance(early_stopping_patience, bool)
@@ -670,8 +722,13 @@ def run_experiment(
                     ),
                     "weight_decay": effective_weight_decay,
                     "selection_metric": selection_metric,
+                    "training_policy": training_policy,
+                    "checkpoint_strategy": checkpoint_strategy,
                     "early_stopping_patience": early_stopping_patience,
                     "early_stopping_min_delta": early_stopping_min_delta,
+                    "early_stopping_minimum_epochs": (
+                        early_stopping_minimum_epochs
+                    ),
                     "extra_fields": extra_fields,
                 })
                 for split_type in ("transductive", "inductive")
@@ -706,6 +763,16 @@ def run_experiment(
                 seed=seed,
                 stage="training" if predictor.trainable else "evaluating",
             )
+            training_epoch_callback = None
+            if epoch_callback is not None:
+                def training_epoch_callback(record):
+                    epoch_callback({
+                        "dataset": data.dataset_name,
+                        "model_type": model_type,
+                        "random_seed": seed,
+                        "training_policy": training_policy,
+                        **record,
+                    })
             training_summary = _train_with_checkpoint_selection(
                 predictor,
                 train,
@@ -716,6 +783,8 @@ def run_experiment(
                 device=device,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
+                early_stopping_minimum_epochs=early_stopping_minimum_epochs,
+                checkpoint_strategy=checkpoint_strategy,
                 verbose=verbose,
                 progress_label=(
                     f"{args.dataset}/{progress_label}/seed={seed}"
@@ -727,6 +796,7 @@ def run_experiment(
                     else 2 if len(seeds) > 1 else 1
                 ),
                 compact_progress=compact_progress,
+                epoch_callback=training_epoch_callback,
             )
 
             emit(
@@ -767,6 +837,9 @@ def run_experiment(
                     ),
                     epochs_trained=training_summary.epochs_trained,
                     best_epoch=training_summary.best_epoch,
+                    selected_epoch=training_summary.selected_epoch,
+                    training_policy=training_policy,
+                    checkpoint_strategy=training_summary.checkpoint_strategy,
                     selection_metric=training_summary.selection_metric,
                     best_validation_score=(
                         training_summary.best_validation_score
@@ -776,6 +849,9 @@ def run_experiment(
                     ),
                     early_stopping_min_delta=(
                         training_summary.early_stopping_min_delta
+                    ),
+                    early_stopping_minimum_epochs=(
+                        training_summary.early_stopping_minimum_epochs
                     ),
                     stopped_early=training_summary.stopped_early,
                     regularization_type=regularization_type,
