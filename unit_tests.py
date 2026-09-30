@@ -400,6 +400,120 @@ class TestInductiveSplit(unittest.TestCase):
                     getattr(second_split, attribute),
                 ))
 
+    def test_comparable_split_generation_runs_end_to_end_audit(self):
+        data = self._undirected_data(
+            8,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0),
+             (0, 3), (1, 4), (2, 6), (3, 7)],
+        )
+        with patch(
+            "utils.audit_comparable_splits",
+            wraps=utils.audit_comparable_splits,
+        ) as audit:
+            splits = utils.generate_comparable_splits(
+                data, query=[7], validation_query=[6], seed=4
+            )
+
+        audit.assert_called_once()
+        self.assertIs(audit.call_args.args[0], data)
+        self.assertIs(audit.call_args.args[1], splits)
+
+    def test_audit_rejects_corrupted_split_invariants(self):
+        data = self._undirected_data(
+            10,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0),
+             (0, 3), (1, 4), (2, 5), (0, 6), (2, 7), (1, 8), (3, 9)],
+        )
+        clean = utils.generate_comparable_splits(
+            data, query=[8, 9], validation_query=[6, 7], seed=9,
+            train_ratio=0.75,
+        )
+
+        validation = clean.validation.clone()
+        validation.edge_index = torch.cat([
+            validation.edge_index,
+            torch.tensor([[0, 6], [6, 0]]),
+        ], dim=1)
+        with self.assertRaisesRegex(ValueError, "query node"):
+            utils.audit_comparable_splits(
+                data, clean._replace(validation=validation)
+            )
+
+        inductive = clean.test_inductive.clone()
+        negative_index = int((inductive.edge_label == 1).sum())
+        inductive.edge_label_index[:, negative_index] = data.edge_index[:, 0]
+        with self.assertRaisesRegex(ValueError, "negative edge that is positive"):
+            utils.audit_comparable_splits(
+                data, clean._replace(test_inductive=inductive)
+            )
+
+        transductive = clean.test_transductive.clone()
+        transductive.edge_label_index = transductive.edge_label_index[:, :-1]
+        transductive.edge_label = transductive.edge_label[:-1]
+        with self.assertRaisesRegex(ValueError, "different labeled-edge counts"):
+            utils.audit_comparable_splits(
+                data, clean._replace(test_transductive=transductive)
+            )
+
+        validation = clean.validation.clone()
+        validation_positive = validation.edge_label == 1
+        validation.edge_label_index[:, validation_positive] = (
+            clean.test_inductive.edge_label_index[
+                :, clean.test_inductive.edge_label == 1
+            ][:, :int(validation_positive.sum())]
+        )
+        with self.assertRaisesRegex(ValueError, "Positive edges overlap"):
+            utils.audit_comparable_splits(
+                data, clean._replace(validation=validation)
+            )
+
+    def test_query_to_query_edges_are_excluded_from_all_split_roles(self):
+        data = self._undirected_data(
+            6,
+            [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 5), (4, 5)],
+        )
+        splits = utils.generate_comparable_splits(
+            data, query=[5], validation_query=[4], seed=2,
+            train_ratio=0.75,
+        )
+        query_pair = (4, 5)
+
+        for split in splits:
+            represented = (
+                utils._canonical_edge_pairs(split.edge_index)
+                | utils._canonical_edge_pairs(split.edge_label_index)
+            )
+            self.assertNotIn(query_pair, represented)
+        positive_sets = [
+            utils._canonical_edge_pairs(
+                split.edge_label_index[:, split.edge_label == 1]
+            )
+            for split in splits
+        ]
+        for index, left in enumerate(positive_sets):
+            for right in positive_sets[index + 1:]:
+                self.assertTrue(left.isdisjoint(right))
+        self.assertIsNone(utils.audit_comparable_splits(data, splits))
+
+    def test_split_protocol_rejects_self_loops_and_duplicate_edges(self):
+        self_loop = self._undirected_data(
+            7,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (0, 6), (2, 2)],
+        )
+        duplicate = self._undirected_data(
+            7,
+            [(0, 1), (0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (0, 6)],
+        )
+
+        with self.assertRaisesRegex(ValueError, "Self-loops"):
+            utils.generate_comparable_splits(
+                self_loop, query=[6], validation_query=[5], seed=1
+            )
+        with self.assertRaisesRegex(ValueError, "Duplicate directed edges"):
+            utils.generate_comparable_splits(
+                duplicate, query=[6], validation_query=[5], seed=1
+            )
+
     def test_query_int(self):
         data = self._undirected_data(4, [(0, 1), (1, 2), (2, 3)])
         #negative input should throw ValueError

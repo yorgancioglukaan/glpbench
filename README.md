@@ -196,6 +196,10 @@ that every query retains at least one visible neighbor. Both split functions can
 also select queries directly by accepting `query_size` or `query_fraction` with
 a `seed`. `generate_comparable_splits()` creates transductive and inductive test
 sets with matching message-passing graphs and equal numbers of labeled edges.
+It automatically calls `audit_comparable_splits()` to enforce node-role,
+topology, positive/negative leakage, orientation, and paired-test invariants.
+The split protocol expects a simple undirected graph and rejects self-loops or
+duplicate directed edge entries rather than silently modifying them.
 `utils.inductive_split()` is available when only a cold-start split is needed.
 
 ### Link-prediction models
