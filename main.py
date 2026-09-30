@@ -343,8 +343,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_experiment(args):
+def run_experiment(args, run_id=None, completed_results=None):
     """Run one training experiment and log both test settings."""
+    if completed_results is None:
+        completed_results = set()
+    elif not isinstance(completed_results, set):
+        raise TypeError("completed_results must be a set")
     query_size = getattr(args, "query_size", None)
     query_fraction = getattr(args, "query_fraction", None)
     validation_query_size = getattr(args, "validation_query_size", None)
@@ -422,7 +426,7 @@ def run_experiment(args):
     gatv2_kwargs = getattr(args, "gatv2_kwargs", None) or {}
     if not isinstance(gatv2_kwargs, dict):
         raise ValueError("gatv2_kwargs must be a dictionary")
-    logger = CSVResultLogger(args.out_filepath)
+    logger = CSVResultLogger(args.out_filepath, run_id=run_id)
     decoder_hidden_channels = getattr(args, "decoder_hidden_channels", None)
     decoder_dropout = getattr(args, "decoder_dropout", 0.0)
     kl_weight = getattr(args, "kl_weight", 1.0)
@@ -544,6 +548,93 @@ def run_experiment(args):
                 })
             predictor = LinkPrediction(train, **predictor_kwargs)
             predictor.model = predictor.model.to(device)
+            effective_conv_layer = (
+                args.conv_layer_type
+                if predictor.model_spec.uses_conv_layer else "None"
+            )
+            extra_fields = {
+                "reduction_method": reduction_method,
+                "validation_query_size": len(query_nodes.validation),
+                "learning_rate": learning_rate,
+                "device": str(device),
+                "query_selection": {
+                    "mode": (
+                        "fraction" if query_fraction is not None else "size"
+                    ),
+                    "value": (
+                        query_fraction if query_fraction is not None else query_size
+                    ),
+                    "resolved_size": len(query_nodes.test),
+                },
+                "validation_query_selection": {
+                    "mode": (
+                        "fraction"
+                        if validation_query_fraction is not None
+                        else "size"
+                        if validation_query_size is not None
+                        else "match-test"
+                    ),
+                    "value": (
+                        validation_query_fraction
+                        if validation_query_fraction is not None
+                        else validation_query_size
+                    ),
+                    "resolved_size": len(query_nodes.validation),
+                },
+            }
+            if (
+                predictor.model_spec.uses_conv_layer
+                and args.conv_layer_type == "GATv2Conv"
+            ):
+                extra_fields["gatv2_kwargs"] = gatv2_kwargs
+            if model_type == "mlp":
+                extra_fields.update({
+                    "decoder_hidden_channels": decoder_hidden_channels,
+                    "decoder_dropout": decoder_dropout,
+                })
+            elif model_type == "variational":
+                extra_fields["kl_weight"] = kl_weight
+            elif model_type == "deal":
+                extra_fields.update({
+                    f"deal_{name}": value for name, value in deal_config.items()
+                })
+
+            configuration_ids = {
+                split_type: make_configuration_id({
+                    "dataset": data.dataset_name,
+                    "model_type": model_type,
+                    "split_type": split_type,
+                    "conv_layer_type": effective_conv_layer,
+                    "hidden_channels": args.hidden_channels,
+                    "out_channels": args.out_channels,
+                    "query_size": len(query_nodes.test),
+                    "validation_query_size": len(query_nodes.validation),
+                    "train_ratio": args.train_ratio,
+                    "epochs": args.epochs,
+                    "normalize_features": args.normalize_features,
+                    "regularization_type": regularization_type,
+                    "regularization_strength": (
+                        regularization_strength
+                        if model_type == "asymmetric" else 0.0
+                    ),
+                    "weight_decay": effective_weight_decay,
+                    "selection_metric": selection_metric,
+                    "early_stopping_patience": early_stopping_patience,
+                    "early_stopping_min_delta": early_stopping_min_delta,
+                    "extra_fields": extra_fields,
+                })
+                for split_type in ("transductive", "inductive")
+            }
+            missing_split_types = {
+                split_type for split_type, configuration_id
+                in configuration_ids.items()
+                if (configuration_id, seed) not in completed_results
+            }
+            if not missing_split_types:
+                report(
+                    f"Skipping completed {progress_label} model for seed {seed}."
+                )
+                continue
             if predictor.trainable:
                 report(f"Training {progress_label} model for seed {seed}...")
             else:
@@ -571,83 +662,11 @@ def run_experiment(args):
                 ("transductive", test_transductive),
                 ("inductive", test_inductive),
             ):
+                if split_type not in missing_split_types:
+                    continue
                 probabilities = predictor.test(test_data)
                 metrics = calculate_metrics(test_data.edge_label, probabilities)
-                extra_fields = {
-                    "reduction_method": reduction_method,
-                    "validation_query_size": len(query_nodes.validation),
-                    "learning_rate": learning_rate,
-                    "device": str(device),
-                    "query_selection": {
-                        "mode": (
-                            "fraction" if query_fraction is not None else "size"
-                        ),
-                        "value": (
-                            query_fraction
-                            if query_fraction is not None else query_size
-                        ),
-                        "resolved_size": len(query_nodes.test),
-                    },
-                    "validation_query_selection": {
-                        "mode": (
-                            "fraction"
-                            if validation_query_fraction is not None
-                            else "size"
-                            if validation_query_size is not None
-                            else "match-test"
-                        ),
-                        "value": (
-                            validation_query_fraction
-                            if validation_query_fraction is not None
-                            else validation_query_size
-                        ),
-                        "resolved_size": len(query_nodes.validation),
-                    },
-                }
-                if (
-                    predictor.model_spec.uses_conv_layer
-                    and args.conv_layer_type == "GATv2Conv"
-                ):
-                    extra_fields["gatv2_kwargs"] = gatv2_kwargs
-                if model_type == "mlp":
-                    extra_fields.update({
-                        "decoder_hidden_channels": decoder_hidden_channels,
-                        "decoder_dropout": decoder_dropout,
-                    })
-                elif model_type == "variational":
-                    extra_fields["kl_weight"] = kl_weight
-                elif model_type == "deal":
-                    extra_fields.update({
-                        f"deal_{name}": value
-                        for name, value in deal_config.items()
-                    })
-                effective_conv_layer = (
-                    args.conv_layer_type
-                    if predictor.model_spec.uses_conv_layer else "None"
-                )
-                configuration_id = make_configuration_id({
-                    "dataset": data.dataset_name,
-                    "model_type": model_type,
-                    "split_type": split_type,
-                    "conv_layer_type": effective_conv_layer,
-                    "hidden_channels": args.hidden_channels,
-                    "out_channels": args.out_channels,
-                    "query_size": len(query_nodes.test),
-                    "validation_query_size": len(query_nodes.validation),
-                    "train_ratio": args.train_ratio,
-                    "epochs": args.epochs,
-                    "normalize_features": args.normalize_features,
-                    "regularization_type": regularization_type,
-                    "regularization_strength": (
-                        regularization_strength
-                        if model_type == "asymmetric" else 0.0
-                    ),
-                    "weight_decay": effective_weight_decay,
-                    "selection_metric": selection_metric,
-                    "early_stopping_patience": early_stopping_patience,
-                    "early_stopping_min_delta": early_stopping_min_delta,
-                    "extra_fields": extra_fields,
-                })
+                configuration_id = configuration_ids[split_type]
                 result = ExperimentResult(
                     configuration_id=configuration_id,
                     dataset=data.dataset_name,
@@ -689,6 +708,7 @@ def run_experiment(args):
                     **metrics,
                 )
                 logger.log(result)
+                completed_results.add((configuration_id, seed))
     report(f"Results written to {args.out_filepath}")
     return logger.run_id
 

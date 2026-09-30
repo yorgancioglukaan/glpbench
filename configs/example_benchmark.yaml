@@ -1,0 +1,47 @@
+version: 1
+
+output: out/benchmark.csv
+error_output: out/benchmark.errors.jsonl
+data_root: data
+
+seeds: [0, 1, 2, 3, 4]
+
+defaults:
+  query_size: 50
+  validation_query_size: 50
+  train_ratio: 0.8
+  epochs: 500
+  hidden_channels: 128
+  out_channels: 64
+  learning_rate: 0.01
+  selection_metric: roc_auc
+  early_stopping_patience: 30
+  early_stopping_min_delta: 0.001
+  normalize_features: true
+  device: cpu
+
+datasets:
+  - Cora
+  - CiteSeer
+  - WikiCS
+
+models:
+  - type: symmetric
+    conv_layer_types: [GCNConv, SAGEConv]
+
+  - type: asymmetric
+    conv_layer_types: [GCNConv, SAGEConv]
+    reduction_methods: [pca, truncated-svd]
+    regularization:
+      - type: none
+        strength: 0.0
+      - type: cosine-alignment
+        strength: 0.01
+
+  - type: deal
+    parameters:
+      deal_theta_ss: 1.0
+      deal_theta_aa: 1.0
+      deal_theta_sa: 1.0
+
+  - type: feature-cosine

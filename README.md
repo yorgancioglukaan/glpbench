@@ -118,6 +118,30 @@ For example, run the Amazon Photo benchmark with:
 python main.py amazon-photo out/results.csv --verbose
 ```
 
+## Running a benchmark grid
+
+`benchmark.py` expands a versioned YAML configuration and calls the Python
+experiment API sequentially. Start from
+[`configs/example_benchmark.yaml`](configs/example_benchmark.yaml), then inspect
+the expansion without training:
+
+```bash
+python benchmark.py configs/example_benchmark.yaml --dry-run
+```
+
+Run the grid with:
+
+```bash
+python benchmark.py configs/example_benchmark.yaml --verbose
+```
+
+All newly written rows share one benchmark `run_id`. Individual failures are
+appended to the configured JSONL error file while later jobs continue. Use
+`--fail-fast` to stop on the first error, or `--resume` to read completed
+`(configuration_id, random_seed)` pairs from the result CSV and avoid duplicate
+rows. Dataset, model, convolution, reducer, regularization, seed, and common
+training dimensions are validated before execution.
+
 ## API overview
 
 ### Dataset loading

@@ -11,6 +11,7 @@ import torch
 import utils
 import datasets
 import main
+import benchmark
 import feature_reduction
 from experiment_logging import (
     CSVResultLogger,
@@ -1595,6 +1596,242 @@ class TestExperimentLogging(unittest.TestCase):
                 CSVResultLogger(Path(directory) / "results.csv").log({})
 
 
+class TestBenchmarkRunner(unittest.TestCase):
+    @staticmethod
+    def _write_config(directory, content):
+        path = Path(directory) / "benchmark.yaml"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_load_and_expand_conditional_grid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_config(directory, """
+version: 1
+output: out/test.csv
+data_root: benchmark-data
+seeds: [0, 1]
+defaults:
+  query_size: 5
+  epochs: 2
+  normalize_features: false
+datasets: [Cora, CiteSeer]
+models:
+  - type: symmetric
+    conv_layer_types: [GCNConv, SAGEConv]
+  - type: asymmetric
+    conv_layer_types: [GCNConv]
+    reduction_methods: [pca, truncated-svd]
+    regularization:
+      - {type: none, strength: 0.0}
+      - {type: cosine-alignment, strength: 0.01}
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+
+        self.assertEqual(config.datasets, ("cora", "citeseer"))
+        self.assertEqual(config.seeds, (0, 1))
+        self.assertEqual(len(jobs), 12)
+        self.assertEqual(
+            benchmark.describe_benchmark(config, jobs),
+            {
+                "datasets": 2,
+                "jobs": 12,
+                "seeds_per_job": 2,
+                "model_runs": 24,
+                "expected_result_rows": 48,
+            },
+        )
+        first_args = jobs[0].to_namespace()
+        self.assertEqual(first_args.dataset, "cora")
+        self.assertEqual(first_args.seed, [0, 1])
+        self.assertEqual(first_args.query_size, 5)
+        self.assertFalse(first_args.normalize_features)
+
+    def test_config_validation_rejects_incompatible_model_options(self):
+        invalid_configs = (
+            """
+version: 1
+seeds: [0]
+datasets: [Cora]
+models:
+  - type: deal
+    conv_layer_types: [GCNConv]
+""",
+            """
+version: 1
+seeds: [0]
+datasets: [Cora]
+models:
+  - type: symmetric
+    regularization:
+      - {type: latent-l2, strength: 0.1}
+""",
+            """
+version: 1
+seeds: [0]
+datasets: [unknown]
+models:
+  - type: symmetric
+""",
+            """
+version: 1
+seeds: [0]
+datasets: [Cora]
+models:
+  - type: symmetric
+    parameters:
+      kl_weight: 0.5
+""",
+        )
+        for content in invalid_configs:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+                path = self._write_config(directory, content)
+                with self.assertRaises(ValueError):
+                    benchmark.load_benchmark_config(path)
+
+    def test_expansion_rejects_invalid_resolved_parameters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_config(directory, """
+version: 1
+seeds: [0]
+defaults:
+  learning_rate: 0
+datasets: [Cora]
+models:
+  - type: symmetric
+""")
+            config = benchmark.load_benchmark_config(path)
+
+            with self.assertRaisesRegex(ValueError, "learning_rate"):
+                benchmark.expand_benchmark_config(config)
+
+    def test_dry_run_performs_no_execution_or_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            errors = Path(directory) / "errors.jsonl"
+            path = self._write_config(directory, f"""
+version: 1
+output: {output}
+error_output: {errors}
+seeds: [0, 1]
+datasets: [Cora]
+models:
+  - type: feature-cosine
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+            runner = unittest.mock.Mock()
+
+            summary = benchmark.execute_benchmark(
+                config, jobs, dry_run=True, runner=runner, run_id="dry-run"
+            )
+
+            runner.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertFalse(errors.exists())
+            self.assertEqual(summary.expected_result_rows, 4)
+
+    def test_execution_shares_run_id_and_isolates_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            errors = Path(directory) / "errors.jsonl"
+            path = self._write_config(directory, f"""
+version: 1
+output: {Path(directory) / "results.csv"}
+error_output: {errors}
+seeds: [3]
+datasets: [Cora]
+models:
+  - type: symmetric
+  - type: feature-cosine
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+            calls = []
+
+            def runner(args, **kwargs):
+                calls.append((args, kwargs))
+                if args.model_type == ["symmetric"]:
+                    raise RuntimeError("simulated failure")
+
+            summary = benchmark.execute_benchmark(
+                config, jobs, runner=runner, run_id="benchmark-001"
+            )
+            records = [
+                json.loads(line)
+                for line in errors.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(summary.jobs_succeeded, 1)
+        self.assertEqual(summary.jobs_failed, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            {kwargs["run_id"] for _, kwargs in calls}, {"benchmark-001"}
+        )
+        self.assertIs(calls[0][1]["completed_results"], calls[1][1]["completed_results"])
+        self.assertEqual(records[0]["error_type"], "RuntimeError")
+        self.assertEqual(records[0]["message"], "simulated failure")
+
+    def test_resume_loads_completed_configuration_seed_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            row = {name: "" for name in CSVResultLogger.FIELDNAMES}
+            row.update({
+                "configuration_id": "config-1",
+                "random_seed": "7",
+            })
+            with output.open("w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.DictWriter(
+                    csv_file, fieldnames=CSVResultLogger.FIELDNAMES
+                )
+                writer.writeheader()
+                writer.writerow(row)
+            path = self._write_config(directory, f"""
+version: 1
+output: {output}
+seeds: [7]
+datasets: [Cora]
+models:
+  - type: feature-cosine
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+            received = []
+
+            def runner(args, **kwargs):
+                received.append(kwargs["completed_results"].copy())
+
+            benchmark.execute_benchmark(
+                config, jobs, resume=True, runner=runner
+            )
+
+        self.assertEqual(received, [{("config-1", 7)}])
+
+    def test_fail_fast_records_and_reraises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            errors = Path(directory) / "errors.jsonl"
+            path = self._write_config(directory, f"""
+version: 1
+error_output: {errors}
+seeds: [0]
+datasets: [Cora]
+models:
+  - type: symmetric
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+
+            with self.assertRaisesRegex(RuntimeError, "stop now"):
+                benchmark.execute_benchmark(
+                    config,
+                    jobs,
+                    fail_fast=True,
+                    runner=unittest.mock.Mock(
+                        side_effect=RuntimeError("stop now")
+                    ),
+                )
+            self.assertTrue(errors.exists())
+
+
 class TestDatasetLoading(unittest.TestCase):
     @staticmethod
     def _graph():
@@ -1865,6 +2102,52 @@ class TestMainPipeline(unittest.TestCase):
             self.assertEqual(
                 {row["random_seed"] for row in repetitions}, {"1", "2"}
             )
+
+    @patch("main.load_dataset")
+    def test_completed_results_skip_model_evaluation_and_duplicate_rows(
+        self, mock_load
+    ):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.csv"
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(output),
+                data_root="unused",
+                model_type=["feature-cosine"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=5,
+                device="cpu",
+                normalize_features=False,
+            )
+            main.run_experiment(args, run_id="first")
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                original_rows = list(csv.DictReader(csv_file))
+            completed = {
+                (row["configuration_id"], int(row["random_seed"]))
+                for row in original_rows
+            }
+
+            with (
+                patch("main._train_with_checkpoint_selection") as mock_train,
+                patch("main.calculate_metrics") as mock_metrics,
+            ):
+                main.run_experiment(
+                    args,
+                    run_id="resume",
+                    completed_results=completed,
+                )
+            with output.open(newline="", encoding="utf-8") as csv_file:
+                resumed_rows = list(csv.DictReader(csv_file))
+
+        mock_train.assert_not_called()
+        mock_metrics.assert_not_called()
+        self.assertEqual(resumed_rows, original_rows)
 
     @patch("main.load_dataset")
     def test_checkpoint_selection_restores_best_epoch_before_testing(
