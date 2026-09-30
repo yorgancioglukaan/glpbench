@@ -2429,6 +2429,34 @@ class TestDatasetLoading(unittest.TestCase):
 
         self.assertTrue(torch.equal(loaded.x, original.x))
 
+    @patch("datasets.Planetoid")
+    def test_loader_removes_self_loops_without_mutating_source(
+        self, mock_planetoid
+    ):
+        original = self._graph()
+        original.edge_index = torch.tensor([
+            [0, 0, 1, 1, 1, 2],
+            [0, 1, 0, 1, 2, 1],
+        ])
+        original.edge_attr = torch.arange(6, dtype=torch.float).unsqueeze(1)
+        original_edges = original.edge_index.clone()
+        original_edge_attr = original.edge_attr.clone()
+        mock_planetoid.return_value.__getitem__.return_value = original
+
+        loaded = datasets.load_dataset("cora", normalize_features=False)
+
+        self.assertFalse(torch.any(loaded.edge_index[0] == loaded.edge_index[1]))
+        self.assertTrue(torch.equal(
+            loaded.edge_index,
+            torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]]),
+        ))
+        self.assertTrue(torch.equal(
+            loaded.edge_attr,
+            torch.tensor([[1.0], [2.0], [4.0], [5.0]]),
+        ))
+        self.assertTrue(torch.equal(original.edge_index, original_edges))
+        self.assertTrue(torch.equal(original.edge_attr, original_edge_attr))
+
     def test_loader_rejects_unknown_name_and_invalid_options(self):
         with self.assertRaisesRegex(ValueError, "Available datasets"):
             datasets.load_dataset("unknown")

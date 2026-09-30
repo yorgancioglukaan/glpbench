@@ -13,7 +13,7 @@ from torch_geometric.datasets import (
     WikiCS,
 )
 from torch_geometric.transforms import NormalizeFeatures
-from torch_geometric.utils import is_undirected
+from torch_geometric.utils import is_undirected, remove_self_loops
 
 
 _PLANETOID_NAMES = {
@@ -142,6 +142,12 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
         raise ValueError("loaded dataset does not contain edge_index")
     if data.num_nodes is None:
         raise ValueError("loaded dataset does not define num_nodes")
+
+    edge_attr = getattr(data, "edge_attr", None)
+    data.edge_index, edge_attr = remove_self_loops(data.edge_index, edge_attr)
+    if getattr(data, "edge_attr", None) is not None:
+        data.edge_attr = edge_attr
+
     if not is_undirected(data.edge_index):
         raise ValueError("loaded dataset must be undirected")
 
