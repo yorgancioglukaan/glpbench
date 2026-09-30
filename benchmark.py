@@ -650,7 +650,7 @@ def describe_benchmark(config, jobs):
 
 def execute_benchmark(
     config, jobs, *, dry_run=False, resume=False, fail_fast=False,
-    verbose=False, run_id=None, runner=run_experiment,
+    verbose=False, verbose_details=False, run_id=None, runner=run_experiment,
 ):
     """Execute expanded jobs sequentially and isolate job failures."""
     if not isinstance(config, BenchmarkConfig):
@@ -666,21 +666,92 @@ def execute_benchmark(
     completed = load_completed_results(config.output) if resume else set()
     succeeded = 0
     failed = 0
-    progress = tqdm(jobs, desc="Benchmark jobs", unit="job", disable=not verbose)
-    for job in progress:
-        progress.set_postfix_str(job.label)
+    show_progress = verbose or verbose_details
+    compact_progress = verbose and not verbose_details
+    progress = tqdm(
+        total=(
+            len(jobs) * len(config.seeds) if compact_progress else len(jobs)
+        ),
+        desc="Benchmark runs" if compact_progress else "Benchmark jobs",
+        unit="run" if compact_progress else "job",
+        disable=not show_progress,
+        position=0,
+    )
+    progress_counts = {"ok": 0, "failed": 0, "skipped": 0}
+
+    def update_display(label, stage=None):
+        details = " ".join(
+            f"{name}={value}" for name, value in progress_counts.items()
+        )
+        if stage is not None:
+            details = f"{label} stage={stage} {details}"
+        else:
+            details = f"{label} {details}"
+        progress.set_postfix_str(details)
+
+    for job in jobs:
+        accounted_runs = 0
+
+        def handle_progress(event, **event_values):
+            nonlocal accounted_runs
+            dataset = event_values.get("dataset", job.dataset)
+            model_type = event_values.get("model_type", job.model_type)
+            seed = event_values.get("seed")
+            label = f"{dataset}/{model_type}"
+            if seed is not None:
+                label += f"/seed={seed}"
+            if event == "run_completed":
+                progress_counts["ok"] += 1
+                accounted_runs += 1
+                progress.update(1)
+                update_display(label)
+            elif event == "run_skipped":
+                progress_counts["skipped"] += 1
+                accounted_runs += 1
+                progress.update(1)
+                update_display(label)
+            else:
+                update_display(label, event_values.get("stage"))
+
+        if not compact_progress:
+            progress.set_postfix_str(job.label)
         try:
+            runner_kwargs = {
+                "run_id": benchmark_run_id,
+                "completed_results": completed,
+            }
+            if compact_progress:
+                runner_kwargs.update({
+                    "progress_callback": handle_progress,
+                    "compact_progress": True,
+                })
             runner(
-                job.to_namespace(verbose=verbose),
-                run_id=benchmark_run_id,
-                completed_results=completed,
+                job.to_namespace(verbose=show_progress), **runner_kwargs
             )
             succeeded += 1
+            if compact_progress and accounted_runs < len(job.seeds):
+                unreported = len(job.seeds) - accounted_runs
+                progress_counts["ok"] += unreported
+                progress.update(unreported)
+                update_display(job.label)
         except Exception as error:
             failed += 1
             _append_failure(config.error_output, benchmark_run_id, job, error)
+            if compact_progress:
+                unreported = len(job.seeds) - accounted_runs
+                progress_counts["failed"] += unreported
+                progress.update(unreported)
+                update_display(job.label)
+                tqdm.write(
+                    f"FAILED {job.label}: {type(error).__name__}: {error}"
+                )
             if fail_fast:
+                progress.close()
                 raise
+        finally:
+            if not compact_progress:
+                progress.update(1)
+    progress.close()
     return BenchmarkSummary(
         benchmark_run_id, len(jobs), succeeded, failed, expected_rows
     )
@@ -694,6 +765,11 @@ def parse_args():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--verbose-details",
+        action="store_true",
+        help="show detailed nested experiment progress",
+    )
     return parser.parse_args()
 
 
@@ -714,11 +790,18 @@ def main(cli_args=None):
         resume=args.resume,
         fail_fast=args.fail_fast,
         verbose=args.verbose,
+        verbose_details=getattr(args, "verbose_details", False),
     )
+    print("Benchmark complete")
+    print(f"  Run ID: {summary.run_id}")
     print(
-        f"Benchmark run {summary.run_id}: "
-        f"{summary.jobs_succeeded} succeeded, {summary.jobs_failed} failed"
+        f"  Jobs: {summary.jobs_succeeded} succeeded, "
+        f"{summary.jobs_failed} failed, {summary.jobs_total} total"
     )
+    print(f"  Expected result rows: {summary.expected_result_rows}")
+    print(f"  Results: {config.output}")
+    if summary.jobs_failed:
+        print(f"  Errors: {config.error_output}")
     return summary
 
 

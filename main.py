@@ -129,7 +129,7 @@ def train_with_validation_selection(
     predictor, train_data, validation_data, *, epochs, seed,
     selection_metric, device, early_stopping_patience=None,
     early_stopping_min_delta=0.0, verbose=False, progress_label="model",
-    progress_position=1,
+    progress_position=1, compact_progress=False,
 ):
     """Train with validation checkpointing and optional early stopping."""
     if selection_metric not in {"roc_auc", "average_precision"}:
@@ -201,13 +201,21 @@ def train_with_validation_selection(
 
         if verbose:
             component_values = {
-                name: f"{value.detach().item():.4f}"
-                for name, value in predictor.last_loss_components.items()
-            }
-            component_values.update({
                 "loss": f"{loss.detach().item():.4f}",
                 f"val_{selection_metric}": f"{validation_score:.4f}",
-            })
+            }
+            if compact_progress:
+                component_values[f"best_{selection_metric}"] = f"{best_score:.4f}"
+                if early_stopping_patience is not None:
+                    component_values["patience"] = (
+                        f"{epochs_without_improvement}/"
+                        f"{early_stopping_patience}"
+                    )
+            else:
+                component_values = {
+                    name: f"{value.detach().item():.4f}"
+                    for name, value in predictor.last_loss_components.items()
+                } | component_values
             epoch_progress.set_postfix(component_values)
 
         if (
@@ -349,7 +357,10 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_experiment(args, run_id=None, completed_results=None):
+def run_experiment(
+    args, run_id=None, completed_results=None, *, progress_callback=None,
+    compact_progress=False,
+):
     """Run one training experiment and log both test settings."""
     if completed_results is None:
         completed_results = set()
@@ -380,9 +391,14 @@ def run_experiment(args, run_id=None, completed_results=None):
     seeds = _resolve_seeds(args)
     device = torch.device(args.device)
     verbose = getattr(args, "verbose", False)
+    detailed_verbose = verbose and not compact_progress
+
+    def emit(event, **values):
+        if progress_callback is not None:
+            progress_callback(event, **values)
 
     def report(message):
-        if verbose:
+        if detailed_verbose:
             tqdm.write(message)
 
     if args.model_type is None:
@@ -429,6 +445,7 @@ def run_experiment(args, run_id=None, completed_results=None):
     ]
 
     # Load once, then clone before seed-specific preprocessing.
+    emit("stage", dataset=args.dataset, stage="loading")
     report(f"Loading {args.dataset}...")
     source_data = load_dataset(
         args.dataset,
@@ -477,10 +494,11 @@ def run_experiment(args, run_id=None, completed_results=None):
         seeds,
         desc="Seeds",
         unit="seed",
-        disable=not verbose or len(seeds) == 1,
+        disable=not detailed_verbose or len(seeds) == 1,
         position=0,
     )
     for seed in seed_progress:
+        emit("stage", dataset=args.dataset, seed=seed, stage="splitting")
         random.seed(seed)
         torch.manual_seed(seed)
         data = source_data.clone()
@@ -517,6 +535,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             preparation_model_type = "asymmetric"
         else:
             preparation_model_type = model_types[0]
+        emit("stage", dataset=args.dataset, seed=seed, stage="preprocessing")
         candidate_data = prepare_candidate_data(
             data,
             splits,
@@ -536,7 +555,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             experiment_configs,
             desc=f"Seed {seed} architectures",
             unit="model",
-            disable=not verbose,
+            disable=not detailed_verbose,
             leave=len(seeds) == 1,
             position=1 if len(seeds) > 1 else 0,
         )
@@ -546,6 +565,13 @@ def run_experiment(args, run_id=None, completed_results=None):
             if model_spec.supports_agae_regularization:
                 progress_label += f"/{regularization_type}"
             model_progress.set_postfix_str(progress_label)
+            emit(
+                "run_started",
+                dataset=args.dataset,
+                model_type=model_type,
+                seed=seed,
+                stage="initializing",
+            )
             torch.manual_seed(seed)
             effective_weight_decay = (
                 weight_decay if model_spec.trainable else 0.0
@@ -659,6 +685,12 @@ def run_experiment(args, run_id=None, completed_results=None):
                 report(
                     f"Skipping completed {progress_label} model for seed {seed}."
                 )
+                emit(
+                    "run_skipped",
+                    dataset=args.dataset,
+                    model_type=model_type,
+                    seed=seed,
+                )
                 continue
             if predictor.trainable:
                 report(f"Training {progress_label} model for seed {seed}...")
@@ -667,6 +699,13 @@ def run_experiment(args, run_id=None, completed_results=None):
                     f"Evaluating {model_type} baseline for seed {seed} "
                     "without training..."
                 )
+            emit(
+                "stage",
+                dataset=args.dataset,
+                model_type=model_type,
+                seed=seed,
+                stage="training" if predictor.trainable else "evaluating",
+            )
             training_summary = _train_with_checkpoint_selection(
                 predictor,
                 train,
@@ -678,10 +717,25 @@ def run_experiment(args, run_id=None, completed_results=None):
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 verbose=verbose,
-                progress_label=f"seed {seed} {progress_label}",
-                progress_position=2 if len(seeds) > 1 else 1,
+                progress_label=(
+                    f"{args.dataset}/{progress_label}/seed={seed}"
+                    if compact_progress
+                    else f"seed {seed} {progress_label}"
+                ),
+                progress_position=(
+                    1 if compact_progress
+                    else 2 if len(seeds) > 1 else 1
+                ),
+                compact_progress=compact_progress,
             )
 
+            emit(
+                "stage",
+                dataset=args.dataset,
+                model_type=model_type,
+                seed=seed,
+                stage="evaluating",
+            )
             report(f"Evaluating {progress_label} model for seed {seed}...")
             for split_type, test_data in (
                 ("transductive", test_transductive),
@@ -739,6 +793,12 @@ def run_experiment(args, run_id=None, completed_results=None):
                 )
                 logger.log(result)
                 completed_results.add((configuration_id, seed))
+            emit(
+                "run_completed",
+                dataset=args.dataset,
+                model_type=model_type,
+                seed=seed,
+            )
     report(f"Results written to {args.out_filepath}")
     return logger.run_id
 

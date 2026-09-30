@@ -143,6 +143,11 @@ Run the grid with:
 python benchmark.py configs/example_benchmark.yaml --verbose
 ```
 
+Verbose benchmark output uses one overall model–seed progress bar and one
+temporary epoch bar for the current run. Use `--verbose-details` instead when
+diagnosing an experiment and you need the standalone seed, architecture, and
+stage messages.
+
 All newly written rows share one benchmark `run_id`. Individual failures are
 appended to the configured JSONL error file while later jobs continue. Use
 `--fail-fast` to stop on the first error, or `--resume` to read completed

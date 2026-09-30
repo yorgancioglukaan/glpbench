@@ -2108,6 +2108,56 @@ models:
             self.assertFalse(errors.exists())
             self.assertEqual(summary.expected_result_rows, 4)
 
+    def test_compact_progress_tracks_model_seed_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_config(directory, f"""
+version: 1
+output: {Path(directory) / "results.csv"}
+seeds: [3, 4]
+datasets: [Cora]
+models:
+  - type: symmetric
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+            received = []
+
+            def runner(args, **kwargs):
+                received.append((args, kwargs))
+                callback = kwargs["progress_callback"]
+                callback(
+                    "run_started", dataset=args.dataset,
+                    model_type="symmetric", seed=3, stage="training",
+                )
+                callback(
+                    "run_completed", dataset=args.dataset,
+                    model_type="symmetric", seed=3,
+                )
+                callback(
+                    "run_started", dataset=args.dataset,
+                    model_type="symmetric", seed=4, stage="training",
+                )
+                callback(
+                    "run_skipped", dataset=args.dataset,
+                    model_type="symmetric", seed=4,
+                )
+
+            progress = unittest.mock.Mock()
+            with patch("benchmark.tqdm", return_value=progress) as mock_tqdm:
+                summary = benchmark.execute_benchmark(
+                    config, jobs, verbose=True, runner=runner
+                )
+
+        self.assertEqual(summary.jobs_succeeded, 1)
+        self.assertTrue(received[0][0].verbose)
+        self.assertTrue(received[0][1]["compact_progress"])
+        self.assertEqual(progress.update.call_args_list, [
+            unittest.mock.call(1), unittest.mock.call(1)
+        ])
+        mock_tqdm.assert_called_once()
+        self.assertEqual(mock_tqdm.call_args.kwargs["total"], 2)
+        self.assertEqual(mock_tqdm.call_args.kwargs["desc"], "Benchmark runs")
+
     def test_execution_shares_run_id_and_isolates_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             errors = Path(directory) / "errors.jsonl"
@@ -3256,6 +3306,50 @@ class TestMainPipeline(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
 
         self.assertEqual({float(row["weight_decay"]) for row in rows}, {0.001})
+
+    @patch("main.load_dataset")
+    def test_compact_progress_emits_model_seed_events(self, mock_load):
+        mock_load.return_value = self._graph()
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(
+                dataset="toy",
+                out_filepath=str(Path(directory) / "results.csv"),
+                data_root="unused",
+                model_type=["symmetric"],
+                conv_layer_type="GCNConv",
+                hidden_channels=4,
+                out_channels=2,
+                learning_rate=0.01,
+                weight_decay=0.0,
+                query_size=1,
+                train_ratio=0.8,
+                epochs=1,
+                seed=42,
+                device="cpu",
+                normalize_features=False,
+                verbose=False,
+            )
+            events = []
+
+            main.run_experiment(
+                args,
+                progress_callback=lambda event, **values: events.append(
+                    (event, values)
+                ),
+                compact_progress=True,
+            )
+
+        event_names = [event for event, _ in events]
+        self.assertEqual(event_names.count("run_started"), 1)
+        self.assertEqual(event_names.count("run_completed"), 1)
+        self.assertIn("splitting", {
+            values.get("stage") for event, values in events
+            if event == "stage"
+        })
+        self.assertIn("evaluating", {
+            values.get("stage") for event, values in events
+            if event == "stage"
+        })
 
     @patch(
         "main.sample_training_negative_edges",
