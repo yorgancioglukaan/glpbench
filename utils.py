@@ -175,6 +175,68 @@ def _resolve_query_count(name, size, fraction, num_candidates):
     return resolved_size
 
 
+def _select_constrained_query_union(
+    neighbors, candidates, fixed_nodes, total_count, rng, max_attempts
+):
+    """Construct a query set while preserving a visible neighbor per query."""
+    fixed_nodes = set(fixed_nodes)
+    if len(fixed_nodes) > total_count:
+        raise ValueError("Fixed query nodes exceed the requested query count.")
+    if any(not neighbors[node].difference(fixed_nodes) for node in fixed_nodes):
+        raise ValueError(
+            "Fixed query nodes do not each retain a training-visible neighbor."
+        )
+
+    for _ in range(max_attempts):
+        selected = set(fixed_nodes)
+        blocked = set()
+        for node in selected:
+            outside = neighbors[node].difference(selected)
+            if len(outside) == 1:
+                blocked.update(outside)
+
+        available = [node for node in candidates if node not in selected]
+        rng.shuffle(available)
+        added = []
+        for candidate in available:
+            if len(selected) == total_count:
+                break
+            if candidate in blocked:
+                continue
+            candidate_outside = neighbors[candidate].difference(selected)
+            candidate_outside.discard(candidate)
+            if not candidate_outside:
+                continue
+
+            newly_blocked = set()
+            valid = True
+            for selected_neighbor in neighbors[candidate].intersection(selected):
+                outside = neighbors[selected_neighbor].difference(selected)
+                if len(outside) <= 1:
+                    valid = False
+                    break
+                if len(outside) == 2:
+                    newly_blocked.update(outside.difference({candidate}))
+            if not valid:
+                continue
+
+            selected.add(candidate)
+            added.append(candidate)
+            blocked.update(newly_blocked)
+            remaining = neighbors[candidate].difference(selected)
+            if len(remaining) == 1:
+                blocked.update(remaining)
+
+        if len(selected) == total_count:
+            return selected, added
+
+    raise ValueError(
+        "Could not construct disjoint validation and test query sets for which "
+        "every query retains a visible neighbor outside the query set after "
+        f"{max_attempts} attempts."
+    )
+
+
 def select_query_node_sets(
     data, *, test_query=None, validation_query=None, query_size=None,
     query_fraction=None, validation_query_size=None,
@@ -268,30 +330,27 @@ def select_query_node_sets(
         )
 
     rng = random.Random(seed)
-    for _ in range(max_attempts):
-        available = [
-            node for node in candidates
-            if node not in fixed_test_set and node not in fixed_validation_set
-        ]
-        missing_test = test_count - len(fixed_test_set)
-        missing_validation = validation_count - len(fixed_validation_set)
-        if missing_test + missing_validation > len(available):
-            break
-        sampled = rng.sample(available, missing_test + missing_validation)
-        test_nodes = sorted(fixed_test_set | set(sampled[:missing_test]))
-        validation_nodes = sorted(
-            fixed_validation_set | set(sampled[missing_test:])
+    missing_test = test_count - len(fixed_test_set)
+    missing_validation = validation_count - len(fixed_validation_set)
+    fixed_union = fixed_test_set | fixed_validation_set
+    if missing_test + missing_validation > len(set(candidates) - fixed_union):
+        raise ValueError(
+            "Requested validation and test queries exceed available candidates."
         )
-        query_union = set(test_nodes) | set(validation_nodes)
-        if all(neighbors[node].difference(query_union) for node in query_union):
-            return QueryNodeSets(
-                validation=tuple(validation_nodes), test=tuple(test_nodes)
-            )
-
-    raise ValueError(
-        "Could not select disjoint validation and test query nodes for which "
-        f"every query retains a training-visible neighbor after {max_attempts} "
-        "attempts."
+    _, added = _select_constrained_query_union(
+        neighbors,
+        candidates,
+        fixed_union,
+        total_count,
+        rng,
+        max_attempts,
+    )
+    test_nodes = sorted(fixed_test_set | set(added[:missing_test]))
+    validation_nodes = sorted(
+        fixed_validation_set | set(added[missing_test:])
+    )
+    return QueryNodeSets(
+        validation=tuple(validation_nodes), test=tuple(test_nodes)
     )
 
 
@@ -370,16 +429,15 @@ def select_query_nodes(
         )
 
     rng = random.Random(seed)
-    for _ in range(max_attempts):
-        selected = sorted(rng.sample(candidates, resolved_size))
-        selected_set = set(selected)
-        if all(neighbors[node].difference(selected_set) for node in selected):
-            return selected
-
-    raise ValueError(
-        f"Could not select {resolved_size} query nodes for which every query "
-        f"retains a visible neighbor after {max_attempts} attempts."
+    selected, _ = _select_constrained_query_union(
+        neighbors,
+        candidates,
+        fixed_nodes=(),
+        total_count=resolved_size,
+        rng=rng,
+        max_attempts=max_attempts,
     )
+    return sorted(selected)
 
 
 def _resolve_query_nodes(

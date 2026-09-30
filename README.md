@@ -150,6 +150,31 @@ appended to the configured JSONL error file while later jobs continue. Use
 rows. Dataset, model, convolution, reducer, regularization, seed, and common
 training dimensions are validated before execution.
 
+## Running a hyperparameter search
+
+`search.py` performs validation-only model selection and never evaluates either
+test split. The pilot specification is
+[`configs/pilot_search.yaml`](configs/pilot_search.yaml). Inspect its
+deterministic candidate expansion without loading data or training:
+
+```bash
+python search.py configs/pilot_search.yaml --dry-run
+```
+
+Run or resume the CPU pilot with:
+
+```bash
+python search.py configs/pilot_search.yaml --verbose
+python search.py configs/pilot_search.yaml --resume --verbose
+```
+
+Successful candidate–seed runs are written to a search-history CSV. Selection
+requires all configured tuning seeds and uses mean semi-inductive validation
+ROC-AUC, then average precision and trainable parameter count as tie-breakers.
+The runner also writes an aggregate CSV, a JSONL failure log, and a YAML file
+containing the selected resolved configuration for each dataset–architecture
+pair.
+
 ## API overview
 
 ### Dataset loading

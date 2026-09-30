@@ -23,6 +23,7 @@ from experiment_logging import (
     make_configuration_id,
 )
 from feature_reduction import available_reduction_methods
+from experiment_pipeline import prepare_candidate_data
 from link_prediction import (
     LinkPrediction,
     available_agae_regularizers,
@@ -32,7 +33,6 @@ from link_prediction import (
     sample_training_negative_edges,
 )
 from utils import (
-    calculate_reduced_features,
     generate_comparable_splits,
     select_query_node_sets,
 )
@@ -125,7 +125,7 @@ class TrainingSummary:
     stopped_early: bool
 
 
-def _train_with_checkpoint_selection(
+def train_with_validation_selection(
     predictor, train_data, validation_data, *, epochs, seed,
     selection_metric, device, early_stopping_patience=None,
     early_stopping_min_delta=0.0, verbose=False, progress_label="model",
@@ -233,6 +233,10 @@ def _train_with_checkpoint_selection(
         early_stopping_min_delta=float(early_stopping_min_delta),
         stopped_early=stopped_early,
     )
+
+
+# Compatibility alias for existing API users and tests.
+_train_with_checkpoint_selection = train_with_validation_selection
 
 
 def parse_args():
@@ -429,7 +433,7 @@ def run_experiment(args, run_id=None, completed_results=None):
     source_data = load_dataset(
         args.dataset,
         root=args.data_root,
-        normalize_features=args.normalize_features,
+        normalize_features=False,
         device="cpu",
     )
     reduction_method = getattr(args, "reduction_method", "pca")
@@ -489,9 +493,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             seed=seed,
         )
 
-        reducer_fit_time_seconds = None
         if any(spec.uses_reduced_features for spec in model_specs.values()):
-            report(f"Calculating reduced node features for seed {seed}...")
             fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
             fit_mask[list(query_nodes.validation)] = False
             fit_mask[list(query_nodes.test)] = False
@@ -501,15 +503,6 @@ def run_experiment(args, run_id=None, completed_results=None):
                     "out_channels cannot exceed the smaller of the number of "
                     "non-query nodes and num_features"
                 )
-            reducer_start = time.perf_counter()
-            calculate_reduced_features(
-                data,
-                dim=args.out_channels,
-                reduction_method=reduction_method,
-                fit_nodes=fit_mask,
-                random_state=seed,
-            )
-            reducer_fit_time_seconds = time.perf_counter() - reducer_start
 
         report(f"Generating comparable graph splits for seed {seed}...")
         splits = generate_comparable_splits(
@@ -519,10 +512,25 @@ def run_experiment(args, run_id=None, completed_results=None):
             train_ratio=args.train_ratio,
             seed=seed,
         )
-        train = splits.train.to(device)
-        validation = splits.validation.to(device)
-        test_transductive = splits.test_transductive.to(device)
-        test_inductive = splits.test_inductive.to(device)
+        if any(spec.uses_reduced_features for spec in model_specs.values()):
+            report(f"Calculating reduced node features for seed {seed}...")
+            preparation_model_type = "asymmetric"
+        else:
+            preparation_model_type = model_types[0]
+        candidate_data = prepare_candidate_data(
+            data,
+            splits,
+            model_type=preparation_model_type,
+            normalize_features=args.normalize_features,
+            out_channels=args.out_channels,
+            reduction_method=reduction_method,
+            random_state=seed,
+        )
+        reducer_fit_time_seconds = candidate_data.reducer_fit_time_seconds
+        train = candidate_data.train.to(device)
+        validation = candidate_data.validation.to(device)
+        test_transductive = candidate_data.test_transductive.to(device)
+        test_inductive = candidate_data.test_inductive.to(device)
 
         model_progress = tqdm(
             experiment_configs,
@@ -540,7 +548,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             model_progress.set_postfix_str(progress_label)
             torch.manual_seed(seed)
             effective_weight_decay = (
-                weight_decay if model_spec.supports_agae_regularization else 0.0
+                weight_decay if model_spec.trainable else 0.0
             )
             predictor_kwargs = dict(
                 model_type=model_type,
