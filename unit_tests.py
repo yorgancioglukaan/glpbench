@@ -2292,6 +2292,71 @@ class TestSearchRunner(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["candidate_id"], "toy-candidate")
 
+    @patch("search.generate_comparable_splits")
+    @patch("search.load_dataset")
+    def test_shared_split_failure_is_cached_and_logged_once(
+        self, mock_load, mock_split
+    ):
+        mock_load.return_value = self._graph()
+        mock_split.side_effect = ValueError("infeasible shared split")
+        base = search.load_search_config("configs/pilot_search.yaml")
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                base,
+                datasets=("cora",),
+                architectures=("symmetric",),
+                tuning_seeds=(1,),
+                history_path=Path(directory) / "history.csv",
+                failures_path=Path(directory) / "errors.jsonl",
+                aggregate_path=Path(directory) / "aggregates.csv",
+                selected_path=Path(directory) / "selected.yaml",
+            )
+            candidates = (
+                search.SearchCandidate(
+                    "candidate-1", "cora", "symmetric",
+                    {
+                        "hidden_channels": 4,
+                        "out_channels": 2,
+                        "learning_rate": 0.01,
+                        "weight_decay": 0.0,
+                        "normalize_features": False,
+                        "conv_layer_type": "GCNConv",
+                    },
+                ),
+                search.SearchCandidate(
+                    "candidate-2", "cora", "symmetric",
+                    {
+                        "hidden_channels": 8,
+                        "out_channels": 2,
+                        "learning_rate": 0.01,
+                        "weight_decay": 0.0,
+                        "normalize_features": False,
+                        "conv_layer_type": "GCNConv",
+                    },
+                ),
+            )
+
+            summary = search.execute_search(
+                config, candidates, run_id="shared-failure"
+            )
+            records = [
+                json.loads(line)
+                for line in config.failures_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+
+        self.assertEqual(summary.total_runs, 2)
+        self.assertEqual(summary.failed, 2)
+        self.assertEqual(summary.succeeded, 0)
+        self.assertEqual(mock_split.call_count, 1)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["scope"], "dataset-seed")
+        self.assertEqual(records[0]["stage"], "data-splitting")
+        self.assertEqual(records[0]["dataset"], "cora")
+        self.assertEqual(records[0]["tuning_seed"], 1)
+        self.assertEqual(records[0]["affected_runs"], 2)
+
 
 class TestDatasetLoading(unittest.TestCase):
     @staticmethod

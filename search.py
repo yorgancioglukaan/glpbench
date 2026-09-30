@@ -85,6 +85,14 @@ class SearchSummary:
     selected: int
 
 
+@dataclass(frozen=True)
+class _PreparationFailure:
+    """Store a shared dataset or split preparation failure."""
+
+    stage: str
+    error: Exception
+
+
 def _mapping(value, name):
     if not isinstance(value, dict):
         raise ValueError(f"{name} must be a mapping")
@@ -441,6 +449,69 @@ def _append_failure(path, run_id, candidate, seed, error):
         stream.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _append_preparation_failure(
+    path, run_id, dataset, seed, stage, error, affected_runs
+):
+    """Log one failure shared by candidate runs for a dataset and seed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "search_run_id": run_id,
+        "scope": "dataset-seed",
+        "stage": stage,
+        "dataset": dataset,
+        "tuning_seed": seed,
+        "affected_runs": affected_runs,
+        "error_type": type(error).__name__,
+        "message": str(error),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _prepare_search_split(
+    config, dataset, seed, source_cache, split_cache
+):
+    """Load a dataset and cache either its split or a shared failure."""
+    split_key = (dataset, seed)
+    if split_key in split_cache:
+        return split_cache[split_key]
+
+    if dataset not in source_cache:
+        try:
+            source_cache[dataset] = load_dataset(
+                dataset,
+                root=config.raw["execution"]["data_root"],
+                normalize_features=False,
+                device="cpu",
+            )
+        except Exception as error:
+            source_cache[dataset] = _PreparationFailure(
+                "dataset-loading", error
+            )
+
+    source_data = source_cache[dataset]
+    if isinstance(source_data, _PreparationFailure):
+        split_cache[split_key] = source_data
+        return source_data
+
+    split_config = config.raw["splits"]
+    try:
+        prepared = generate_comparable_splits(
+            source_data,
+            query_fraction=split_config["test_queries"]["fraction"],
+            validation_query_fraction=(
+                split_config["validation_queries"]["fraction"]
+            ),
+            train_ratio=split_config["train_ratio"],
+            seed=seed,
+        )
+    except Exception as error:
+        prepared = _PreparationFailure("data-splitting", error)
+    split_cache[split_key] = prepared
+    return prepared
+
+
 def _predictor_kwargs(candidate):
     parameters = dict(candidate.hyperparameters)
     parameters.pop("normalize_features")
@@ -586,6 +657,7 @@ def execute_search(
     }
     source_cache = {}
     split_cache = {}
+    reported_preparation_failures = set()
     succeeded = failed = skipped = 0
     progress = tqdm(
         total=total_runs,
@@ -594,7 +666,6 @@ def execute_search(
         disable=not verbose,
     )
     device = torch.device(config.raw["execution"]["device"])
-    split_config = config.raw["splits"]
     training = config.raw["training"]
     stopping = training["early_stopping"]
     fail_fast = config.raw["execution"]["fail_fast"]
@@ -608,30 +679,45 @@ def execute_search(
                 skipped += 1
                 progress.update(1)
                 continue
-            try:
-                if candidate.dataset not in source_cache:
-                    source_cache[candidate.dataset] = load_dataset(
+
+            split_key = (candidate.dataset, seed)
+            prepared_split = _prepare_search_split(
+                config,
+                candidate.dataset,
+                seed,
+                source_cache,
+                split_cache,
+            )
+            if isinstance(prepared_split, _PreparationFailure):
+                failed += 1
+                if split_key not in reported_preparation_failures:
+                    affected_runs = sum(
+                        other.dataset == candidate.dataset
+                        and (other.candidate_id, seed) not in completed
+                        for other in candidates
+                    )
+                    _append_preparation_failure(
+                        config.failures_path,
+                        run_id,
                         candidate.dataset,
-                        root=config.raw["execution"]["data_root"],
-                        normalize_features=False,
-                        device="cpu",
+                        seed,
+                        prepared_split.stage,
+                        prepared_split.error,
+                        affected_runs,
                     )
+                    reported_preparation_failures.add(split_key)
+                progress.update(1)
+                if fail_fast:
+                    progress.close()
+                    raise prepared_split.error
+                continue
+
+            try:
                 source_data = source_cache[candidate.dataset]
-                split_key = (candidate.dataset, seed)
-                if split_key not in split_cache:
-                    split_cache[split_key] = generate_comparable_splits(
-                        source_data,
-                        query_fraction=split_config["test_queries"]["fraction"],
-                        validation_query_fraction=(
-                            split_config["validation_queries"]["fraction"]
-                        ),
-                        train_ratio=split_config["train_ratio"],
-                        seed=seed,
-                    )
                 parameters = candidate.hyperparameters
                 validation_data = prepare_validation_data(
                     source_data,
-                    split_cache[split_key],
+                    prepared_split,
                     model_type=candidate.architecture,
                     normalize_features=parameters["normalize_features"],
                     out_channels=parameters["out_channels"],
