@@ -150,6 +150,20 @@ appended to the configured JSONL error file while later jobs continue. Use
 rows. Dataset, model, convolution, reducer, regularization, seed, and common
 training dimensions are validated before execution.
 
+A version-2 benchmark can import the dataset-specific architecture settings
+written by `search.py`. The preliminary held-out benchmark uses the pilot
+selections with new evaluation seeds:
+
+```bash
+python benchmark.py configs/preliminary_benchmark.yaml --dry-run
+python benchmark.py configs/preliminary_benchmark.yaml --verbose
+```
+
+The selected-configuration document must contain every requested
+dataset–architecture pair. Search fields for preprocessing, AGAE
+regularization, MLP decoders, VGAE, and DEAL are translated to the experiment
+API and validated before execution.
+
 ## Running a hyperparameter search
 
 `search.py` performs validation-only model selection and never evaluates either

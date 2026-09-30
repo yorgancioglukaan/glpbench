@@ -96,6 +96,7 @@ class BenchmarkConfig:
     datasets: tuple[str, ...]
     models: tuple[ModelGrid, ...]
     error_output: str
+    selected_configurations: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -356,19 +357,53 @@ def _validate_job_parameters(parameters):
 
 
 def load_benchmark_config(path):
-    """Load and validate a version-1 benchmark YAML file."""
+    """Load and validate a benchmark YAML file."""
     path = Path(path)
     with path.open("r", encoding="utf-8") as config_file:
         raw = yaml.safe_load(config_file)
     raw = _require_mapping(raw, "benchmark configuration")
     unknown = set(raw).difference({
         "version", "output", "error_output", "data_root", "seeds",
-        "defaults", "datasets", "models",
+        "defaults", "datasets", "models", "kind", "selected_configurations",
     })
     if unknown:
         raise ValueError(f"Unknown benchmark setting: {sorted(unknown)[0]}")
-    if raw.get("version") != 1:
-        raise ValueError("benchmark configuration version must be 1")
+    version = raw.get("version")
+    if version not in {1, 2}:
+        raise ValueError("benchmark configuration version must be 1 or 2")
+
+    selected_path = None
+    selected_raw = raw.get("selected_configurations")
+    if version == 1 and selected_raw is not None:
+        raise ValueError("selected_configurations require configuration version 2")
+    if version == 2:
+        if raw.get("kind") != "selected-hyperparameter-benchmark":
+            raise ValueError(
+                "version-2 configurations must use kind "
+                "'selected-hyperparameter-benchmark'"
+            )
+        selected_raw = _require_mapping(
+            selected_raw, "selected_configurations"
+        )
+        unknown_selected = set(selected_raw).difference({
+            "path", "granularity", "require_all_pairs"
+        })
+        if unknown_selected:
+            raise ValueError(
+                "Unknown selected-configuration setting: "
+                f"{sorted(unknown_selected)[0]}"
+            )
+        if selected_raw.get("granularity") != ["dataset", "architecture"]:
+            raise ValueError(
+                "selected configuration granularity must be dataset and "
+                "architecture"
+            )
+        if selected_raw.get("require_all_pairs") is not True:
+            raise ValueError("selected configurations must require all pairs")
+        selected_value = selected_raw.get("path")
+        if not isinstance(selected_value, str) or not selected_value.strip():
+            raise ValueError("selected_configurations.path must be non-empty")
+        selected_path = Path(selected_value)
 
     output = raw.get("output", "out/benchmark.csv")
     data_root = raw.get("data_root", "data")
@@ -394,6 +429,10 @@ def load_benchmark_config(path):
         for name in _require_unique_sequence(raw.get("datasets"), "datasets")
     )
     raw_models = _require_unique_sequence(raw.get("models"), "models")
+    if version == 2:
+        if any(not isinstance(model, str) for model in raw_models):
+            raise ValueError("version-2 models must be architecture names")
+        raw_models = [{"type": model} for model in raw_models]
     models = tuple(
         _parse_model_grid(model, defaults, index)
         for index, model in enumerate(raw_models)
@@ -406,6 +445,117 @@ def load_benchmark_config(path):
         datasets=datasets,
         models=models,
         error_output=error_output,
+        selected_configurations=selected_path,
+    )
+
+
+_SELECTED_PARAMETER_KEYS = {
+    "hidden_channels", "out_channels", "learning_rate", "weight_decay",
+    "normalize_features", "conv_layer_type", "reduction_method",
+    "regularization_type", "regularization_strength",
+    "decoder_hidden_channels", "decoder_dropout", "kl_weight",
+    "deal_profile", "theta_ss", "theta_aa", "theta_sa", "lambda_ss",
+    "lambda_aa", "lambda_sa", "similarity_scale", "similarity_margin",
+    "gatv2_kwargs",
+}
+_DEAL_PARAMETER_MAP = {
+    "theta_ss": "deal_theta_ss",
+    "theta_aa": "deal_theta_aa",
+    "theta_sa": "deal_theta_sa",
+    "lambda_ss": "deal_lambda_ss",
+    "lambda_aa": "deal_lambda_aa",
+    "lambda_sa": "deal_lambda_sa",
+    "similarity_scale": "deal_similarity_scale",
+    "similarity_margin": "deal_similarity_margin",
+}
+
+
+def _load_selected_configurations(path):
+    """Load selections produced by the hyperparameter-search runner."""
+    if not path.exists():
+        raise FileNotFoundError(f"selected configurations not found: {path}")
+    with path.open(encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    document = _require_mapping(document, "selected configuration document")
+    if document.get("version") != 1 or document.get("kind") != (
+        "selected-hyperparameters"
+    ):
+        raise ValueError("expected a version-1 selected-hyperparameters document")
+    return _require_mapping(document.get("selections"), "selections")
+
+
+def _selected_experiment_job(config, dataset, model, selections):
+    """Resolve one selected dataset–architecture pair into a job."""
+    dataset_selections = _require_mapping(
+        selections.get(dataset), f"selections.{dataset}"
+    )
+    selection = _require_mapping(
+        dataset_selections.get(model.type),
+        f"selections.{dataset}.{model.type}",
+    )
+    hyperparameters = _require_mapping(
+        selection.get("hyperparameters"),
+        f"selections.{dataset}.{model.type}.hyperparameters",
+    )
+    unknown = set(hyperparameters).difference(_SELECTED_PARAMETER_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Unknown selected hyperparameter: {sorted(unknown)[0]}"
+        )
+    values = dict(hyperparameters)
+    conv_layer = values.pop(
+        "conv_layer_type", config.defaults["conv_layer_type"]
+    )
+    if conv_layer not in _CONV_LAYER_TYPES:
+        raise ValueError("Unknown selected convolution layer")
+
+    model_spec = get_model_spec(model.type)
+    reducer = values.pop(
+        "reduction_method", config.defaults["reduction_method"]
+    )
+    if model_spec.uses_reduced_features:
+        if reducer not in available_reduction_methods():
+            raise ValueError("Unknown selected reduction method")
+    elif "reduction_method" in hyperparameters:
+        raise ValueError(
+            f"{model.type} cannot use a selected reduction method"
+        )
+
+    regularization_type = values.pop("regularization_type", "none")
+    regularization_strength = values.pop("regularization_strength", 0.0)
+    regularization = _parse_regularization(
+        [{"type": regularization_type, "strength": regularization_strength}],
+        model.type,
+    ) if model_spec.supports_agae_regularization else (
+        RegularizationConfig("none", 0.0),
+    )
+    if not model_spec.supports_agae_regularization and (
+        "regularization_type" in hyperparameters
+        or "regularization_strength" in hyperparameters
+    ):
+        raise ValueError(f"{model.type} cannot use selected regularization")
+
+    values.pop("deal_profile", None)
+    for source, destination in _DEAL_PARAMETER_MAP.items():
+        if source in values:
+            if model.type != "deal":
+                raise ValueError(f"{source} is only supported by DEAL")
+            values[destination] = values.pop(source)
+
+    parameters = {**config.defaults, **values}
+    parameters.update({
+        "out_filepath": config.output,
+        "data_root": config.data_root,
+    })
+    _validate_job_parameters(parameters)
+    return ExperimentJob(
+        dataset=dataset,
+        model_type=model.type,
+        conv_layer_type=conv_layer,
+        reduction_method=reducer,
+        regularization=regularization[0],
+        seeds=config.seeds,
+        parameters=parameters,
     )
 
 
@@ -413,6 +563,15 @@ def expand_benchmark_config(config):
     """Expand a validated configuration into deterministic experiment jobs."""
     if not isinstance(config, BenchmarkConfig):
         raise TypeError("config must be a BenchmarkConfig")
+    if config.selected_configurations is not None:
+        selections = _load_selected_configurations(
+            config.selected_configurations
+        )
+        return tuple(
+            _selected_experiment_job(config, dataset, model, selections)
+            for dataset, model in product(config.datasets, config.models)
+        )
+
     jobs = []
     for dataset, model in product(config.datasets, config.models):
         for conv_layer, reducer, regularizer in product(

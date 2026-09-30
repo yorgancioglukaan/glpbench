@@ -1890,6 +1890,105 @@ models:
         self.assertEqual(first_args.query_size, 5)
         self.assertFalse(first_args.normalize_features)
 
+    def test_selected_configuration_expands_dataset_specific_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            selected_path = Path(directory) / "selected.yaml"
+            selected_path.write_text("""
+version: 1
+kind: selected-hyperparameters
+selections:
+  cora:
+    asymmetric:
+      hyperparameters:
+        hidden_channels: 32
+        out_channels: 16
+        learning_rate: 0.005
+        weight_decay: 0.001
+        normalize_features: false
+        conv_layer_type: SAGEConv
+        reduction_method: truncated-svd
+        regularization_type: cosine-alignment
+        regularization_strength: 0.01
+    deal:
+      hyperparameters:
+        hidden_channels: 64
+        out_channels: 32
+        learning_rate: 0.01
+        weight_decay: 0.0001
+        normalize_features: true
+        conv_layer_type: GCNConv
+        deal_profile: attribute-focused
+        theta_ss: 0.1
+        theta_aa: 1.0
+        theta_sa: 0.5
+        lambda_ss: 0.1
+        lambda_aa: 1.0
+        lambda_sa: 0.1
+        similarity_scale: 1.0
+        similarity_margin: 0.0
+""", encoding="utf-8")
+            path = self._write_config(directory, f"""
+version: 2
+kind: selected-hyperparameter-benchmark
+output: out/preliminary.csv
+seeds: [200, 201, 202]
+selected_configurations:
+  path: {selected_path}
+  granularity: [dataset, architecture]
+  require_all_pairs: true
+defaults:
+  query_fraction: 0.05
+  validation_query_fraction: 0.05
+  epochs: 100
+datasets: [Cora]
+models: [asymmetric, deal]
+""")
+
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(config.seeds, (200, 201, 202))
+        asymmetric, deal = jobs
+        self.assertEqual(asymmetric.conv_layer_type, "SAGEConv")
+        self.assertEqual(asymmetric.reduction_method, "truncated-svd")
+        self.assertEqual(asymmetric.regularization.type, "cosine-alignment")
+        self.assertEqual(asymmetric.regularization.strength, 0.01)
+        self.assertFalse(asymmetric.parameters["normalize_features"])
+        self.assertEqual(asymmetric.parameters["hidden_channels"], 32)
+        self.assertTrue(deal.parameters["normalize_features"])
+        self.assertEqual(deal.parameters["deal_theta_ss"], 0.1)
+        self.assertEqual(deal.parameters["deal_lambda_sa"], 0.1)
+        self.assertEqual(
+            benchmark.describe_benchmark(config, jobs)["expected_result_rows"],
+            12,
+        )
+
+    def test_selected_configuration_requires_every_requested_pair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            selected_path = Path(directory) / "selected.yaml"
+            selected_path.write_text("""
+version: 1
+kind: selected-hyperparameters
+selections:
+  cora: {}
+""", encoding="utf-8")
+            path = self._write_config(directory, f"""
+version: 2
+kind: selected-hyperparameter-benchmark
+seeds: [200]
+selected_configurations:
+  path: {selected_path}
+  granularity: [dataset, architecture]
+  require_all_pairs: true
+datasets: [Cora]
+models: [symmetric]
+""")
+            config = benchmark.load_benchmark_config(path)
+
+            with self.assertRaisesRegex(ValueError, "selections.cora.symmetric"):
+                benchmark.expand_benchmark_config(config)
+
     def test_config_validation_rejects_incompatible_model_options(self):
         invalid_configs = (
             """
