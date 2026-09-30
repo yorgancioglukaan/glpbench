@@ -27,6 +27,7 @@ from link_prediction import (
     LinkPrediction,
     available_agae_regularizers,
     available_model_types,
+    get_model_spec,
     sample_training_negative_edges,
 )
 from utils import (
@@ -402,15 +403,23 @@ def run_experiment(args, run_id=None, completed_results=None):
         raise ValueError(
             f"Unknown AGAE regularization: {sorted(unknown_regularizers)[0]}"
         )
-    if "asymmetric" not in model_types and selected_regularizers != ("none",):
+    model_specs = {
+        model_type: get_model_spec(model_type) for model_type in model_types
+    }
+    if (
+        not any(spec.supports_agae_regularization for spec in model_specs.values())
+        and selected_regularizers != ("none",)
+    ):
         raise ValueError(
-            "AGAE regularization requires the asymmetric model type"
+            "AGAE regularization requires an asymmetric model type"
         )
     experiment_configs = [
         (model_type, regularization_type)
         for model_type in model_types
         for regularization_type in (
-            selected_regularizers if model_type == "asymmetric" else ("none",)
+            selected_regularizers
+            if model_specs[model_type].supports_agae_regularization
+            else ("none",)
         )
     ]
 
@@ -479,7 +488,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             seed=seed,
         )
 
-        if "asymmetric" in model_types:
+        if any(spec.uses_reduced_features for spec in model_specs.values()):
             report(f"Calculating reduced node features for seed {seed}...")
             fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
             fit_mask[list(query_nodes.validation)] = False
@@ -520,13 +529,14 @@ def run_experiment(args, run_id=None, completed_results=None):
             position=1 if len(seeds) > 1 else 0,
         )
         for model_type, regularization_type in model_progress:
+            model_spec = model_specs[model_type]
             progress_label = model_type
-            if model_type == "asymmetric":
+            if model_spec.supports_agae_regularization:
                 progress_label += f"/{regularization_type}"
             model_progress.set_postfix_str(progress_label)
             torch.manual_seed(seed)
             effective_weight_decay = (
-                weight_decay if model_type == "asymmetric" else 0.0
+                weight_decay if model_spec.supports_agae_regularization else 0.0
             )
             predictor_kwargs = dict(
                 model_type=model_type,
@@ -541,7 +551,7 @@ def run_experiment(args, run_id=None, completed_results=None):
                 gatv2_kwargs=gatv2_kwargs,
                 **deal_config,
             )
-            if model_type == "asymmetric":
+            if model_spec.supports_agae_regularization:
                 predictor_kwargs.update({
                     "regularization_type": regularization_type,
                     "regularization_strength": regularization_strength,
@@ -550,7 +560,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             predictor.model = predictor.model.to(device)
             effective_conv_layer = (
                 args.conv_layer_type
-                if predictor.model_spec.uses_conv_layer else "None"
+                if model_spec.uses_conv_layer else "None"
             )
             extra_fields = {
                 "reduction_method": reduction_method,
@@ -583,11 +593,11 @@ def run_experiment(args, run_id=None, completed_results=None):
                 },
             }
             if (
-                predictor.model_spec.uses_conv_layer
+                model_spec.uses_conv_layer
                 and args.conv_layer_type == "GATv2Conv"
             ):
                 extra_fields["gatv2_kwargs"] = gatv2_kwargs
-            if model_type == "mlp":
+            if model_spec.uses_mlp_decoder:
                 extra_fields.update({
                     "decoder_hidden_channels": decoder_hidden_channels,
                     "decoder_dropout": decoder_dropout,
@@ -615,7 +625,7 @@ def run_experiment(args, run_id=None, completed_results=None):
                     "regularization_type": regularization_type,
                     "regularization_strength": (
                         regularization_strength
-                        if model_type == "asymmetric" else 0.0
+                        if model_spec.supports_agae_regularization else 0.0
                     ),
                     "weight_decay": effective_weight_decay,
                     "selection_metric": selection_metric,
@@ -697,7 +707,7 @@ def run_experiment(args, run_id=None, completed_results=None):
                     regularization_type=regularization_type,
                     regularization_strength=(
                         regularization_strength
-                        if model_type == "asymmetric" else 0.0
+                        if model_spec.supports_agae_regularization else 0.0
                     ),
                     weight_decay=effective_weight_decay,
                     loss=(

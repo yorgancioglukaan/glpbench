@@ -113,7 +113,7 @@ class ExperimentResult:
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")
         if self.model_type not in {
-            "symmetric", "asymmetric", "mlp", "variational",
+            "symmetric", "asymmetric", "mlp", "asymmetric-mlp", "variational",
             "feature-cosine", "deal",
         }:
             raise ValueError("model_type is not supported")
@@ -128,8 +128,13 @@ class ExperimentResult:
             "graph-smoothness",
         }:
             raise ValueError("regularization_type is not supported")
-        if self.model_type != "asymmetric" and self.regularization_type != "none":
-            raise ValueError("explicit regularization is only supported by asymmetric")
+        if (
+            self.model_type not in {"asymmetric", "asymmetric-mlp"}
+            and self.regularization_type != "none"
+        ):
+            raise ValueError(
+                "explicit regularization is only supported by asymmetric models"
+            )
 
         for name in ("hidden_channels", "out_channels", "epochs"):
             if not isinstance(getattr(self, name), int) or getattr(self, name) <= 0:
@@ -225,9 +230,12 @@ class ExperimentResult:
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or value < 0:
                 raise ValueError(f"{name} must be non-negative")
-        if self.model_type != "asymmetric" and self.regularization_strength != 0:
+        if (
+            self.model_type not in {"asymmetric", "asymmetric-mlp"}
+            and self.regularization_strength != 0
+        ):
             raise ValueError(
-                "regularization_strength is only supported by asymmetric"
+                "regularization_strength is only supported by asymmetric models"
             )
         for name in ("roc_auc", "average_precision", "accuracy", "precision", "recall", "f1"):
             value = getattr(self, name)

@@ -38,6 +38,18 @@ models:
       - type: cosine-alignment
         strength: 0.01
 
+  - type: asymmetric-mlp
+    conv_layer_types: [GCNConv, SAGEConv]
+    reduction_methods: [pca, truncated-svd]
+    regularization:
+      - type: none
+        strength: 0.0
+      - type: cosine-alignment
+        strength: 0.01
+    parameters:
+      decoder_hidden_channels: 64
+      decoder_dropout: 0.0
+
   - type: deal
     parameters:
       deal_theta_ss: 1.0

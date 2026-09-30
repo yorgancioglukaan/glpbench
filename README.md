@@ -102,7 +102,9 @@ invocation share a `run_id`; repetitions of the same model and hyperparameter
 configuration share a stable `configuration_id`. Data splits and evaluation
 negatives are generated once per seed and reused across architectures.
 
-Available model types are `symmetric`, `asymmetric`, `mlp`, `variational`, `deal`, and `feature-cosine`. Repeat `--model-type` to choose several explicitly:
+Available model types are `symmetric`, `asymmetric`, `mlp`,
+`asymmetric-mlp`, `variational`, `deal`, and `feature-cosine`. Repeat
+`--model-type` to choose several explicitly:
 
 ```bash
 python main.py cora \
@@ -203,6 +205,7 @@ The model classes are:
 - `GAE_Model`: inner-product symmetric graph autoencoder.
 - `AGAE_Model`: asymmetric latent-to-feature decoder.
 - `MLP_GAE_Model`: learned symmetric MLP edge decoder.
+- `MLP_AGAE_Model`: learned MLP decoder over latent sources and feature-derived targets.
 - `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
 - `DEALModel`: aligned structural-identity and attribute encoders for inductive prediction.
 - `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
@@ -226,12 +229,19 @@ for _ in range(100):
 probabilities = predictor.test(test_inductive)
 ```
 
-Configure the MLP and variational baselines with `decoder_hidden_channels`, `decoder_dropout`, and `kl_weight`:
+Configure both MLP decoders with `decoder_hidden_channels` and
+`decoder_dropout`, and the variational baseline with `kl_weight`:
 
 ```python
 mlp = LinkPrediction(
     train,
     model_type="mlp",
+    decoder_hidden_channels=64,
+    decoder_dropout=0.2,
+)
+asymmetric_mlp = LinkPrediction(
+    train,
+    model_type="asymmetric-mlp",
     decoder_hidden_channels=64,
     decoder_dropout=0.2,
 )

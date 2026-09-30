@@ -16,7 +16,11 @@ import yaml
 from datasets import available_datasets
 from experiment_logging import CSVResultLogger
 from feature_reduction import available_reduction_methods
-from link_prediction import available_agae_regularizers, available_model_types
+from link_prediction import (
+    available_agae_regularizers,
+    available_model_types,
+    get_model_spec,
+)
 from main import run_experiment
 
 
@@ -128,7 +132,7 @@ class ExperimentJob:
         parts = [self.dataset, self.model_type]
         if self.model_type not in _NON_CONV_MODELS:
             parts.append(self.conv_layer_type)
-        if self.model_type == "asymmetric":
+        if get_model_spec(self.model_type).uses_reduced_features:
             parts.extend((self.reduction_method, self.regularization.type))
         return "/".join(parts)
 
@@ -213,7 +217,7 @@ def _validate_defaults(defaults):
 def _parse_regularization(raw, model_type):
     if raw is None:
         return (RegularizationConfig("none", 0.0),)
-    if model_type != "asymmetric":
+    if not get_model_spec(model_type).supports_agae_regularization:
         raise ValueError("regularization is only supported by asymmetric models")
     entries = _require_unique_sequence(raw, "regularization")
     parsed = []
@@ -243,6 +247,7 @@ def _parse_model_grid(raw, defaults, index):
     model_type = raw.get("type")
     if model_type not in available_model_types():
         raise ValueError(f"Unknown model type '{model_type}'")
+    model_spec = get_model_spec(model_type)
 
     raw_conv = raw.get("conv_layer_types")
     if model_type in _NON_CONV_MODELS:
@@ -259,7 +264,7 @@ def _parse_model_grid(raw, defaults, index):
         conv_layers = tuple(raw_conv)
 
     raw_reducers = raw.get("reduction_methods")
-    if model_type != "asymmetric" and raw_reducers is not None:
+    if not model_spec.uses_reduced_features and raw_reducers is not None:
         raise ValueError("reduction_methods are only supported by asymmetric")
     raw_reducers = (
         [defaults["reduction_method"]] if raw_reducers is None
@@ -274,10 +279,10 @@ def _parse_model_grid(raw, defaults, index):
         raise ValueError(
             f"Unknown model parameter: {sorted(unknown_parameters)[0]}"
         )
-    if model_type != "mlp" and set(parameters).intersection({
+    if not model_spec.uses_mlp_decoder and set(parameters).intersection({
         "decoder_hidden_channels", "decoder_dropout"
     }):
-        raise ValueError("decoder parameters are only supported by mlp")
+        raise ValueError("decoder parameters are only supported by MLP models")
     if model_type != "variational" and "kl_weight" in parameters:
         raise ValueError("kl_weight is only supported by variational")
     if model_type != "deal" and any(

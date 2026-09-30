@@ -704,10 +704,21 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertEqual(
             link_prediction.available_model_types(),
             (
-                "symmetric", "asymmetric", "mlp", "variational",
+                "symmetric", "asymmetric", "mlp", "asymmetric-mlp", "variational",
                 "deal", "feature-cosine",
             ),
         )
+
+    def test_model_specs_describe_asymmetric_mlp_capabilities(self):
+        spec = link_prediction.get_model_spec("asymmetric-mlp")
+
+        self.assertIs(spec.constructor, link_prediction.MLP_AGAE_Model)
+        self.assertTrue(spec.uses_conv_layer)
+        self.assertTrue(spec.uses_reduced_features)
+        self.assertTrue(spec.supports_agae_regularization)
+        self.assertTrue(spec.uses_mlp_decoder)
+        with self.assertRaisesRegex(ValueError, "Unexpected model type"):
+            link_prediction.get_model_spec("unknown")
 
     def test_deal_has_structural_embeddings_only_for_seen_nodes(self):
         data = self._deal_training_data()
@@ -879,14 +890,72 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_mlp_decoder_validates_configuration(self):
         data = self._training_data()
-        with self.assertRaises(ValueError):
-            link_prediction.LinkPrediction(
-                data, model_type="mlp", decoder_hidden_channels=0
+        for model_type in ("mlp", "asymmetric-mlp"):
+            with self.subTest(model_type=model_type):
+                with self.assertRaises(ValueError):
+                    link_prediction.LinkPrediction(
+                        data,
+                        model_type=model_type,
+                        decoder_hidden_channels=0,
+                    )
+                with self.assertRaises(ValueError):
+                    link_prediction.LinkPrediction(
+                        data, model_type=model_type, decoder_dropout=1.0
+                    )
+
+    def test_asymmetric_mlp_uses_latent_sources_and_feature_targets(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="asymmetric-mlp",
+            conv_layer_type="GCNConv",
+            hidden_channels=4,
+            out_channels=2,
+            decoder_hidden_channels=5,
+            decoder_dropout=0.0,
+        )
+        z = predictor.model.encode(data.x, data.edge_index)
+        edges = data.edge_label_index
+        source = z[edges[0]]
+        target = data.x_reduced[edges[1]]
+        expected_features = torch.cat(
+            [source * target, torch.abs(source - target)], dim=-1
+        )
+
+        scores = predictor.model.decode_edges(z, edges, data)
+
+        self.assertTrue(torch.allclose(
+            scores,
+            predictor.model.edge_decoder(expected_features).squeeze(-1),
+        ))
+        self.assertEqual(scores.shape, data.edge_label.shape)
+
+    def test_asymmetric_mlp_decoder_is_trainable_and_regularized(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="asymmetric-mlp",
+            hidden_channels=4,
+            out_channels=2,
+            decoder_hidden_channels=5,
+            regularization_type="latent-l2",
+            regularization_strength=0.1,
+        )
+        decoder_before = [
+            parameter.detach().clone()
+            for parameter in predictor.model.edge_decoder.parameters()
+        ]
+
+        loss = predictor.train(data)
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(predictor.last_regularization_loss.item(), 0.0)
+        self.assertTrue(any(
+            not torch.equal(before, after)
+            for before, after in zip(
+                decoder_before, predictor.model.edge_decoder.parameters()
             )
-        with self.assertRaises(ValueError):
-            link_prediction.LinkPrediction(
-                data, model_type="mlp", decoder_dropout=1.0
-            )
+        ))
 
     def test_variational_model_samples_trains_and_infers_deterministically(self):
         data = self._training_data()
@@ -936,7 +1005,7 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_new_baselines_support_all_convolution_types(self):
         data = self._training_data()
-        for model_type in ("mlp", "variational"):
+        for model_type in ("mlp", "asymmetric-mlp", "variational"):
             for conv_layer_type in (
                 "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"
             ):
@@ -1705,6 +1774,41 @@ models:
             with self.assertRaisesRegex(ValueError, "learning_rate"):
                 benchmark.expand_benchmark_config(config)
 
+    def test_asymmetric_mlp_grid_accepts_all_relevant_dimensions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_config(directory, """
+version: 1
+seeds: [3]
+datasets: [Cora]
+models:
+  - type: asymmetric-mlp
+    conv_layer_types: [GCNConv]
+    reduction_methods: [pca, truncated-svd]
+    regularization:
+      - {type: none, strength: 0.0}
+      - {type: cosine-alignment, strength: 0.1}
+    parameters:
+      decoder_hidden_channels: 16
+      decoder_dropout: 0.2
+""")
+            config = benchmark.load_benchmark_config(path)
+            jobs = benchmark.expand_benchmark_config(config)
+
+        self.assertEqual(len(jobs), 4)
+        self.assertTrue(all(
+            job.model_type == "asymmetric-mlp" for job in jobs
+        ))
+        self.assertEqual(
+            {job.reduction_method for job in jobs}, {"pca", "truncated-svd"}
+        )
+        self.assertEqual(
+            {job.regularization.type for job in jobs},
+            {"none", "cosine-alignment"},
+        )
+        self.assertTrue(all(
+            job.parameters["decoder_hidden_channels"] == 16 for job in jobs
+        ))
+
     def test_dry_run_performs_no_execution_or_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
@@ -2365,6 +2469,8 @@ class TestMainPipeline(unittest.TestCase):
             ("asymmetric", "inductive"),
             ("mlp", "transductive"),
             ("mlp", "inductive"),
+            ("asymmetric-mlp", "transductive"),
+            ("asymmetric-mlp", "inductive"),
             ("variational", "transductive"),
             ("variational", "inductive"),
             ("deal", "transductive"),
@@ -2396,10 +2502,10 @@ class TestMainPipeline(unittest.TestCase):
                 if row["model_type"] == model_type
             }
             self.assertEqual(len(model_runtimes), 1)
-        self.assertEqual(mock_negative_sampling.call_count, 5)
+        self.assertEqual(mock_negative_sampling.call_count, 6)
         self.assertEqual(
             [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
-            [args.seed] * 5,
+            [args.seed] * 6,
         )
         cosine_rows = [
             row for row in rows if row["model_type"] == "feature-cosine"
@@ -2427,11 +2533,13 @@ class TestMainPipeline(unittest.TestCase):
             self.assertTrue(common_extra_fields.issubset(
                 json.loads(row["extra_fields"])
             ))
-        mlp_config = json.loads(next(
-            row["extra_fields"] for row in rows if row["model_type"] == "mlp"
-        ))
-        self.assertIn("decoder_hidden_channels", mlp_config)
-        self.assertIn("decoder_dropout", mlp_config)
+        for model_type in ("mlp", "asymmetric-mlp"):
+            mlp_config = json.loads(next(
+                row["extra_fields"]
+                for row in rows if row["model_type"] == model_type
+            ))
+            self.assertIn("decoder_hidden_channels", mlp_config)
+            self.assertIn("decoder_dropout", mlp_config)
         variational_config = json.loads(next(
             row["extra_fields"]
             for row in rows if row["model_type"] == "variational"

@@ -289,6 +289,22 @@ class GAE_Model(LinkPredictionModel):
         return (prob_adj > 0.5).nonzero(as_tuple=False).t()
 
 
+def _make_mlp_decoder(out_channels, hidden_channels, dropout):
+    """Build and validate the shared learned edge decoder."""
+    if hidden_channels is None:
+        hidden_channels = out_channels
+    if not isinstance(hidden_channels, int) or hidden_channels <= 0:
+        raise ValueError("decoder_hidden_channels must be a positive integer")
+    if not isinstance(dropout, (int, float)) or not 0 <= dropout < 1:
+        raise ValueError("decoder_dropout must be between 0 and 1")
+    return torch.nn.Sequential(
+        torch.nn.Linear(2 * out_channels, hidden_channels),
+        torch.nn.ReLU(),
+        torch.nn.Dropout(dropout),
+        torch.nn.Linear(hidden_channels, 1),
+    )
+
+
 class MLP_GAE_Model(GAE_Model):
     """Graph autoencoder with a learned symmetric MLP decoder."""
 
@@ -309,17 +325,8 @@ class MLP_GAE_Model(GAE_Model):
             conv_layer_type=conv_layer_type,
             **kwargs,
         )
-        if decoder_hidden_channels is None:
-            decoder_hidden_channels = out_channels
-        if not isinstance(decoder_hidden_channels, int) or decoder_hidden_channels <= 0:
-            raise ValueError("decoder_hidden_channels must be a positive integer")
-        if not isinstance(decoder_dropout, (int, float)) or not 0 <= decoder_dropout < 1:
-            raise ValueError("decoder_dropout must be between 0 and 1")
-        self.edge_decoder = torch.nn.Sequential(
-            torch.nn.Linear(2 * out_channels, decoder_hidden_channels),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(decoder_dropout),
-            torch.nn.Linear(decoder_hidden_channels, 1),
+        self.edge_decoder = _make_mlp_decoder(
+            out_channels, decoder_hidden_channels, decoder_dropout
         )
 
     def decode(self, z, edge_label_index):
@@ -336,6 +343,46 @@ class MLP_GAE_Model(GAE_Model):
         nodes = torch.arange(z.size(0), device=z.device)
         edge_index = torch.cartesian_prod(nodes, nodes).t()
         return edge_index[:, self.decode(z, edge_index) > 0.5]
+
+
+class MLP_AGAE_Model(AGAE_Model):
+    """Asymmetric graph autoencoder with a learned MLP decoder."""
+
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        conv_layer_type=GCNConv,
+        decoder_hidden_channels=None,
+        decoder_dropout=0.0,
+        **kwargs,
+    ):
+        super().__init__(
+            in_channels,
+            hidden_channels,
+            out_channels,
+            conv_layer_type=conv_layer_type,
+            **kwargs,
+        )
+        self.edge_decoder = _make_mlp_decoder(
+            out_channels, decoder_hidden_channels, decoder_dropout
+        )
+
+    def decode(self, z, edge_label_index, x_reduced):
+        """Score edges from latent sources and feature-based targets."""
+        source = z[edge_label_index[0]]
+        target = x_reduced[edge_label_index[1]]
+        edge_features = torch.cat(
+            [source * target, torch.abs(source - target)], dim=-1
+        )
+        return self.edge_decoder(edge_features).squeeze(-1)
+
+    def decode_all(self, z, x_reduced):
+        """Return node pairs with decoder logits above 0.5."""
+        nodes = torch.arange(z.size(0), device=z.device)
+        edge_index = torch.cartesian_prod(nodes, nodes).t()
+        return edge_index[:, self.decode(z, edge_index, x_reduced) > 0.5]
 
 
 class VGAE_Model(LinkPredictionModel):
@@ -602,12 +649,25 @@ class ModelSpec:
     uses_conv_layer: bool = True
     outputs_probabilities: bool = False
     uses_graph_context: bool = False
+    uses_reduced_features: bool = False
+    supports_agae_regularization: bool = False
+    uses_mlp_decoder: bool = False
 
 
 _MODEL_REGISTRY = {
     "symmetric": ModelSpec(GAE_Model),
-    "asymmetric": ModelSpec(AGAE_Model),
-    "mlp": ModelSpec(MLP_GAE_Model),
+    "asymmetric": ModelSpec(
+        AGAE_Model,
+        uses_reduced_features=True,
+        supports_agae_regularization=True,
+    ),
+    "mlp": ModelSpec(MLP_GAE_Model, uses_mlp_decoder=True),
+    "asymmetric-mlp": ModelSpec(
+        MLP_AGAE_Model,
+        uses_reduced_features=True,
+        supports_agae_regularization=True,
+        uses_mlp_decoder=True,
+    ),
     "variational": ModelSpec(VGAE_Model),
     "deal": ModelSpec(
         DEALModel,
@@ -626,6 +686,14 @@ _MODEL_REGISTRY = {
 def available_model_types():
     """Return the registered link-prediction architecture names."""
     return tuple(_MODEL_REGISTRY)
+
+
+def get_model_spec(model_type):
+    """Return capability metadata for a registered model type."""
+    try:
+        return _MODEL_REGISTRY[model_type]
+    except KeyError as error:
+        raise ValueError(f"Unexpected model type: {model_type}") from error
 
 
 def sample_training_negative_edges(data, seed=None):
