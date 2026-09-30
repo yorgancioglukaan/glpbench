@@ -26,6 +26,7 @@ from link_prediction import (
     available_model_types,
     get_model_spec,
 )
+from lr_scheduling import validate_scheduler_config
 from main import run_experiment
 
 
@@ -53,6 +54,8 @@ _DEFAULTS = {
     "early_stopping_minimum_epochs": 0,
     "checkpoint_strategy": "best-validation",
     "training_policy": "default",
+    "lr_scheduler": "none",
+    "lr_scheduler_kwargs": None,
     "normalize_features": True,
     "device": "cpu",
     "gatv2_kwargs": None,
@@ -71,7 +74,8 @@ _MODEL_PARAMETER_KEYS = set(_DEFAULTS).difference({
     "selection_metric", "early_stopping_patience",
     "early_stopping_min_delta", "early_stopping_minimum_epochs",
     "checkpoint_strategy", "training_policy", "normalize_features", "device",
-    "conv_layer_type", "reduction_method",
+    "lr_scheduler", "lr_scheduler_kwargs", "conv_layer_type",
+    "reduction_method",
 })
 
 
@@ -104,6 +108,8 @@ class TrainingPolicy:
     early_stopping_patience: int | None
     early_stopping_min_delta: float
     early_stopping_minimum_epochs: int
+    lr_scheduler: str
+    lr_scheduler_kwargs: dict
 
 
 @dataclass(frozen=True)
@@ -241,6 +247,11 @@ def _validate_defaults(defaults):
         or not resolved["training_policy"].strip()
     ):
         raise ValueError("training_policy must be a non-empty string")
+    validate_scheduler_config(
+        resolved["lr_scheduler"],
+        resolved["lr_scheduler_kwargs"],
+        epochs=resolved["epochs"],
+    )
     if not isinstance(resolved["normalize_features"], bool):
         raise ValueError("normalize_features must be boolean")
     if not isinstance(resolved["epochs"], int) or resolved["epochs"] <= 0:
@@ -400,6 +411,11 @@ def _validate_job_parameters(parameters):
         or not parameters["training_policy"].strip()
     ):
         raise ValueError("training_policy must be a non-empty string")
+    validate_scheduler_config(
+        parameters["lr_scheduler"],
+        parameters["lr_scheduler_kwargs"],
+        epochs=parameters["epochs"],
+    )
     if not isinstance(parameters["device"], str) or not parameters["device"]:
         raise ValueError("device must be a non-empty string")
     gatv2_kwargs = parameters["gatv2_kwargs"]
@@ -434,7 +450,7 @@ def _parse_training_policy(raw, index):
     """Validate one training-policy ablation entry."""
     raw = _require_mapping(raw, f"training_policies[{index}]")
     unknown = set(raw).difference({
-        "name", "max_epochs", "checkpoint", "early_stopping"
+        "name", "max_epochs", "checkpoint", "early_stopping", "scheduler"
     })
     if unknown:
         raise ValueError(f"Unknown training-policy setting: {sorted(unknown)[0]}")
@@ -495,6 +511,17 @@ def _parse_training_policy(raw, index):
             "disabled early stopping cannot define patience, min_delta, or "
             "minimum_epochs"
         )
+    scheduler = _require_mapping(
+        raw.get("scheduler", {"type": "none"}),
+        f"training_policies[{index}].scheduler",
+    )
+    scheduler_type = scheduler.get("type")
+    scheduler_parameters = {
+        name: value for name, value in scheduler.items() if name != "type"
+    }
+    scheduler_parameters = validate_scheduler_config(
+        scheduler_type, scheduler_parameters, epochs=max_epochs
+    )
     return TrainingPolicy(
         name=name,
         max_epochs=max_epochs,
@@ -502,6 +529,8 @@ def _parse_training_policy(raw, index):
         early_stopping_patience=patience,
         early_stopping_min_delta=float(min_delta),
         early_stopping_minimum_epochs=minimum_epochs,
+        lr_scheduler=scheduler_type,
+        lr_scheduler_kwargs=scheduler_parameters,
     )
 
 
@@ -801,6 +830,8 @@ def _selected_experiment_job(config, dataset, model, selections):
         "data_root": config.data_root,
     })
     _validate_job_parameters(parameters)
+    if not model_spec.trainable and parameters["lr_scheduler"] != "none":
+        raise ValueError(f"{model.type} cannot use a learning-rate scheduler")
     return ExperimentJob(
         dataset=dataset,
         model_type=model.type,
@@ -838,8 +869,16 @@ def expand_benchmark_config(config):
                 "early_stopping_minimum_epochs": (
                     policy.early_stopping_minimum_epochs
                 ),
+                "lr_scheduler": policy.lr_scheduler,
+                "lr_scheduler_kwargs": policy.lr_scheduler_kwargs,
             }
             _validate_job_parameters(parameters)
+            if not get_model_spec(job.model_type).trainable and (
+                parameters["lr_scheduler"] != "none"
+            ):
+                raise ValueError(
+                    f"{job.model_type} cannot use a learning-rate scheduler"
+                )
             jobs.append(replace(job, parameters=parameters))
         return tuple(jobs)
 
@@ -856,6 +895,12 @@ def expand_benchmark_config(config):
                 "data_root": config.data_root,
             })
             _validate_job_parameters(parameters)
+            if not get_model_spec(model.type).trainable and (
+                parameters["lr_scheduler"] != "none"
+            ):
+                raise ValueError(
+                    f"{model.type} cannot use a learning-rate scheduler"
+                )
             jobs.append(ExperimentJob(
                 dataset=dataset,
                 model_type=model.type,
@@ -1028,6 +1073,7 @@ def execute_benchmark(
                 training_policy=record["training_policy"],
                 epoch=record["epoch"],
                 training_loss=record["training_loss"],
+                learning_rate=record["learning_rate"],
                 validation_roc_auc=record["validation_roc_auc"],
                 validation_average_precision=(
                     record["validation_average_precision"]

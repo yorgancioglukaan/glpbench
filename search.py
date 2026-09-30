@@ -24,6 +24,7 @@ from link_prediction import (
     count_trainable_parameters,
     get_model_spec,
 )
+from lr_scheduling import validate_scheduler_config
 from main import calculate_metrics, train_with_validation_selection
 from utils import generate_comparable_splits
 
@@ -192,6 +193,19 @@ def load_search_config(path):
         raise ValueError("early-stopping patience must be positive")
     if not isinstance(stopping.get("min_delta"), (int, float)) or stopping["min_delta"] < 0:
         raise ValueError("early-stopping min_delta must be non-negative")
+    scheduler = _mapping(
+        training.get("scheduler", {"type": "none"}), "training.scheduler"
+    )
+    scheduler_type = scheduler.get("type")
+    scheduler_parameters = validate_scheduler_config(
+        scheduler_type,
+        {name: value for name, value in scheduler.items() if name != "type"},
+        epochs=training["max_epochs"],
+    )
+    training["scheduler"] = {
+        "type": scheduler_type,
+        **scheduler_parameters,
+    }
 
     splits = _mapping(raw.get("splits"), "splits")
     if splits.get("protocol") != "matched-semi-inductive":
@@ -668,6 +682,7 @@ def execute_search(
     device = torch.device(config.raw["execution"]["device"])
     training = config.raw["training"]
     stopping = training["early_stopping"]
+    scheduler = training["scheduler"]
     fail_fast = config.raw["execution"]["fail_fast"]
 
     for candidate in candidates:
@@ -742,6 +757,11 @@ def execute_search(
                     device=device,
                     early_stopping_patience=stopping["patience"],
                     early_stopping_min_delta=stopping["min_delta"],
+                    lr_scheduler=scheduler["type"],
+                    lr_scheduler_kwargs={
+                        name: value for name, value in scheduler.items()
+                        if name != "type"
+                    },
                     verbose=verbose,
                     progress_label=(
                         f"{candidate.dataset}/{candidate.architecture}/{seed}"

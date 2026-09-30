@@ -17,6 +17,7 @@ import main
 import benchmark
 import search
 import feature_reduction
+import lr_scheduling
 import experiment_pipeline
 from experiment_logging import (
     CSVEpochHistoryLogger,
@@ -28,6 +29,98 @@ from experiment_logging import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import link_prediction
+
+
+class TestLearningRateScheduling(unittest.TestCase):
+    def test_registry_and_configuration_validation(self):
+        self.assertEqual(lr_scheduling.available_lr_schedulers(), (
+            "none", "reduce-on-plateau", "cosine-annealing"
+        ))
+        config = lr_scheduling.validate_scheduler_config(
+            "reduce-on-plateau",
+            {"factor": 0.5, "patience": 4, "minimum_learning_rate": 1e-5},
+            epochs=100,
+        )
+        self.assertEqual(config["factor"], 0.5)
+        self.assertEqual(config["patience"], 4)
+        self.assertEqual(config["threshold"], 1e-4)
+        with self.assertRaisesRegex(ValueError, "Unknown learning-rate"):
+            lr_scheduling.validate_scheduler_config(
+                "unknown", {}, epochs=100
+            )
+        with self.assertRaisesRegex(ValueError, "factor"):
+            lr_scheduling.validate_scheduler_config(
+                "reduce-on-plateau", {"factor": 1.0}, epochs=100
+            )
+        with self.assertRaisesRegex(ValueError, "does not accept"):
+            lr_scheduling.validate_scheduler_config(
+                "none", {"patience": 1}, epochs=100
+            )
+
+    def test_scheduler_step_uses_validation_only_for_plateau(self):
+        plateau = unittest.mock.Mock()
+        cosine = unittest.mock.Mock()
+
+        lr_scheduling.step_lr_scheduler(
+            plateau, "reduce-on-plateau", 0.75
+        )
+        lr_scheduling.step_lr_scheduler(cosine, "cosine-annealing", 0.75)
+
+        plateau.step.assert_called_once_with(0.75)
+        cosine.step.assert_called_once_with()
+
+    def test_plateau_scheduler_updates_and_records_learning_rate(self):
+        class FakePredictor:
+            trainable = True
+
+            def __init__(self):
+                self.model = torch.nn.Linear(1, 1, bias=False)
+                self.optimizer = torch.optim.Adam(
+                    self.model.parameters(), lr=0.1
+                )
+
+            def train(self, negative_edge_index=None):
+                self.optimizer.zero_grad()
+                loss = self.model.weight.square().sum()
+                loss.backward()
+                self.optimizer.step()
+                return loss.detach()
+
+            def test(self, data):
+                return torch.tensor([0.5, 0.5])
+
+        predictor = FakePredictor()
+        records = []
+        with (
+            patch(
+                "main.sample_training_negative_edges",
+                return_value=torch.empty((2, 0), dtype=torch.long),
+            ),
+            patch(
+                "main.calculate_metrics",
+                side_effect=[{"roc_auc": 0.8}] * 3,
+            ),
+        ):
+            summary = main.train_with_validation_selection(
+                predictor,
+                Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
+                Data(edge_label=torch.tensor([1.0, 0.0])),
+                epochs=3,
+                seed=4,
+                selection_metric="roc_auc",
+                device="cpu",
+                lr_scheduler="reduce-on-plateau",
+                lr_scheduler_kwargs={"factor": 0.5, "patience": 0},
+                epoch_callback=records.append,
+            )
+
+        self.assertEqual(
+            [record["learning_rate"] for record in records],
+            [0.1, 0.1, 0.05],
+        )
+        self.assertAlmostEqual(summary.final_learning_rate, 0.025)
+        self.assertEqual(summary.lr_scheduler, "reduce-on-plateau")
+        self.assertEqual(summary.lr_scheduler_kwargs["factor"], 0.5)
 
 
 class TestFeatureReduction(unittest.TestCase):
@@ -1701,6 +1794,14 @@ class TestExperimentLogging(unittest.TestCase):
                 early_stopping_min_delta=0.001,
                 early_stopping_minimum_epochs=10,
                 stopped_early=True,
+                lr_scheduler="reduce-on-plateau",
+                lr_scheduler_kwargs={
+                    "factor": 0.5,
+                    "patience": 5,
+                    "threshold": 0.001,
+                    "minimum_learning_rate": 1e-5,
+                },
+                final_learning_rate=0.00125,
             ))
 
             with path.open(newline="", encoding="utf-8") as csv_file:
@@ -1717,6 +1818,11 @@ class TestExperimentLogging(unittest.TestCase):
         self.assertEqual(float(row["early_stopping_min_delta"]), 0.001)
         self.assertEqual(row["early_stopping_minimum_epochs"], "10")
         self.assertEqual(row["stopped_early"], "True")
+        self.assertEqual(row["lr_scheduler"], "reduce-on-plateau")
+        self.assertEqual(
+            json.loads(row["lr_scheduler_kwargs"])["factor"], 0.5
+        )
+        self.assertEqual(float(row["final_learning_rate"]), 0.00125)
 
     def test_epoch_history_logger_round_trips_records(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1730,6 +1836,7 @@ class TestExperimentLogging(unittest.TestCase):
                 training_policy="current",
                 epoch=3,
                 training_loss=0.25,
+                learning_rate=0.005,
                 validation_roc_auc=0.81,
                 validation_average_precision=0.79,
             ))
@@ -1865,6 +1972,9 @@ class TestExperimentLogging(unittest.TestCase):
             {"early_stopping_patience": 0},
             {"early_stopping_min_delta": -0.1},
             {"early_stopping_minimum_epochs": 101},
+            {"lr_scheduler": "unknown"},
+            {"lr_scheduler": "none", "lr_scheduler_kwargs": {"factor": 0.5}},
+            {"final_learning_rate": -0.1},
             {"stopped_early": "yes"},
             {"epochs_trained": 50, "stopped_early": True},
             {"epochs_trained": 100, "early_stopping_patience": 2,
@@ -1952,6 +2062,12 @@ training_policies:
       patience: 2
       min_delta: 0.001
       minimum_epochs: 3
+    scheduler:
+      type: reduce-on-plateau
+      factor: 0.5
+      patience: 2
+      threshold: 0.001
+      minimum_learning_rate: 0.00001
   - name: full-budget-final
     max_epochs: 10
     checkpoint: final
@@ -2095,8 +2211,11 @@ models: [asymmetric, deal]
         self.assertEqual(current.parameters["early_stopping_patience"], 2)
         self.assertEqual(current.parameters["early_stopping_minimum_epochs"], 3)
         self.assertEqual(current.parameters["checkpoint_strategy"], "best-validation")
+        self.assertEqual(current.parameters["lr_scheduler"], "reduce-on-plateau")
+        self.assertEqual(current.parameters["lr_scheduler_kwargs"]["factor"], 0.5)
         self.assertIsNone(final.parameters["early_stopping_patience"])
         self.assertEqual(final.parameters["checkpoint_strategy"], "final")
+        self.assertEqual(final.parameters["lr_scheduler"], "none")
         self.assertEqual(
             benchmark.describe_benchmark(config, jobs)["expected_result_rows"],
             4,
@@ -2116,6 +2235,7 @@ models: [asymmetric, deal]
                     "training_policy": args.training_policy,
                     "epoch": 1,
                     "training_loss": 0.25,
+                    "learning_rate": 0.005,
                     "validation_roc_auc": 0.75,
                     "validation_average_precision": 0.70,
                 })
@@ -2458,6 +2578,7 @@ class TestSearchRunner(unittest.TestCase):
 
     def test_pilot_spec_generates_deterministic_stratified_candidates(self):
         config = search.load_search_config("configs/pilot_search.yaml")
+        self.assertEqual(config.raw["training"]["scheduler"], {"type": "none"})
         first = search.generate_candidates(config)
         second = search.generate_candidates(config)
 
@@ -2496,6 +2617,24 @@ class TestSearchRunner(unittest.TestCase):
                         {candidate.hyperparameters["deal_profile"] for candidate in group},
                         {"balanced", "attribute-focused", "alignment-focused"},
                     )
+
+    def test_search_accepts_a_fixed_scheduler_configuration(self):
+        document = yaml.safe_load(
+            Path("configs/pilot_search.yaml").read_text(encoding="utf-8")
+        )
+        document["training"]["scheduler"] = {
+            "type": "cosine-annealing",
+            "minimum_learning_rate": 1e-5,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "search.yaml"
+            path.write_text(yaml.safe_dump(document), encoding="utf-8")
+            config = search.load_search_config(path)
+
+        self.assertEqual(config.raw["training"]["scheduler"], {
+            "type": "cosine-annealing",
+            "minimum_learning_rate": 1e-5,
+        })
 
     def test_validation_data_is_isolated_and_does_not_expose_test_splits(self):
         source = self._graph()
@@ -3391,12 +3530,14 @@ class TestMainPipeline(unittest.TestCase):
             {
                 "epoch": 1,
                 "training_loss": 0.25,
+                "learning_rate": None,
                 "validation_roc_auc": 0.60,
                 "validation_average_precision": 0.55,
             },
             {
                 "epoch": 2,
                 "training_loss": 0.25,
+                "learning_rate": None,
                 "validation_roc_auc": 0.70,
                 "validation_average_precision": 0.65,
             },

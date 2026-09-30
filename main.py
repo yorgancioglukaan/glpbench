@@ -23,6 +23,13 @@ from experiment_logging import (
     make_configuration_id,
 )
 from feature_reduction import available_reduction_methods
+from lr_scheduling import (
+    available_lr_schedulers,
+    build_lr_scheduler,
+    current_learning_rate,
+    step_lr_scheduler,
+    validate_scheduler_config,
+)
 from experiment_pipeline import prepare_candidate_data
 from link_prediction import (
     LinkPrediction,
@@ -126,6 +133,9 @@ class TrainingSummary:
     early_stopping_min_delta: float
     early_stopping_minimum_epochs: int
     stopped_early: bool
+    lr_scheduler: str
+    lr_scheduler_kwargs: dict
+    final_learning_rate: float | None
 
 
 def train_with_validation_selection(
@@ -134,7 +144,7 @@ def train_with_validation_selection(
     early_stopping_min_delta=0.0, early_stopping_minimum_epochs=0,
     checkpoint_strategy="best-validation", verbose=False,
     progress_label="model", progress_position=1, compact_progress=False,
-    epoch_callback=None,
+    epoch_callback=None, lr_scheduler="none", lr_scheduler_kwargs=None,
 ):
     """Train with validation checkpointing and optional early stopping."""
     if selection_metric not in {"roc_auc", "average_precision"}:
@@ -163,12 +173,36 @@ def train_with_validation_selection(
         raise ValueError(
             "early_stopping_minimum_epochs must be between zero and epochs"
         )
+    scheduler_parameters = validate_scheduler_config(
+        lr_scheduler, lr_scheduler_kwargs, epochs=epochs
+    )
     if not predictor.trainable:
+        if lr_scheduler != "none":
+            raise ValueError("learning-rate schedulers require a trainable model")
         return TrainingSummary(
-            None, None, 0, None, None, None, None, None,
-            early_stopping_patience, float(early_stopping_min_delta),
-            early_stopping_minimum_epochs, False,
+            selected_loss=None,
+            training_time_seconds=None,
+            epochs_trained=0,
+            best_epoch=None,
+            selected_epoch=None,
+            checkpoint_strategy=None,
+            selection_metric=None,
+            best_validation_score=None,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=float(early_stopping_min_delta),
+            early_stopping_minimum_epochs=early_stopping_minimum_epochs,
+            stopped_early=False,
+            lr_scheduler="none",
+            lr_scheduler_kwargs={},
+            final_learning_rate=None,
         )
+
+    scheduler = build_lr_scheduler(
+        getattr(predictor, "optimizer", None),
+        lr_scheduler,
+        scheduler_parameters,
+        epochs=epochs,
+    )
 
     epoch_progress = tqdm(
         range(epochs),
@@ -201,10 +235,12 @@ def train_with_validation_selection(
             validation_data.edge_label, validation_probabilities
         )
         validation_score = float(validation_metrics[selection_metric])
+        learning_rate = current_learning_rate(getattr(predictor, "optimizer", None))
         if epoch_callback is not None:
             epoch_callback({
                 "epoch": epoch + 1,
                 "training_loss": float(loss.detach().item()),
+                "learning_rate": learning_rate,
                 **{
                     f"validation_{name}": float(value)
                     for name, value in validation_metrics.items()
@@ -215,6 +251,8 @@ def train_with_validation_selection(
             best_epoch = epoch + 1
             best_state = copy.deepcopy(predictor.model.state_dict())
             selected_loss = loss.detach().clone()
+
+        step_lr_scheduler(scheduler, lr_scheduler, validation_score)
 
         epochs_trained = epoch + 1
         stopping_active = (
@@ -236,6 +274,7 @@ def train_with_validation_selection(
         if verbose:
             component_values = {
                 "loss": f"{loss.detach().item():.4f}",
+                "lr": f"{learning_rate:.2g}" if learning_rate is not None else "n/a",
                 f"val_{selection_metric}": f"{validation_score:.4f}",
             }
             if compact_progress:
@@ -282,6 +321,11 @@ def train_with_validation_selection(
         early_stopping_min_delta=float(early_stopping_min_delta),
         early_stopping_minimum_epochs=early_stopping_minimum_epochs,
         stopped_early=stopped_early,
+        lr_scheduler=lr_scheduler,
+        lr_scheduler_kwargs=scheduler_parameters,
+        final_learning_rate=current_learning_rate(
+            getattr(predictor, "optimizer", None)
+        ),
     )
 
 
@@ -357,6 +401,17 @@ def parse_args():
     )
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--lr-scheduler",
+        choices=available_lr_schedulers(),
+        default="none",
+    )
+    parser.add_argument(
+        "--lr-scheduler-kwargs",
+        type=_json_object,
+        default=None,
+        help="JSON object of learning-rate scheduler parameters",
+    )
     parser.add_argument(
         "--selection-metric",
         choices=("roc_auc", "average_precision"),
@@ -518,6 +573,8 @@ def run_experiment(
     )
     training_policy = getattr(args, "training_policy", "default")
     epoch_callback = getattr(args, "epoch_callback", None)
+    lr_scheduler = getattr(args, "lr_scheduler", "none")
+    lr_scheduler_kwargs = getattr(args, "lr_scheduler_kwargs", None)
     if not isinstance(training_policy, str) or not training_policy.strip():
         raise ValueError("training_policy must be a non-empty string")
     if early_stopping_patience is not None and (
@@ -724,6 +781,8 @@ def run_experiment(
                     "selection_metric": selection_metric,
                     "training_policy": training_policy,
                     "checkpoint_strategy": checkpoint_strategy,
+                    "lr_scheduler": lr_scheduler,
+                    "lr_scheduler_kwargs": lr_scheduler_kwargs or {},
                     "early_stopping_patience": early_stopping_patience,
                     "early_stopping_min_delta": early_stopping_min_delta,
                     "early_stopping_minimum_epochs": (
@@ -785,6 +844,8 @@ def run_experiment(
                 early_stopping_min_delta=early_stopping_min_delta,
                 early_stopping_minimum_epochs=early_stopping_minimum_epochs,
                 checkpoint_strategy=checkpoint_strategy,
+                lr_scheduler=lr_scheduler,
+                lr_scheduler_kwargs=lr_scheduler_kwargs,
                 verbose=verbose,
                 progress_label=(
                     f"{args.dataset}/{progress_label}/seed={seed}"
@@ -840,6 +901,9 @@ def run_experiment(
                     selected_epoch=training_summary.selected_epoch,
                     training_policy=training_policy,
                     checkpoint_strategy=training_summary.checkpoint_strategy,
+                    lr_scheduler=training_summary.lr_scheduler,
+                    lr_scheduler_kwargs=training_summary.lr_scheduler_kwargs,
+                    final_learning_rate=training_summary.final_learning_rate,
                     selection_metric=training_summary.selection_metric,
                     best_validation_score=(
                         training_summary.best_validation_score

@@ -58,6 +58,9 @@ python main.py citeseer out/results.csv \
   --decoder-dropout 0.2 \
   --kl-weight 1.0 \
   --learning-rate 0.01 \
+  --lr-scheduler reduce-on-plateau \
+  --lr-scheduler-kwargs \
+    '{"factor": 0.5, "patience": 25, "threshold": 0.001, "minimum_learning_rate": 0.00001}' \
   --weight-decay 0.0 \
   --query-size 10 \
   --validation-query-size 10 \
@@ -96,6 +99,13 @@ improvement greater than `--early-stopping-min-delta`. The configured epoch
 count remains the maximum budget, and the best checkpoint is restored in all
 cases. Logged training time includes training, validation, and checkpoint
 selection.
+
+Learning-rate scheduling is disabled by default. Use `--lr-scheduler` with
+`reduce-on-plateau` or `cosine-annealing`; scheduler parameters are supplied
+as a JSON object through `--lr-scheduler-kwargs`. Plateau scheduling uses the
+same validation metric as checkpoint selection, while cosine annealing follows
+the fixed maximum epoch budget. Result rows log the scheduler configuration
+and final learning rate.
 
 Repeat `--seed` to run paired repetitions in one invocation:
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from lr_scheduling import validate_scheduler_config
+
 
 def make_configuration_id(configuration):
     """Return a stable hash for a result-producing configuration."""
@@ -86,6 +88,12 @@ class ExperimentResult:
         Explicit regularization coefficient.
     weight_decay : float, optional
         Adam weight-decay coefficient.
+    lr_scheduler : str, optional
+        Learning-rate scheduler name.
+    lr_scheduler_kwargs : dict, optional
+        Scheduler construction parameters.
+    final_learning_rate : float, optional
+        Learning rate after the final completed epoch.
     """
 
     dataset: str
@@ -117,6 +125,9 @@ class ExperimentResult:
     regularization_type: str = "none"
     regularization_strength: float = 0.0
     weight_decay: float = 0.0
+    lr_scheduler: str = "none"
+    lr_scheduler_kwargs: dict[str, Any] = field(default_factory=dict)
+    final_learning_rate: float | None = None
     roc_auc: float | None = None
     average_precision: float | None = None
     loss: float | None = None
@@ -295,6 +306,18 @@ class ExperimentResult:
             raise ValueError(
                 "regularization_strength is only supported by asymmetric models"
             )
+        validate_scheduler_config(
+            self.lr_scheduler, self.lr_scheduler_kwargs, epochs=self.epochs
+        )
+        if self.final_learning_rate is not None and (
+            not isinstance(self.final_learning_rate, (int, float))
+            or isinstance(self.final_learning_rate, bool)
+            or not math.isfinite(self.final_learning_rate)
+            or self.final_learning_rate < 0
+        ):
+            raise ValueError(
+                "final_learning_rate must be a finite non-negative number"
+            )
         for name in ("roc_auc", "average_precision", "accuracy", "precision", "recall", "f1"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, (int, float)) or not 0 <= value <= 1):
@@ -350,6 +373,9 @@ class CSVResultLogger:
         "regularization_type",
         "regularization_strength",
         "weight_decay",
+        "lr_scheduler",
+        "lr_scheduler_kwargs",
+        "final_learning_rate",
         "roc_auc",
         "average_precision",
         "loss",
@@ -409,6 +435,9 @@ class CSVResultLogger:
 
         row = asdict(result)
         row["extra_fields"] = json.dumps(row["extra_fields"], sort_keys=True)
+        row["lr_scheduler_kwargs"] = json.dumps(
+            row["lr_scheduler_kwargs"], sort_keys=True
+        )
         row = {
             "run_id": self.run_id,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -435,6 +464,7 @@ class EpochHistoryRecord:
     training_policy: str
     epoch: int
     training_loss: float
+    learning_rate: float
     validation_roc_auc: float
     validation_average_precision: float
 
@@ -462,6 +492,13 @@ class EpochHistoryRecord:
             or self.training_loss < 0
         ):
             raise ValueError("training_loss must be a finite non-negative number")
+        if (
+            not isinstance(self.learning_rate, (int, float))
+            or isinstance(self.learning_rate, bool)
+            or not math.isfinite(self.learning_rate)
+            or self.learning_rate < 0
+        ):
+            raise ValueError("learning_rate must be a finite non-negative number")
         for name in ("validation_roc_auc", "validation_average_precision"):
             value = getattr(self, name)
             if (
@@ -486,6 +523,7 @@ class CSVEpochHistoryLogger:
         "training_policy",
         "epoch",
         "training_loss",
+        "learning_rate",
         "validation_roc_auc",
         "validation_average_precision",
     ]
