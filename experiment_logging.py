@@ -54,6 +54,10 @@ class ExperimentResult:
         Stable identifier shared by repetitions of the same configuration.
     training_time_seconds : float, optional
         Total wall-clock time spent training and selecting a checkpoint.
+    trainable_parameter_count : int, optional
+        Number of trainable neural-model parameters.
+    reducer_fit_time_seconds : float, optional
+        Wall-clock time spent fitting and applying feature reduction.
     epochs_trained : int, optional
         Number of completed training epochs.
     best_epoch : int, optional
@@ -89,6 +93,8 @@ class ExperimentResult:
     normalize_features: bool = True
     configuration_id: str | None = None
     training_time_seconds: float | None = None
+    trainable_parameter_count: int | None = None
+    reducer_fit_time_seconds: float | None = None
     epochs_trained: int | None = None
     best_epoch: int | None = None
     selection_metric: str | None = None
@@ -158,6 +164,23 @@ class ExperimentResult:
         ):
             raise ValueError(
                 "training_time_seconds must be a finite non-negative number"
+            )
+        if self.trainable_parameter_count is not None and (
+            not isinstance(self.trainable_parameter_count, int)
+            or isinstance(self.trainable_parameter_count, bool)
+            or self.trainable_parameter_count < 0
+        ):
+            raise ValueError(
+                "trainable_parameter_count must be a non-negative integer"
+            )
+        if self.reducer_fit_time_seconds is not None and (
+            not isinstance(self.reducer_fit_time_seconds, (int, float))
+            or isinstance(self.reducer_fit_time_seconds, bool)
+            or not math.isfinite(self.reducer_fit_time_seconds)
+            or self.reducer_fit_time_seconds < 0
+        ):
+            raise ValueError(
+                "reducer_fit_time_seconds must be a finite non-negative number"
             )
         if self.epochs_trained is not None and (
             not isinstance(self.epochs_trained, int)
@@ -276,6 +299,8 @@ class CSVResultLogger:
         "random_seed",
         "normalize_features",
         "training_time_seconds",
+        "trainable_parameter_count",
+        "reducer_fit_time_seconds",
         "epochs_trained",
         "best_epoch",
         "selection_metric",

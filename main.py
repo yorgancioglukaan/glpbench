@@ -27,6 +27,7 @@ from link_prediction import (
     LinkPrediction,
     available_agae_regularizers,
     available_model_types,
+    count_trainable_parameters,
     get_model_spec,
     sample_training_negative_edges,
 )
@@ -488,6 +489,7 @@ def run_experiment(args, run_id=None, completed_results=None):
             seed=seed,
         )
 
+        reducer_fit_time_seconds = None
         if any(spec.uses_reduced_features for spec in model_specs.values()):
             report(f"Calculating reduced node features for seed {seed}...")
             fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
@@ -499,6 +501,7 @@ def run_experiment(args, run_id=None, completed_results=None):
                     "out_channels cannot exceed the smaller of the number of "
                     "non-query nodes and num_features"
                 )
+            reducer_start = time.perf_counter()
             calculate_reduced_features(
                 data,
                 dim=args.out_channels,
@@ -506,6 +509,7 @@ def run_experiment(args, run_id=None, completed_results=None):
                 fit_nodes=fit_mask,
                 random_state=seed,
             )
+            reducer_fit_time_seconds = time.perf_counter() - reducer_start
 
         report(f"Generating comparable graph splits for seed {seed}...")
         splits = generate_comparable_splits(
@@ -558,6 +562,9 @@ def run_experiment(args, run_id=None, completed_results=None):
                 })
             predictor = LinkPrediction(train, **predictor_kwargs)
             predictor.model = predictor.model.to(device)
+            trainable_parameter_count = count_trainable_parameters(
+                predictor.model
+            )
             effective_conv_layer = (
                 args.conv_layer_type
                 if model_spec.uses_conv_layer else "None"
@@ -691,6 +698,11 @@ def run_experiment(args, run_id=None, completed_results=None):
                     random_seed=seed,
                     normalize_features=args.normalize_features,
                     training_time_seconds=training_summary.training_time_seconds,
+                    trainable_parameter_count=trainable_parameter_count,
+                    reducer_fit_time_seconds=(
+                        reducer_fit_time_seconds
+                        if model_spec.uses_reduced_features else None
+                    ),
                     epochs_trained=training_summary.epochs_trained,
                     best_epoch=training_summary.best_epoch,
                     selection_metric=training_summary.selection_metric,

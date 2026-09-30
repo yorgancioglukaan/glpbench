@@ -1554,6 +1554,20 @@ class TestLinkPrediction(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             model.decode(z, torch.tensor([[0], [1]]), x_reduced)
 
+    def test_trainable_parameter_count_excludes_frozen_parameters(self):
+        model = torch.nn.Sequential(
+            torch.nn.Linear(3, 4),
+            torch.nn.Linear(4, 2, bias=False),
+        )
+        model[1].weight.requires_grad_(False)
+
+        self.assertEqual(
+            link_prediction.count_trainable_parameters(model),
+            3 * 4 + 4,
+        )
+        with self.assertRaises(TypeError):
+            link_prediction.count_trainable_parameters(object())
+
 
 class TestExperimentLogging(unittest.TestCase):
     @staticmethod
@@ -1570,6 +1584,8 @@ class TestExperimentLogging(unittest.TestCase):
             "epochs": 100,
             "random_seed": 42,
             "training_time_seconds": 12.5,
+            "trainable_parameter_count": 1234,
+            "reducer_fit_time_seconds": 0.25,
             "roc_auc": 0.91,
             "average_precision": 0.87,
         }
@@ -1592,6 +1608,8 @@ class TestExperimentLogging(unittest.TestCase):
             self.assertEqual(rows[0]["dataset"], "Cora")
             self.assertEqual(float(rows[0]["roc_auc"]), 0.91)
             self.assertEqual(float(rows[0]["training_time_seconds"]), 12.5)
+            self.assertEqual(int(rows[0]["trainable_parameter_count"]), 1234)
+            self.assertEqual(float(rows[0]["reducer_fit_time_seconds"]), 0.25)
             self.assertEqual(rows[0]["regularization_type"], "none")
             self.assertEqual(float(rows[0]["regularization_strength"]), 0.0)
             self.assertEqual(float(rows[0]["weight_decay"]), 0.0)
@@ -1756,6 +1774,10 @@ class TestExperimentLogging(unittest.TestCase):
             {"training_time_seconds": -1.0},
             {"training_time_seconds": float("inf")},
             {"training_time_seconds": float("nan")},
+            {"trainable_parameter_count": -1},
+            {"trainable_parameter_count": 1.5},
+            {"reducer_fit_time_seconds": -1.0},
+            {"reducer_fit_time_seconds": float("inf")},
             {"epochs_trained": 101},
             {"epochs_trained": 10, "best_epoch": 11,
              "selection_metric": "roc_auc", "best_validation_score": 0.8},
@@ -2593,6 +2615,32 @@ class TestMainPipeline(unittest.TestCase):
             ("feature-cosine", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
+        self.assertTrue(all(
+            int(row["trainable_parameter_count"]) >= 0 for row in rows
+        ))
+        for model_type in {row["model_type"] for row in rows}:
+            model_rows = [row for row in rows if row["model_type"] == model_type]
+            self.assertEqual(
+                len({row["trainable_parameter_count"] for row in model_rows}),
+                1,
+            )
+        reduced_rows = [
+            row for row in rows
+            if row["model_type"] in {"asymmetric", "asymmetric-mlp"}
+        ]
+        self.assertTrue(all(
+            float(row["reducer_fit_time_seconds"]) >= 0
+            for row in reduced_rows
+        ))
+        self.assertEqual(
+            len({row["reducer_fit_time_seconds"] for row in reduced_rows}),
+            1,
+        )
+        self.assertTrue(all(
+            row["reducer_fit_time_seconds"] == ""
+            for row in rows
+            if row["model_type"] not in {"asymmetric", "asymmetric-mlp"}
+        ))
         trainable_rows = [
             row for row in rows if row["model_type"] != "feature-cosine"
         ]
@@ -2624,6 +2672,9 @@ class TestMainPipeline(unittest.TestCase):
         cosine_rows = [
             row for row in rows if row["model_type"] == "feature-cosine"
         ]
+        self.assertEqual(
+            {row["trainable_parameter_count"] for row in cosine_rows}, {"0"}
+        )
         self.assertEqual({row["conv_layer_type"] for row in cosine_rows}, {"None"})
         self.assertEqual({row["loss"] for row in cosine_rows}, {""})
         self.assertEqual(

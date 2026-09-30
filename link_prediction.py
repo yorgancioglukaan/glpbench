@@ -696,6 +696,17 @@ def get_model_spec(model_type):
         raise ValueError(f"Unexpected model type: {model_type}") from error
 
 
+def count_trainable_parameters(model):
+    """Return the number of trainable parameters in a PyTorch model."""
+    if not isinstance(model, torch.nn.Module):
+        raise TypeError("model must be a torch.nn.Module")
+    return sum(
+        parameter.numel()
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    )
+
+
 def sample_training_negative_edges(data, seed=None):
     """Sample training negatives, optionally without changing RNG state."""
     def sample_edges():

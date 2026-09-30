@@ -25,13 +25,19 @@ Run an experiment with a supported dataset:
 python main.py cora out/results.csv
 ```
 
-When `--model-type` is omitted, the script runs every registered architecture on the same splits. The six current architectures produce twelve result rows under one run ID after evaluation on both test settings. The feature-cosine baseline is evaluated directly without training.
+When `--model-type` is omitted, the script runs every registered architecture
+on the same splits. The seven current architectures produce fourteen result
+rows under one run ID after evaluation on both test settings. The
+feature-cosine baseline is evaluated directly without training.
 
 For trainable architectures, each result row records
 `training_time_seconds`, the total wall-clock time spent across all requested
-training epochs. The transductive and inductive rows share the same value
-because they are evaluated from the same trained model. Non-trainable baselines
-leave this field empty.
+training epochs and validation-based checkpoint selection. Every architecture
+also records its exact `trainable_parameter_count`. Reduced-feature models
+record `reducer_fit_time_seconds` separately; other models leave that field
+empty. Paired transductive and inductive rows share these values because they
+use the same fitted reducer and trained model. Non-trainable baselines leave
+training time empty and report zero trainable parameters.
 
 Add `--verbose` to show dataset preparation, architecture progress, epoch progress, and live loss components:
 
