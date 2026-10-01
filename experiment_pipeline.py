@@ -8,7 +8,7 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data
 
 from link_prediction import get_model_spec
-from utils import ComparableSplits, calculate_reduced_features
+from utils import ComparableSplits, ValidationSplits, calculate_reduced_features
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,51 @@ def prepare_candidate_data(
     )
 
 
-def prepare_validation_data(*args, **kwargs):
-    """Prepare candidate data and return a view without test splits."""
-    return prepare_candidate_data(*args, **kwargs).for_validation()
+def prepare_validation_data(
+    source_data,
+    splits,
+    *,
+    model_type,
+    normalize_features,
+    out_channels,
+    reduction_method="pca",
+    random_state=None,
+):
+    """Prepare training and validation data without exposing test splits."""
+    if not isinstance(splits, ValidationSplits):
+        return prepare_candidate_data(
+            source_data,
+            splits,
+            model_type=model_type,
+            normalize_features=normalize_features,
+            out_channels=out_channels,
+            reduction_method=reduction_method,
+            random_state=random_state,
+        ).for_validation()
+    if not isinstance(source_data, Data):
+        raise TypeError("source_data must be a torch_geometric Data object")
+    if not isinstance(normalize_features, bool):
+        raise TypeError("normalize_features must be boolean")
+
+    model_spec = get_model_spec(model_type)
+    feature_data = source_data.clone()
+    if normalize_features:
+        feature_data = T.NormalizeFeatures()(feature_data)
+    train, validation = (split.clone() for split in splits)
+    train.x = feature_data.x.clone()
+    validation.x = feature_data.x.clone()
+
+    reducer_fit_time_seconds = None
+    if model_spec.uses_reduced_features:
+        reducer_start = time.perf_counter()
+        calculate_reduced_features(
+            feature_data,
+            dim=out_channels,
+            reduction_method=reduction_method,
+            fit_nodes=train.visible_node_mask.detach().cpu(),
+            random_state=random_state,
+        )
+        reducer_fit_time_seconds = time.perf_counter() - reducer_start
+        train.x_reduced = feature_data.x_reduced.clone()
+        validation.x_reduced = feature_data.x_reduced.clone()
+    return ValidationData(train, validation, reducer_fit_time_seconds)

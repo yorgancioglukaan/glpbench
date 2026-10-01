@@ -15,6 +15,7 @@ import utils
 import datasets
 import main
 import benchmark
+import convergence_audit
 import search
 import feature_reduction
 import lr_scheduling
@@ -531,6 +532,38 @@ class TestInductiveSplit(unittest.TestCase):
                 self.assertTrue(torch.equal(
                     getattr(first_split, attribute),
                     getattr(second_split, attribute),
+                ))
+
+    def test_validation_only_splits_match_comparable_training_and_validation(self):
+        data = self._undirected_data(
+            30,
+            [
+                (source, target)
+                for source in range(30)
+                for target in range(source + 1, 30)
+                if (source * 7 + target * 11) % 5 < 2
+            ],
+        )
+        kwargs = dict(
+            query_size=2,
+            validation_query_size=2,
+            train_ratio=0.8,
+            seed=21,
+        )
+
+        comparable = utils.generate_comparable_splits(data, **kwargs)
+        validation_only = utils.generate_validation_splits(data, **kwargs)
+
+        self.assertIsInstance(validation_only, utils.ValidationSplits)
+        self.assertEqual(validation_only._fields, ("train", "validation"))
+        for expected, actual in zip(comparable[:2], validation_only):
+            for attribute in (
+                "edge_index", "edge_label_index", "edge_label",
+                "visible_node_mask", "validation_query_mask",
+                "test_query_mask",
+            ):
+                self.assertTrue(torch.equal(
+                    getattr(expected, attribute), getattr(actual, attribute)
                 ))
 
     def test_comparable_split_generation_runs_end_to_end_audit(self):
@@ -2669,6 +2702,33 @@ class TestSearchRunner(unittest.TestCase):
         self.assertEqual(prepared.train.x_reduced.shape, (source.num_nodes, 2))
         self.assertIsNotNone(prepared.reducer_fit_time_seconds)
 
+    def test_validation_only_foundation_bypasses_full_candidate_preparation(self):
+        source = self._graph()
+        splits = utils.generate_validation_splits(
+            source,
+            query_fraction=0.05,
+            validation_query_fraction=0.05,
+            seed=4,
+        )
+        with patch(
+            "experiment_pipeline.prepare_candidate_data"
+        ) as full_preparation:
+            prepared = experiment_pipeline.prepare_validation_data(
+                source,
+                splits,
+                model_type="symmetric",
+                normalize_features=True,
+                out_channels=2,
+                random_state=4,
+            )
+
+        full_preparation.assert_not_called()
+        self.assertFalse(hasattr(prepared, "test_transductive"))
+        self.assertFalse(hasattr(prepared, "test_inductive"))
+        self.assertTrue(torch.equal(
+            prepared.train.edge_index, splits.train.edge_index
+        ))
+
     def test_selection_uses_tolerance_then_ap_then_parameter_count(self):
         base = search.load_search_config("configs/pilot_search.yaml")
         candidates = [
@@ -3915,6 +3975,60 @@ class TestMainPipeline(unittest.TestCase):
             [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
             [args.seed, args.seed],
         )
+
+class TestConvergenceAudit(unittest.TestCase):
+    def test_project_audit_config_expands_all_dataset_model_pairs(self):
+        config = convergence_audit.load_audit_config(
+            "configs/convergence_audit.yaml"
+        )
+        jobs = convergence_audit.expand_audit_config(config)
+
+        self.assertEqual(len(jobs), 8 * 6)
+        self.assertEqual(config.benchmark_config.seeds, (400, 401, 402))
+        self.assertTrue(all(job.parameters["epochs"] == 500 for job in jobs))
+        self.assertTrue(all(
+            job.parameters["checkpoint_strategy"] == "best-validation"
+            and job.parameters["early_stopping_patience"] is None
+            and job.parameters["lr_scheduler"] == "none"
+            for job in jobs
+        ))
+
+    def test_dry_run_does_not_create_audit_artifacts(self):
+        config = convergence_audit.load_audit_config(
+            "configs/convergence_audit.yaml"
+        )
+        jobs = convergence_audit.expand_audit_config(config)[:2]
+        with tempfile.TemporaryDirectory() as directory:
+            isolated = replace(
+                config,
+                benchmark_config=replace(
+                    config.benchmark_config,
+                    output=str(Path(directory) / "results.csv"),
+                ),
+                epoch_history_output=str(Path(directory) / "epochs.csv"),
+                failures_output=str(Path(directory) / "errors.jsonl"),
+            )
+            summary = convergence_audit.execute_audit(
+                isolated, jobs, dry_run=True, run_id="audit-run"
+            )
+
+            self.assertEqual(summary.runs_total, 6)
+            self.assertEqual(summary.runs_succeeded, 0)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_audit_config_rejects_test_or_early_stopping_options(self):
+        document = yaml.safe_load(
+            Path("configs/convergence_audit.yaml").read_text(encoding="utf-8")
+        )
+        document["training"]["early_stopping"] = {
+            "enabled": True, "patience": 10
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.yaml"
+            path.write_text(yaml.safe_dump(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "early stopping"):
+                convergence_audit.load_audit_config(path)
+
 
 if __name__ == "__main__":
     unittest.main()

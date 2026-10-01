@@ -28,6 +28,13 @@ class ComparableSplits(NamedTuple):
     test_inductive: Data
 
 
+class ValidationSplits(NamedTuple):
+    """Store training and semi-inductive validation graph splits."""
+
+    train: Data
+    validation: Data
+
+
 class InductiveSplits(NamedTuple):
     """Store training, validation, and inductive-test graph splits."""
 
@@ -1008,6 +1015,90 @@ def generate_comparable_splits(
     )
     audit_comparable_splits(data, splits)
     return splits
+
+
+def generate_validation_splits(
+    data, *, query_size=None, query_fraction=None,
+    validation_query_size=None, validation_query_fraction=None,
+    train_ratio=0.8, seed=None,
+):
+    """Generate training and validation data without materializing test splits."""
+    if not isinstance(data, Data):
+        raise TypeError("data should be of type torch_geometric.data.Data")
+    if isinstance(data, HeteroData):
+        raise NotImplementedError(
+            "Split for heterogeneous data is not implemented yet."
+        )
+    _validate_simple_undirected_graph(data)
+    if not isinstance(train_ratio, numbers.Real) or not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between zero and one.")
+
+    query_nodes = select_query_node_sets(
+        data,
+        query_size=query_size,
+        query_fraction=query_fraction,
+        validation_query_size=validation_query_size,
+        validation_query_fraction=validation_query_fraction,
+        seed=seed,
+    )
+    visible_node_mask = _visible_node_mask(data, query_nodes)
+    source, target = data.edge_index
+    visible_edges = data.edge_index[
+        :, visible_node_mask[source] & visible_node_mask[target]
+    ]
+    undirected_visible_edges = visible_edges[
+        :, visible_edges[0] < visible_edges[1]
+    ]
+    validation_positive_edges = _query_positive_edges(
+        data, query_nodes.validation, visible_node_mask
+    )
+    reserved_test_edges = _query_positive_edges(
+        data, query_nodes.test, visible_node_mask
+    ).size(1)
+
+    num_edges = undirected_visible_edges.size(1)
+    num_validation_edges = int((1.0 - train_ratio) * num_edges)
+    num_train_edges = num_edges - num_validation_edges - reserved_test_edges
+    if num_train_edges <= 0:
+        raise ValueError("split ratios leave no edges for training")
+
+    devices = []
+    if data.edge_index.device.type == "cuda":
+        devices = [data.edge_index.device.index]
+    with torch.random.fork_rng(devices=devices):
+        if seed is not None:
+            torch.manual_seed(seed)
+        permutation = torch.randperm(num_edges, device=data.edge_index.device)
+    train_positive_edges = undirected_visible_edges[
+        :, permutation[:num_train_edges]
+    ]
+    train_message_edges = torch.cat(
+        [train_positive_edges, train_positive_edges.flip(0)], dim=1
+    )
+
+    train = data.clone()
+    train.edge_index = train_message_edges
+    train.edge_label_index = train_positive_edges
+    train.edge_label = torch.ones(
+        train_positive_edges.size(1), device=data.edge_index.device
+    )
+    validation = _semi_inductive_split_data(
+        data,
+        train_message_edges,
+        validation_positive_edges,
+        tuple(query_nodes.validation) + tuple(query_nodes.test),
+        seed=None if seed is None else seed + 1,
+    )
+    _attach_split_metadata(
+        (
+            ("train", "train", "transductive", train),
+            ("validation", "validation", "semi-inductive", validation),
+        ),
+        query_nodes,
+        data.num_nodes,
+        data.edge_index.device,
+    )
+    return ValidationSplits(train, validation)
 
 
 
