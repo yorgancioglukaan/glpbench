@@ -286,7 +286,7 @@ def _validate_model_spaces(models, num_candidates):
             raise ValueError("unexpected cosine-alignment strengths")
         if len(reducers) != num_candidates or len(strengths) != num_candidates:
             raise ValueError("stratified spaces must match num_candidates")
-    for model_type in ("mlp", "asymmetric-mlp"):
+    for model_type in ("mlp", "feature-mlp", "asymmetric-mlp"):
         model = models[model_type]
         _values(model.get("decoder_hidden_channels"), "decoder_hidden_channels")
         dropouts = _values(model.get("decoder_dropout"), "decoder_dropout")
@@ -383,7 +383,7 @@ def generate_candidates(config):
                         "regularization_type": "cosine-alignment",
                         "regularization_strength": strengths[index],
                     })
-                if architecture in {"mlp", "asymmetric-mlp"}:
+                if architecture in {"mlp", "feature-mlp", "asymmetric-mlp"}:
                     parameters.update({
                         "decoder_hidden_channels": (
                             64 if index == 0 else rng.choice(

@@ -114,6 +114,14 @@ models:
       values: [0.0, 0.2, 0.5]
       sampling: random
 
+  feature-mlp:
+    decoder_hidden_channels:
+      values: [32, 64, 128]
+      sampling: random
+    decoder_dropout:
+      values: [0.0, 0.2, 0.5]
+      sampling: random
+
   asymmetric-mlp:
     reduction_method:
       values: [pca, truncated-svd, sparse-random-projection]

@@ -640,6 +640,35 @@ class FeatureCosineModel(torch.nn.Module):
         return (similarity + 1.0) / 2.0
 
 
+class FeatureMLPModel(LinkPredictionModel):
+    """Score node pairs with a trainable MLP over their input features."""
+
+    def __init__(
+        self,
+        in_channels,
+        decoder_hidden_channels=None,
+        decoder_dropout=0.0,
+        **kwargs,
+    ):
+        super().__init__()
+        self.edge_decoder = _make_mlp_decoder(
+            in_channels, decoder_hidden_channels, decoder_dropout
+        )
+
+    def encode(self, x, edge_index):
+        """Return node features without message passing."""
+        return x
+
+    def decode_edges(self, features, edge_label_index, data):
+        """Score pairs using symmetric elementwise feature interactions."""
+        source = features[edge_label_index[0]]
+        target = features[edge_label_index[1]]
+        edge_features = torch.cat(
+            [source * target, torch.abs(source - target)], dim=-1
+        )
+        return self.edge_decoder(edge_features).squeeze(-1)
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """Describe construction and training requirements for an architecture."""
@@ -679,6 +708,11 @@ _MODEL_REGISTRY = {
         trainable=False,
         uses_conv_layer=False,
         outputs_probabilities=True,
+    ),
+    "feature-mlp": ModelSpec(
+        FeatureMLPModel,
+        uses_conv_layer=False,
+        uses_mlp_decoder=True,
     ),
 }
 
@@ -823,7 +857,11 @@ class LinkPrediction:
              raise ValueError("Unexpected model type: " + self.model_type)
         self.model_spec = _MODEL_REGISTRY[self.model_type]
         self.trainable = self.model_spec.trainable
-        if self.model_spec.uses_conv_layer or self.model_spec.uses_graph_context:
+        if (
+            self.model_spec.uses_conv_layer
+            or self.model_spec.uses_graph_context
+            or self.model_spec.uses_mlp_decoder
+        ):
             constructor_kwargs = {
                 "in_channels": train_data.num_features,
                 "hidden_channels": hidden_channels,

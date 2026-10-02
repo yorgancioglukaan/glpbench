@@ -985,7 +985,7 @@ class TestLinkPrediction(unittest.TestCase):
             link_prediction.available_model_types(),
             (
                 "symmetric", "asymmetric", "mlp", "asymmetric-mlp", "variational",
-                "deal", "feature-cosine",
+                "deal", "feature-cosine", "feature-mlp",
             ),
         )
 
@@ -1137,6 +1137,60 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertTrue(torch.isfinite(original).all())
         self.assertTrue(((original >= 0) & (original <= 1)).all())
 
+    def test_feature_mlp_is_symmetric_trainable_and_graph_independent(self):
+        data = self._training_data()
+        predictor = link_prediction.LinkPrediction(
+            data,
+            model_type="feature-mlp",
+            decoder_hidden_channels=5,
+            decoder_dropout=0.0,
+        )
+        original_logits = predictor.model.decode_edges(
+            data.x, data.edge_label_index, data
+        )
+        reversed_logits = predictor.model.decode_edges(
+            data.x, data.edge_label_index.flip(0), data
+        )
+        graphless = data.clone()
+        graphless.edge_index = torch.empty((2, 0), dtype=torch.long)
+        original_probabilities = predictor.test(data)
+        graphless_probabilities = predictor.test(graphless)
+        parameters_before = [
+            parameter.detach().clone()
+            for parameter in predictor.model.parameters()
+        ]
+
+        loss = predictor.train(data)
+
+        self.assertTrue(predictor.trainable)
+        self.assertTrue(torch.allclose(original_logits, reversed_logits))
+        self.assertTrue(torch.allclose(
+            original_probabilities, graphless_probabilities
+        ))
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(any(
+            not torch.equal(before, after)
+            for before, after in zip(
+                parameters_before, predictor.model.parameters()
+            )
+        ))
+
+    def test_feature_mlp_spec_and_configuration(self):
+        data = self._training_data()
+        spec = link_prediction.get_model_spec("feature-mlp")
+
+        self.assertIs(spec.constructor, link_prediction.FeatureMLPModel)
+        self.assertFalse(spec.uses_conv_layer)
+        self.assertTrue(spec.uses_mlp_decoder)
+        with self.assertRaisesRegex(ValueError, "decoder_hidden_channels"):
+            link_prediction.LinkPrediction(
+                data, model_type="feature-mlp", decoder_hidden_channels=0
+            )
+        with self.assertRaisesRegex(ValueError, "decoder_dropout"):
+            link_prediction.LinkPrediction(
+                data, model_type="feature-mlp", decoder_dropout=1.0
+            )
+
     def test_mlp_decoder_is_symmetric_and_trainable(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
@@ -1170,7 +1224,7 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_mlp_decoder_validates_configuration(self):
         data = self._training_data()
-        for model_type in ("mlp", "asymmetric-mlp"):
+        for model_type in ("mlp", "asymmetric-mlp", "feature-mlp"):
             with self.subTest(model_type=model_type):
                 with self.assertRaises(ValueError):
                     link_prediction.LinkPrediction(
@@ -2616,7 +2670,7 @@ class TestSearchRunner(unittest.TestCase):
         second = search.generate_candidates(config)
 
         self.assertEqual(first, second)
-        self.assertEqual(len(first), 8 * 6 * 3)
+        self.assertEqual(len(first), 8 * 7 * 3)
         for dataset in config.datasets:
             for architecture in config.architectures:
                 group = [
@@ -2649,6 +2703,15 @@ class TestSearchRunner(unittest.TestCase):
                     self.assertEqual(
                         {candidate.hyperparameters["deal_profile"] for candidate in group},
                         {"balanced", "attribute-focused", "alignment-focused"},
+                    )
+                if architecture in {"mlp", "feature-mlp", "asymmetric-mlp"}:
+                    self.assertIn(
+                        group[0].hyperparameters["decoder_hidden_channels"],
+                        {32, 64, 128},
+                    )
+                    self.assertIn(
+                        group[0].hyperparameters["decoder_dropout"],
+                        {0.0, 0.2, 0.5},
                     )
 
     def test_search_accepts_a_fixed_scheduler_configuration(self):
@@ -3650,6 +3713,8 @@ class TestMainPipeline(unittest.TestCase):
             ("deal", "inductive"),
             ("feature-cosine", "transductive"),
             ("feature-cosine", "inductive"),
+            ("feature-mlp", "transductive"),
+            ("feature-mlp", "inductive"),
         })
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
         self.assertTrue(all(
@@ -3701,10 +3766,10 @@ class TestMainPipeline(unittest.TestCase):
                 if row["model_type"] == model_type
             }
             self.assertEqual(len(model_runtimes), 1)
-        self.assertEqual(mock_negative_sampling.call_count, 6)
+        self.assertEqual(mock_negative_sampling.call_count, 7)
         self.assertEqual(
             [call.kwargs["seed"] for call in mock_negative_sampling.call_args_list],
-            [args.seed] * 6,
+            [args.seed] * 7,
         )
         cosine_rows = [
             row for row in rows if row["model_type"] == "feature-cosine"

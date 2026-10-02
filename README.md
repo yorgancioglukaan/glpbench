@@ -119,7 +119,9 @@ configuration share a stable `configuration_id`. Data splits and evaluation
 negatives are generated once per seed and reused across architectures.
 
 Available model types are `symmetric`, `asymmetric`, `mlp`,
-`asymmetric-mlp`, `variational`, `deal`, and `feature-cosine`. Repeat
+`asymmetric-mlp`, `variational`, `deal`, `feature-cosine`, and `feature-mlp`.
+`feature-mlp` is a trainable, graph-independent baseline that applies the
+symmetric MLP decoder directly to pairs of input node features. Repeat
 `--model-type` to choose several explicitly:
 
 ```bash

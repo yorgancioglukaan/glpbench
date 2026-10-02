@@ -31,7 +31,7 @@ from main import run_experiment
 
 
 _CONV_LAYER_TYPES = ("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv")
-_NON_CONV_MODELS = {"deal", "feature-cosine"}
+_NON_CONV_MODELS = {"deal", "feature-cosine", "feature-mlp"}
 _DEFAULTS = {
     "query_size": 10,
     "query_fraction": None,
