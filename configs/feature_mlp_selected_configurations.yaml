@@ -1,0 +1,95 @@
+version: 1
+kind: selected-hyperparameters
+search_run_id: transferred-from-gae-mlp-pilot
+source_specification: out/pilot_selected_configurations.yaml
+selection_metric: transferred_gae_mlp_configuration
+tuning_seeds: [100, 101, 102]
+selections:
+  amazon-computers:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 128
+        out_channels: 64
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 64
+        decoder_dropout: 0.0
+  amazon-photo:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 32
+        out_channels: 16
+        learning_rate: 0.01
+        weight_decay: 0.001
+        normalize_features: false
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 128
+        decoder_dropout: 0.2
+  citeseer:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 64
+        out_channels: 16
+        learning_rate: 0.001
+        weight_decay: 0.0
+        normalize_features: false
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 128
+        decoder_dropout: 0.5
+  coauthor-cs:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 128
+        out_channels: 64
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 64
+        decoder_dropout: 0.0
+  cora:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 128
+        out_channels: 64
+        learning_rate: 0.005
+        weight_decay: 0.0001
+        normalize_features: false
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 32
+        decoder_dropout: 0.5
+  dblp:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 128
+        out_channels: 64
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 64
+        decoder_dropout: 0.0
+  pubmed:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 128
+        out_channels: 64
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 64
+        decoder_dropout: 0.0
+  wikics:
+    feature-mlp:
+      hyperparameters:
+        hidden_channels: 64
+        out_channels: 16
+        learning_rate: 0.01
+        weight_decay: 0.0001
+        normalize_features: false
+        conv_layer_type: GCNConv
+        decoder_hidden_channels: 32
+        decoder_dropout: 0.0
