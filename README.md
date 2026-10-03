@@ -1,23 +1,34 @@
 # Asymmetric Graph Autoencoder Link Prediction
-This project experimentally evaluates the performance of asymmetric graph autoencoder model for link prediction on common benchmark datasets using both transductive (random-edge-sampling) and inductive (cold-start) settings. It provides both a CLI for quickly running experiments and an API to allow other researchers to integrate the asymmetric model into their own research.
 
+This project provides a reproducible framework for evaluating transductive and semi-inductive link prediction. It includes an experiment CLI, matched and leakage-audited data splits, benchmark-dataset loading, YAML benchmark grids, validation-only hyperparameter search, CSV result logging, plotting workflows, and a Python API for building and evaluating AGAE and its baselines.
 
-[**Asymmetric model**](#what-is-asymmetric-graph-autoencoder)
-| [**CLI Usage**](#running-an-experiment)
-| [**API Usage**](#api-overview)
+## Contents
 
-## What is Asymmetric Graph Autoencoder?
+- [Asymmetric Graph Autoencoder](#asymmetric-graph-autoencoder)
+- [Experiment CLI](#experiment-cli)
+- [Benchmark grids](#benchmark-grids)
+- [Hyperparameter search](#hyperparameter-search)
+- [Python API](#python-api)
+  - [Dataset loading](#dataset-loading)
+  - [Feature preprocessing and graph splits](#feature-preprocessing-and-graph-splits)
+  - [Link-prediction models](#link-prediction-models)
+  - [Result logging](#result-logging)
 
-The asymmetric decoder combines latent source embeddings with reduced target-node features, while the baselines provide inner product, learned symmetric, probabilistic, and feature-only alternatives. The asymmetric model learns latent representation $Z \in R^{n \times n}$, such that:
+## Asymmetric Graph Autoencoder
 
-$$Z.X_{reduced}^{T} = \hat{A}$$
+Standard graph autoencoders score a candidate edge using graph-derived latent representations for both endpoints. This is problematic in the semi-inductive setting, where one endpoint is a new query node whose attributes are available but whose edges were not observed during training.
 
-where $\hat{A}$ is the reconstructed adjacency matrix and $X_{reduced}$ is the dimensionality-reduced feature matrix.
+The Asymmetric Graph Autoencoder (AGAE) instead combines a message-passing representation of the observed source node with a feature-derived representation of the target node. Given latent source representations $Z \in \mathbb{R}^{n \times d}$ and reduced node features $X_{\mathrm{reduced}} \in \mathbb{R}^{n \times d}$, its decoder reconstructs link scores as
 
+$$
+\hat{A} = Z X_{\mathrm{reduced}}^{T}.
+$$
+
+The feature reducer is fitted only on training-visible nodes and can transform unseen query nodes without retraining the graph encoder. The framework evaluates this decoder under matched transductive and semi-inductive protocols alongside inner-product, MLP-decoder, variational, DEAL, and feature-only baselines.
 
 ![Model performance using GCNConv](assets/all_on_gcn.png)
 
-## Running an experiment
+## Experiment CLI
 
 Run an experiment with a supported dataset:
 
@@ -26,7 +37,7 @@ python main.py cora out/results.csv
 ```
 
 When `--model-type` is omitted, the script runs every registered architecture
-on the same splits. The seven current architectures produce fourteen result
+on the same splits. The eight current architectures produce sixteen result
 rows under one run ID after evaluation on both test settings. The
 feature-cosine baseline is evaluated directly without training.
 
@@ -138,7 +149,7 @@ For example, run the Amazon Photo benchmark with:
 python main.py amazon-photo out/results.csv --verbose
 ```
 
-## Running a benchmark grid
+## Benchmark grids
 
 `benchmark.py` expands a versioned YAML configuration and calls the Python
 experiment API sequentially. Start from
@@ -181,7 +192,7 @@ dataset–architecture pair. Search fields for preprocessing, AGAE
 regularization, MLP decoders, VGAE, and DEAL are translated to the experiment
 API and validated before execution.
 
-## Running a hyperparameter search
+## Hyperparameter search
 
 `search.py` performs validation-only model selection and never evaluates either
 test split. The pilot specification is
@@ -206,7 +217,7 @@ The runner also writes an aggregate CSV, a JSONL failure log, and a YAML file
 containing the selected resolved configuration for each dataset–architecture
 pair.
 
-## API overview
+## Python API
 
 ### Dataset loading
 
@@ -220,7 +231,7 @@ data = load_dataset("cora", root="data", device="cpu")
 
 `datasets.available_datasets()` returns the normalized names accepted by the loader.
 
-### Features and graph splits
+### Feature preprocessing and graph splits
 
 `utils.calculate_reduced_features()` fits a registered feature reducer and stores the transformed features in `data.x_reduced`. Pass a node mask to fit without exposing inductive query features:
 
@@ -275,6 +286,7 @@ The model classes are:
 - `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
 - `DEALModel`: aligned structural-identity and attribute encoders for inductive prediction.
 - `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
+- `FeatureMLPModel`: trainable symmetric MLP over endpoint feature interactions.
 
 `link_prediction.LinkPrediction` provides the shared training and inference interface:
 
