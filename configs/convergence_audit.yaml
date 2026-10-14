@@ -17,7 +17,7 @@ execution:
 seeds: [400, 401, 402]
 
 selected_configurations:
-  path: out/pilot_selected_configurations.yaml
+  path: configs/pilot_selected_configurations.yaml
   granularity: [dataset, architecture]
   require_all_pairs: true
 

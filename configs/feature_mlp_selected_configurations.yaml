@@ -1,7 +1,7 @@
 version: 1
 kind: selected-hyperparameters
 search_run_id: transferred-from-gae-mlp-pilot
-source_specification: out/pilot_selected_configurations.yaml
+source_specification: configs/pilot_selected_configurations.yaml
 selection_metric: transferred_gae_mlp_configuration
 tuning_seeds: [100, 101, 102]
 selections:

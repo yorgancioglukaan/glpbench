@@ -11,7 +11,7 @@ data_root: data
 seeds: [300, 301, 302, 303, 304, 305, 306, 307, 308, 309]
 
 selected_configurations:
-  path: out/pilot_selected_configurations.yaml
+  path: configs/pilot_selected_configurations.yaml
   granularity: [dataset, architecture]
   require_all_pairs: true
 
