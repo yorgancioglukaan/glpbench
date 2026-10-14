@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glpbench"
+version = "0.1.0a1"
+description = "Evaluation pipelines for transductive and semi-inductive graph link prediction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Kaan Yorgancioglu"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.2",
+    "torch>=2.1",
+    "torch-geometric>=2.5",
+    "tqdm>=4.60",
+]
+
+[project.urls]
+Repository = "https://github.com/yorgancioglukaan/glpbench"
+Issues = "https://github.com/yorgancioglukaan/glpbench/issues"
+
+[project.scripts]
+glpbench = "glpbench.cli:main"
+
+[tool.setuptools]
+packages = ["glpbench"]
+py-modules = [
+    "benchmark",
+    "convergence_audit",
+    "datasets",
+    "experiment_logging",
+    "experiment_pipeline",
+    "feature_reduction",
+    "link_prediction",
+    "lr_scheduling",
+    "main",
+    "search",
+    "utils",
+]
+

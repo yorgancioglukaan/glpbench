@@ -1,6 +1,21 @@
-# Asymmetric Graph Autoencoder Link Prediction
+# GLPBench
 
-This project provides a reproducible framework for evaluating transductive and semi-inductive link prediction. It includes an experiment CLI, matched and leakage-audited data splits, benchmark-dataset loading, YAML benchmark grids, validation-only hyperparameter search, CSV result logging, plotting workflows, and a Python API for building and evaluating AGAE and its baselines.
+GLPBench is a reproducible evaluation pipeline for transductive and
+semi-inductive graph link prediction. It includes matched and leakage-audited
+data splits, benchmark-dataset loading, YAML benchmark grids, validation-only
+hyperparameter search, result logging, and reference model implementations.
+
+This is an alpha release. Its public API and configuration schema may change
+before the first stable release.
+
+Install GLPBench from PyPI with:
+
+```bash
+python -m pip install glpbench
+```
+
+Run `glpbench --help` to list the available experiment, benchmark, search, and
+audit commands.
 
 ## Contents
 
@@ -13,6 +28,7 @@ This project provides a reproducible framework for evaluating transductive and s
   - [Feature preprocessing and graph splits](#feature-preprocessing-and-graph-splits)
   - [Link-prediction models](#link-prediction-models)
   - [Result logging](#result-logging)
+- [License](#license)
 
 ## Asymmetric Graph Autoencoder
 
@@ -26,14 +42,12 @@ $$
 
 The feature reducer is fitted only on training-visible nodes and can transform unseen query nodes without retraining the graph encoder. The framework evaluates this decoder under matched transductive and semi-inductive protocols alongside inner-product, MLP-decoder, variational, DEAL, and feature-only baselines.
 
-![Model performance using GCNConv](assets/all_on_gcn.png)
-
 ## Experiment CLI
 
 Run an experiment with a supported dataset:
 
 ```bash
-python main.py cora out/results.csv
+glpbench experiment cora out/results.csv
 ```
 
 When `--model-type` is omitted, the script runs every registered architecture
@@ -53,13 +67,13 @@ training time empty and report zero trainable parameters.
 Add `--verbose` to show dataset preparation, architecture progress, epoch progress, and live loss components:
 
 ```bash
-python main.py cora out/results.csv --verbose
+glpbench experiment cora out/results.csv --verbose
 ```
 
 Common options include:
 
 ```bash
-python main.py citeseer out/results.csv \
+glpbench experiment citeseer out/results.csv \
   --conv-layer-type GATv2Conv \
   --gatv2-kwargs '{"heads": 2, "concat": false, "dropout": 0.1}' \
   --hidden-channels 128 \
@@ -121,7 +135,7 @@ and final learning rate.
 Repeat `--seed` to run paired repetitions in one invocation:
 
 ```bash
-python main.py cora out/results.csv --seed 1 --seed 2 --seed 3
+glpbench experiment cora out/results.csv --seed 1 --seed 2 --seed 3
 ```
 
 Alternatively, `--num-seeds 10` runs seeds 0 through 9. All rows from the
@@ -136,17 +150,17 @@ symmetric MLP decoder directly to pairs of input node features. Repeat
 `--model-type` to choose several explicitly:
 
 ```bash
-python main.py cora \
+glpbench experiment cora \
   --model-type mlp \
   --model-type variational
 ```
 
-Supported datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers, Coauthor CS, DBLP, WikiCS, and Deezer Europe. Supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `python main.py --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
+Supported datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers, Coauthor CS, DBLP, WikiCS, and Deezer Europe. Supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `glpbench experiment --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
 
 For example, run the Amazon Photo benchmark with:
 
 ```bash
-python main.py amazon-photo out/results.csv --verbose
+glpbench experiment amazon-photo out/results.csv --verbose
 ```
 
 ## Benchmark grids
@@ -157,13 +171,13 @@ experiment API sequentially. Start from
 the expansion without training:
 
 ```bash
-python benchmark.py configs/example_benchmark.yaml --dry-run
+glpbench benchmark configs/example_benchmark.yaml --dry-run
 ```
 
 Run the grid with:
 
 ```bash
-python benchmark.py configs/example_benchmark.yaml --verbose
+glpbench benchmark configs/example_benchmark.yaml --verbose
 ```
 
 Verbose benchmark output uses one overall model–seed progress bar and one
@@ -183,8 +197,8 @@ written by `search.py`. The preliminary held-out benchmark uses the pilot
 selections with new evaluation seeds:
 
 ```bash
-python benchmark.py configs/preliminary_benchmark.yaml --dry-run
-python benchmark.py configs/preliminary_benchmark.yaml --verbose
+glpbench benchmark configs/preliminary_benchmark.yaml --dry-run
+glpbench benchmark configs/preliminary_benchmark.yaml --verbose
 ```
 
 The selected-configuration document must contain every requested
@@ -200,14 +214,14 @@ test split. The pilot specification is
 deterministic candidate expansion without loading data or training:
 
 ```bash
-python search.py configs/pilot_search.yaml --dry-run
+glpbench search configs/pilot_search.yaml --dry-run
 ```
 
 Run or resume the CPU pilot with:
 
 ```bash
-python search.py configs/pilot_search.yaml --verbose
-python search.py configs/pilot_search.yaml --resume --verbose
+glpbench search configs/pilot_search.yaml --verbose
+glpbench search configs/pilot_search.yaml --resume --verbose
 ```
 
 Successful candidate–seed runs are written to a search-history CSV. Selection
@@ -259,7 +273,7 @@ Available reduction methods are `pca`, `truncated-svd`, and
 `sparse-random-projection`. For example:
 
 ```bash
-python main.py coauthor-cs out/results.csv \
+glpbench experiment coauthor-cs out/results.csv \
   --model-type asymmetric \
   --reduction-method truncated-svd
 ```
@@ -331,7 +345,7 @@ AGAE supports `none`, `latent-l2`, `mse-alignment`, `cosine-alignment`, and
 several methods on the same graph splits and negative samples:
 
 ```bash
-python main.py cora out/regularization.csv \
+glpbench experiment cora out/regularization.csv \
   --model-type asymmetric \
   --agae-regularization none \
   --agae-regularization latent-l2 \
@@ -367,3 +381,8 @@ logger = CSVResultLogger("out/results.csv")
 logger.log(ExperimentResult(...))
 logger.reset_run_id()  # Start a new experiment group.
 ```
+
+## License
+
+GLPBench is distributed under the
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

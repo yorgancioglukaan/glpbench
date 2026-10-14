@@ -1,9 +1,14 @@
 /.vscode/
-/__pycache__/
+__pycache__/
+*.py[cod]
 .DS_Store
 *.ipynb
+/assets/
 /data/
 /features/
 *.md
 !README.md
 /out/
+/build/
+/dist/
+/*.egg-info/
