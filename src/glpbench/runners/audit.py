@@ -13,13 +13,20 @@ import torch
 from tqdm.auto import tqdm
 import yaml
 
-import benchmark
-from datasets import load_dataset
-from experiment_logging import CSVEpochHistoryLogger, EpochHistoryRecord
-from experiment_pipeline import prepare_validation_data
-from link_prediction import LinkPrediction, count_trainable_parameters, get_model_spec
-from main import calculate_metrics, train_with_validation_selection
-from utils import generate_validation_splits
+import glpbench.runners.benchmark as benchmark
+from glpbench.datasets import load_dataset
+from glpbench.logging import CSVEpochHistoryLogger, EpochHistoryRecord
+from glpbench.evaluation import prepare_validation_data
+from glpbench.models import (
+    LinkPrediction,
+    count_trainable_parameters,
+    get_model_spec,
+)
+from glpbench.runners.experiment import (
+    calculate_metrics,
+    train_with_validation_selection,
+)
+from glpbench.protocols import generate_validation_splits
 
 
 AUDIT_FIELDNAMES = [

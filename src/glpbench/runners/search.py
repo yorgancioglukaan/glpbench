@@ -15,18 +15,21 @@ import torch
 from tqdm.auto import tqdm
 import yaml
 
-from datasets import available_datasets, load_dataset
-from experiment_pipeline import prepare_validation_data
-from feature_reduction import available_reduction_methods
-from link_prediction import (
+from glpbench.datasets import available_datasets, load_dataset
+from glpbench.evaluation import prepare_validation_data
+from glpbench.preprocessing import available_reduction_methods
+from glpbench.models import (
     LinkPrediction,
     available_model_types,
     count_trainable_parameters,
     get_model_spec,
 )
-from lr_scheduling import validate_scheduler_config
-from main import calculate_metrics, train_with_validation_selection
-from utils import generate_comparable_splits
+from glpbench.training import validate_scheduler_config
+from glpbench.runners.experiment import (
+    calculate_metrics,
+    train_with_validation_selection,
+)
+from glpbench.protocols import generate_comparable_splits
 
 
 _TRAINABLE_MODELS = tuple(

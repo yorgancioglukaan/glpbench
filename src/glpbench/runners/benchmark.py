@@ -13,21 +13,21 @@ from uuid import uuid4
 from tqdm.auto import tqdm
 import yaml
 
-from datasets import available_datasets
-from experiment_logging import (
+from glpbench.datasets import available_datasets
+from glpbench.logging import (
     CSVEpochHistoryLogger,
     CSVResultLogger,
     EpochHistoryRecord,
     make_configuration_id,
 )
-from feature_reduction import available_reduction_methods
-from link_prediction import (
+from glpbench.preprocessing import available_reduction_methods
+from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
     get_model_spec,
 )
-from lr_scheduling import validate_scheduler_config
-from main import run_experiment
+from glpbench.training import validate_scheduler_config
+from glpbench.runners.experiment import run_experiment
 
 
 _CONV_LAYER_TYPES = ("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv")

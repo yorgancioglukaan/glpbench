@@ -235,24 +235,24 @@ pair.
 
 ### Dataset loading
 
-`datasets.load_dataset()` loads a supported benchmark, optionally normalizes its features, moves it to a device, and attaches dataset metadata:
+`glpbench.datasets.load_dataset()` loads a supported benchmark, optionally normalizes its features, moves it to a device, and attaches dataset metadata:
 
 ```python
-from datasets import load_dataset
+from glpbench.datasets import load_dataset
 
 data = load_dataset("cora", root="data", device="cpu")
 ```
 
-`datasets.available_datasets()` returns the normalized names accepted by the loader.
+`glpbench.datasets.available_datasets()` returns the normalized names accepted by the loader.
 
 ### Feature preprocessing and graph splits
 
-`utils.calculate_reduced_features()` fits a registered feature reducer and stores the transformed features in `data.x_reduced`. Pass a node mask to fit without exposing inductive query features:
+`glpbench.protocols.calculate_reduced_features()` fits a registered feature reducer and stores the transformed features in `data.x_reduced`. Pass a node mask to fit without exposing inductive query features:
 
 ```python
 import torch
 
-from utils import (
+from glpbench.protocols import (
     calculate_reduced_features,
     generate_comparable_splits,
     select_query_nodes,
@@ -287,7 +287,7 @@ It automatically calls `audit_comparable_splits()` to enforce node-role,
 topology, positive/negative leakage, orientation, and paired-test invariants.
 The split protocol expects a simple undirected graph and rejects self-loops or
 duplicate directed edge entries rather than silently modifying them.
-`utils.inductive_split()` is available when only a cold-start split is needed.
+`glpbench.protocols.inductive_split()` is available when only a cold-start split is needed.
 
 ### Link-prediction models
 
@@ -302,10 +302,10 @@ The model classes are:
 - `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
 - `FeatureMLPModel`: trainable symmetric MLP over endpoint feature interactions.
 
-`link_prediction.LinkPrediction` provides the shared training and inference interface:
+`glpbench.models.LinkPrediction` provides the shared training and inference interface:
 
 ```python
-from link_prediction import LinkPrediction
+from glpbench.models import LinkPrediction
 
 predictor = LinkPrediction(
     train,
@@ -372,10 +372,10 @@ predictor = LinkPrediction(
 
 ### Result logging
 
-`experiment_logging.ExperimentResult` validates experiment metadata and metrics. `CSVResultLogger` appends results to a stable CSV schema; rows written by the same logger share a run ID:
+`glpbench.logging.ExperimentResult` validates experiment metadata and metrics. `CSVResultLogger` appends results to a stable CSV schema; rows written by the same logger share a run ID:
 
 ```python
-from experiment_logging import CSVResultLogger, ExperimentResult
+from glpbench.logging import CSVResultLogger, ExperimentResult
 
 logger = CSVResultLogger("out/results.csv")
 logger.log(ExperimentResult(...))

@@ -3,24 +3,46 @@ from unittest.mock import patch
 import argparse
 import copy
 import csv
+from contextlib import redirect_stdout
 from dataclasses import replace
+import importlib
+from io import StringIO
 import json
+import os
 import random
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _PROJECT_ROOT / "src"
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
 import torch
 import yaml
-import utils
-import datasets
-import main
-import benchmark
-import convergence_audit
-import search
-import feature_reduction
-import lr_scheduling
-import experiment_pipeline
-from experiment_logging import (
+import glpbench.protocols.splitting as utils
+import glpbench.datasets.builtin as datasets
+import glpbench.runners.experiment as main
+import glpbench.runners.benchmark as benchmark
+import glpbench.runners.audit as convergence_audit
+import glpbench.runners.search as search
+import glpbench.preprocessing.reduction as feature_reduction
+import glpbench.training.scheduling as lr_scheduling
+from glpbench import preprocessing, training
+import glpbench.datasets as glp_datasets
+import glpbench.evaluation as glp_evaluation
+import glpbench.logging as glp_logging
+import glpbench.models as glp_models
+import glpbench.protocols as glp_protocols
+import glpbench.runners.experiment as experiment_runner
+import glpbench.runners.benchmark as benchmark_runner
+import glpbench.runners.search as search_runner
+import glpbench.runners.audit as audit_runner
+import glpbench.evaluation.pipeline as experiment_pipeline
+from glpbench.logging.csv_store import (
     CSVEpochHistoryLogger,
     CSVResultLogger,
     EpochHistoryRecord,
@@ -29,10 +51,229 @@ from experiment_logging import (
 )
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
-import link_prediction
+import glpbench.models.link_prediction as link_prediction
+
+
+class TestPackageMigrationBoundary(unittest.TestCase):
+    """Protect the installed package shell during the src-layout migration."""
+
+    @staticmethod
+    def _run_package_command(*arguments):
+        project_root = _PROJECT_ROOT
+        environment = os.environ.copy()
+        source_path = str(project_root / "src")
+        existing_path = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            source_path
+            if not existing_path
+            else os.pathsep.join((source_path, existing_path))
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "glpbench", *arguments],
+            cwd=project_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    def test_package_import_resolves_to_src_layout(self):
+        project_root = _PROJECT_ROOT
+        environment = os.environ.copy()
+        source_path = str(project_root / "src")
+        existing_path = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            source_path
+            if not existing_path
+            else os.pathsep.join((source_path, existing_path))
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import glpbench; "
+                    "print(glpbench.__version__); "
+                    "print(glpbench.__file__)"
+                ),
+            ],
+            cwd=project_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        output_lines = completed.stdout.strip().splitlines()
+        self.assertEqual(output_lines[0], "0.1.0a1")
+        self.assertTrue(
+            output_lines[1].endswith("src/glpbench/__init__.py"),
+            output_lines[1],
+        )
+
+    def test_top_level_cli_lists_current_subcommands(self):
+        completed = self._run_package_command("--help")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        for command in ("experiment", "benchmark", "search", "audit"):
+            self.assertIn(command, completed.stdout)
+
+    def test_cli_dispatches_each_current_subcommand(self):
+        project_root = _PROJECT_ROOT
+        source_path = str(project_root / "src")
+        if source_path not in sys.path:
+            sys.path.insert(0, source_path)
+        cli = importlib.import_module("glpbench.cli")
+        expected_help = {
+            "experiment": "Run a link-prediction experiment",
+            "benchmark": "Run configuration-driven link-prediction benchmark grids",
+            "search": "Run validation-only hyperparameter searches",
+            "audit": "Run validation-only convergence audits",
+        }
+
+        for command, expected_text in expected_help.items():
+            with self.subTest(command=command):
+                output = StringIO()
+                with (
+                    patch.object(sys, "argv", ["glpbench", command, "--help"]),
+                    redirect_stdout(output),
+                    self.assertRaises(SystemExit) as exit_context,
+                ):
+                    cli.main()
+                self.assertEqual(exit_context.exception.code, 0)
+                self.assertIn(expected_text, output.getvalue())
+
+    def test_readme_public_imports_remain_available(self):
+        self.assertTrue(callable(datasets.load_dataset))
+        self.assertTrue(callable(datasets.available_datasets))
+        self.assertTrue(callable(utils.calculate_reduced_features))
+        self.assertTrue(callable(utils.generate_comparable_splits))
+        self.assertTrue(callable(utils.select_query_nodes))
+        self.assertTrue(callable(link_prediction.LinkPrediction))
+        self.assertTrue(callable(CSVResultLogger))
+        self.assertTrue(callable(ExperimentResult))
+
+
+class TestLoggingPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(ExperimentResult, glp_logging.ExperimentResult)
+        self.assertIs(CSVResultLogger, glp_logging.CSVResultLogger)
+        self.assertIs(EpochHistoryRecord, glp_logging.EpochHistoryRecord)
+        self.assertIs(
+            CSVEpochHistoryLogger,
+            glp_logging.CSVEpochHistoryLogger,
+        )
+        self.assertIs(
+            make_configuration_id,
+            glp_logging.make_configuration_id,
+        )
+
+
+class TestDatasetPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(datasets.load_dataset, glp_datasets.load_dataset)
+        self.assertIs(
+            datasets.available_datasets,
+            glp_datasets.available_datasets,
+        )
+
+
+class TestModelPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(link_prediction.LinkPrediction, glp_models.LinkPrediction)
+        self.assertIs(link_prediction.GAE_Model, glp_models.GAE_Model)
+        self.assertIs(
+            link_prediction.sample_training_negative_edges,
+            glp_models.sample_training_negative_edges,
+        )
+        self.assertIs(
+            link_prediction._MODEL_REGISTRY,
+            glp_models.link_prediction._MODEL_REGISTRY,
+        )
+
+
+class TestProtocolPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            utils.generate_comparable_splits,
+            glp_protocols.generate_comparable_splits,
+        )
+        self.assertIs(
+            utils.select_query_node_sets,
+            glp_protocols.select_query_node_sets,
+        )
+        self.assertIs(utils.ComparableSplits, glp_protocols.ComparableSplits)
+
+
+class TestEvaluationPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            experiment_pipeline.prepare_candidate_data,
+            glp_evaluation.prepare_candidate_data,
+        )
+        self.assertIs(
+            experiment_pipeline.prepare_validation_data,
+            glp_evaluation.prepare_validation_data,
+        )
+
+
+class TestExperimentRunnerPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(main.run_experiment, experiment_runner.run_experiment)
+        self.assertIs(
+            main.train_with_validation_selection,
+            experiment_runner.train_with_validation_selection,
+        )
+        self.assertIs(main.calculate_metrics, experiment_runner.calculate_metrics)
+
+
+class TestBenchmarkRunnerPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            benchmark.load_benchmark_config,
+            benchmark_runner.load_benchmark_config,
+        )
+        self.assertIs(
+            benchmark.execute_benchmark,
+            benchmark_runner.execute_benchmark,
+        )
+        self.assertIs(benchmark.ExperimentJob, benchmark_runner.ExperimentJob)
+
+
+class TestSearchRunnerPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(search.load_search_config, search_runner.load_search_config)
+        self.assertIs(search.execute_search, search_runner.execute_search)
+        self.assertIs(search.SearchCandidate, search_runner.SearchCandidate)
+
+
+class TestAuditRunnerPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            convergence_audit.load_audit_config,
+            audit_runner.load_audit_config,
+        )
+        self.assertIs(
+            convergence_audit.execute_audit,
+            audit_runner.execute_audit,
+        )
+        self.assertIs(convergence_audit.AuditConfig, audit_runner.AuditConfig)
 
 
 class TestLearningRateScheduling(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            lr_scheduling.validate_scheduler_config,
+            training.validate_scheduler_config,
+        )
+        self.assertIs(
+            lr_scheduling.build_lr_scheduler,
+            training.build_lr_scheduler,
+        )
+
     def test_registry_and_configuration_validation(self):
         self.assertEqual(lr_scheduling.available_lr_schedulers(), (
             "none", "reduce-on-plateau", "cosine-annealing"
@@ -94,11 +335,11 @@ class TestLearningRateScheduling(unittest.TestCase):
         records = []
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ),
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[{"roc_auc": 0.8}] * 3,
             ),
         ):
@@ -125,6 +366,20 @@ class TestLearningRateScheduling(unittest.TestCase):
 
 
 class TestFeatureReduction(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(
+            feature_reduction.fit_reducer,
+            preprocessing.fit_reducer,
+        )
+        self.assertIs(
+            feature_reduction.transform_features,
+            preprocessing.transform_features,
+        )
+        self.assertIs(
+            feature_reduction._REDUCER_FACTORIES,
+            preprocessing.reduction._REDUCER_FACTORIES,
+        )
+
     class SpyReducer:
         def __init__(self, n_components, random_state=None, **kwargs):
             self.n_components = n_components
@@ -573,7 +828,7 @@ class TestInductiveSplit(unittest.TestCase):
              (0, 3), (1, 4), (2, 6), (3, 7)],
         )
         with patch(
-            "utils.audit_comparable_splits",
+            "glpbench.protocols.splitting.audit_comparable_splits",
             wraps=utils.audit_comparable_splits,
         ) as audit:
             splits = utils.generate_comparable_splits(
@@ -1586,7 +1841,7 @@ class TestLinkPrediction(unittest.TestCase):
                 gatv2_kwargs="invalid",
             )
 
-    @patch("link_prediction.negative_sampling")
+    @patch("glpbench.models.link_prediction.negative_sampling")
     def test_asymmetric_training_step_updates_parameters(self, mock_sampling):
         data = self._training_data()
         mock_sampling.return_value = torch.tensor([[0, 4], [3, 1]])
@@ -1632,7 +1887,9 @@ class TestLinkPrediction(unittest.TestCase):
         )
         negative_edges = torch.tensor([[0, 4], [3, 1]])
 
-        with patch("link_prediction.negative_sampling") as mock_sampling:
+        with patch(
+            "glpbench.models.link_prediction.negative_sampling"
+        ) as mock_sampling:
             loss = predictor.train(
                 data, negative_edge_index=negative_edges
             )
@@ -2530,7 +2787,7 @@ models:
                 )
 
             progress = unittest.mock.Mock()
-            with patch("benchmark.tqdm", return_value=progress) as mock_tqdm:
+            with patch("glpbench.runners.benchmark.tqdm", return_value=progress) as mock_tqdm:
                 summary = benchmark.execute_benchmark(
                     config, jobs, verbose=True, runner=runner
                 )
@@ -2742,7 +2999,7 @@ class TestSearchRunner(unittest.TestCase):
             seed=4,
         )
         with patch(
-            "experiment_pipeline.calculate_reduced_features",
+            "glpbench.evaluation.pipeline.calculate_reduced_features",
             wraps=utils.calculate_reduced_features,
         ) as reducer:
             prepared = experiment_pipeline.prepare_validation_data(
@@ -2774,7 +3031,7 @@ class TestSearchRunner(unittest.TestCase):
             seed=4,
         )
         with patch(
-            "experiment_pipeline.prepare_candidate_data"
+            "glpbench.evaluation.pipeline.prepare_candidate_data"
         ) as full_preparation:
             prepared = experiment_pipeline.prepare_validation_data(
                 source,
@@ -2837,7 +3094,7 @@ class TestSearchRunner(unittest.TestCase):
             candidates[1].candidate_id,
         )
 
-    @patch("search.load_dataset")
+    @patch("glpbench.runners.search.load_dataset")
     def test_toy_search_logs_selects_and_resumes(self, mock_load):
         mock_load.return_value = self._graph()
         base = search.load_search_config("configs/pilot_search.yaml")
@@ -2883,8 +3140,8 @@ class TestSearchRunner(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["candidate_id"], "toy-candidate")
 
-    @patch("search.generate_comparable_splits")
-    @patch("search.load_dataset")
+    @patch("glpbench.runners.search.generate_comparable_splits")
+    @patch("glpbench.runners.search.load_dataset")
     def test_shared_split_failure_is_cached_and_logged_once(
         self, mock_load, mock_split
     ):
@@ -2963,7 +3220,7 @@ class TestDatasetLoading(unittest.TestCase):
             "cora", "dblp", "deezer-europe", "pubmed", "wikics"
         ])
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_planetoid_names_dispatch_to_canonical_names(self, mock_planetoid):
         expected_names = {
             "cora": "Cora",
@@ -2985,7 +3242,7 @@ class TestDatasetLoading(unittest.TestCase):
                 self.assertEqual(data.dataset_name, canonical_name)
                 self.assertEqual(data.dataset_family, "Planetoid")
 
-    @patch("datasets.Amazon")
+    @patch("glpbench.datasets.builtin.Amazon")
     def test_amazon_photo_loader_and_aliases(self, mock_amazon):
         mock_amazon.return_value.__getitem__.return_value = self._graph()
         for supplied_name in ("amazon-photo", "Amazon Photo", "amazon_photo"):
@@ -3000,7 +3257,7 @@ class TestDatasetLoading(unittest.TestCase):
                 self.assertEqual(data.dataset_name, "AmazonPhoto")
                 self.assertEqual(data.dataset_family, "Amazon")
 
-    @patch("datasets.Amazon")
+    @patch("glpbench.datasets.builtin.Amazon")
     def test_amazon_computers_loader_and_aliases(self, mock_amazon):
         mock_amazon.return_value.__getitem__.return_value = self._graph()
         for supplied_name in (
@@ -3017,7 +3274,7 @@ class TestDatasetLoading(unittest.TestCase):
                 self.assertEqual(data.dataset_name, "AmazonComputers")
                 self.assertEqual(data.dataset_family, "Amazon")
 
-    @patch("datasets.Coauthor")
+    @patch("glpbench.datasets.builtin.Coauthor")
     def test_coauthor_cs_loader_and_aliases(self, mock_coauthor):
         mock_coauthor.return_value.__getitem__.return_value = self._graph()
         for supplied_name in ("coauthor-cs", "Coauthor CS", "coauthor_cs"):
@@ -3030,7 +3287,7 @@ class TestDatasetLoading(unittest.TestCase):
                 self.assertEqual(data.dataset_name, "CoauthorCS")
                 self.assertEqual(data.dataset_family, "Coauthor")
 
-    @patch("datasets.CitationFull")
+    @patch("glpbench.datasets.builtin.CitationFull")
     def test_dblp_loader(self, mock_citation_full):
         mock_citation_full.return_value.__getitem__.return_value = self._graph()
         data = datasets.load_dataset(
@@ -3042,7 +3299,7 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertEqual(data.dataset_name, "DBLP")
         self.assertEqual(data.dataset_family, "CitationFull")
 
-    @patch("datasets.WikiCS")
+    @patch("glpbench.datasets.builtin.WikiCS")
     def test_wikics_loader_requests_undirected_graph(self, mock_wikics):
         mock_wikics.return_value.__getitem__.return_value = self._graph()
         data = datasets.load_dataset(
@@ -3054,7 +3311,7 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertEqual(data.dataset_name, "WikiCS")
         self.assertEqual(data.dataset_family, "WikiCS")
 
-    @patch("datasets.DeezerEurope")
+    @patch("glpbench.datasets.builtin.DeezerEurope")
     def test_deezer_loader_and_alias(self, mock_deezer):
         mock_deezer.return_value.__getitem__.return_value = self._graph()
         data = datasets.load_dataset(
@@ -3064,7 +3321,7 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertEqual(data.dataset_name, "DeezerEurope")
         self.assertEqual(data.dataset_family, "Deezer")
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_clones_normalizes_and_moves_graph(self, mock_planetoid):
         original = self._graph()
         mock_planetoid.return_value.__getitem__.return_value = original
@@ -3076,7 +3333,7 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertTrue(torch.equal(original.x, self._graph().x))
         self.assertEqual(loaded.x.device.type, "cpu")
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_can_skip_feature_normalization(self, mock_planetoid):
         original = self._graph()
         mock_planetoid.return_value.__getitem__.return_value = original
@@ -3085,7 +3342,7 @@ class TestDatasetLoading(unittest.TestCase):
 
         self.assertTrue(torch.equal(loaded.x, original.x))
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_removes_self_loops_without_mutating_source(
         self, mock_planetoid
     ):
@@ -3125,7 +3382,7 @@ class TestDatasetLoading(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid device"):
             datasets.load_dataset("cora", device="not-a-device")
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_rejects_missing_features(self, mock_planetoid):
         graph = self._graph()
         graph.x = None
@@ -3133,7 +3390,7 @@ class TestDatasetLoading(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "node features"):
             datasets.load_dataset("cora")
 
-    @patch("datasets.Planetoid")
+    @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_rejects_directed_graphs(self, mock_planetoid):
         graph = self._graph()
         graph.edge_index = torch.tensor([[0, 1], [1, 2]])
@@ -3186,7 +3443,7 @@ class TestMainPipeline(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             main._json_object("[1, 2]")
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_multi_seed_run_preserves_pairing_and_configuration_ids(
         self, mock_load
     ):
@@ -3210,7 +3467,7 @@ class TestMainPipeline(unittest.TestCase):
                 normalize_features=False,
             )
             with patch(
-                "main.generate_comparable_splits",
+                "glpbench.runners.experiment.generate_comparable_splits",
                 wraps=utils.generate_comparable_splits,
             ) as mock_splits:
                 run_id = main.run_experiment(args)
@@ -3248,7 +3505,7 @@ class TestMainPipeline(unittest.TestCase):
                 {row["random_seed"] for row in repetitions}, {"1", "2"}
             )
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_completed_results_skip_model_evaluation_and_duplicate_rows(
         self, mock_load
     ):
@@ -3279,8 +3536,8 @@ class TestMainPipeline(unittest.TestCase):
             }
 
             with (
-                patch("main._train_with_checkpoint_selection") as mock_train,
-                patch("main.calculate_metrics") as mock_metrics,
+                patch("glpbench.runners.experiment._train_with_checkpoint_selection") as mock_train,
+                patch("glpbench.runners.experiment.calculate_metrics") as mock_metrics,
             ):
                 main.run_experiment(
                     args,
@@ -3294,7 +3551,7 @@ class TestMainPipeline(unittest.TestCase):
         mock_metrics.assert_not_called()
         self.assertEqual(resumed_rows, original_rows)
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_checkpoint_selection_restores_best_epoch_before_testing(
         self, mock_load
     ):
@@ -3347,7 +3604,7 @@ class TestMainPipeline(unittest.TestCase):
                 device="cpu",
                 normalize_features=False,
             )
-            with patch("main.LinkPrediction", FakePredictor):
+            with patch("glpbench.runners.experiment.LinkPrediction", FakePredictor):
                 main.run_experiment(args)
 
             with output.open(newline="", encoding="utf-8") as csv_file:
@@ -3412,11 +3669,11 @@ class TestMainPipeline(unittest.TestCase):
 
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ) as mock_negatives,
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[
                     {"roc_auc": score} for score in validation_scores
                 ],
@@ -3461,11 +3718,11 @@ class TestMainPipeline(unittest.TestCase):
         predictor = FakePredictor()
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ),
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[{"roc_auc": 0.50}, {"roc_auc": 0.55}],
             ),
         ):
@@ -3507,11 +3764,11 @@ class TestMainPipeline(unittest.TestCase):
         predictor = FakePredictor()
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ),
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[
                     {"roc_auc": 0.90},
                     {"roc_auc": 0.80},
@@ -3556,11 +3813,11 @@ class TestMainPipeline(unittest.TestCase):
         predictor = FakePredictor()
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ),
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[
                     {"roc_auc": score}
                     for score in (0.90, 0.80, 0.70, 0.60, 0.50, 0.40)
@@ -3627,11 +3884,11 @@ class TestMainPipeline(unittest.TestCase):
         records = []
         with (
             patch(
-                "main.sample_training_negative_edges",
+                "glpbench.runners.experiment.sample_training_negative_edges",
                 return_value=torch.empty((2, 0), dtype=torch.long),
             ),
             patch(
-                "main.calculate_metrics",
+                "glpbench.runners.experiment.calculate_metrics",
                 side_effect=[
                     {"roc_auc": 0.60, "average_precision": 0.55},
                     {"roc_auc": 0.70, "average_precision": 0.65},
@@ -3667,10 +3924,10 @@ class TestMainPipeline(unittest.TestCase):
         ])
 
     @patch(
-        "main.sample_training_negative_edges",
+        "glpbench.runners.experiment.sample_training_negative_edges",
         wraps=link_prediction.sample_training_negative_edges,
     )
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_unspecified_model_type_runs_both_models_on_both_splits(
         self, mock_load, mock_negative_sampling
     ):
@@ -3818,7 +4075,7 @@ class TestMainPipeline(unittest.TestCase):
         self.assertEqual(deal_config["deal_theta_ss"], 1.0)
         self.assertEqual(deal_config["deal_lambda_sa"], 1.0)
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
         graph = self._graph()
         mock_load.return_value = graph
@@ -3841,7 +4098,7 @@ class TestMainPipeline(unittest.TestCase):
             )
 
             with patch(
-                "experiment_pipeline.calculate_reduced_features",
+                "glpbench.evaluation.pipeline.calculate_reduced_features",
                 wraps=utils.calculate_reduced_features,
             ) as mock_reduction:
                 main.run_experiment(args)
@@ -3876,7 +4133,7 @@ class TestMainPipeline(unittest.TestCase):
                 "mode": "match-test", "value": None, "resolved_size": 1,
             })
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_gatv2_kwargs_are_passed_to_model_and_logged(self, mock_load):
         mock_load.return_value = self._graph()
         with tempfile.TemporaryDirectory() as directory:
@@ -3898,7 +4155,7 @@ class TestMainPipeline(unittest.TestCase):
                 normalize_features=False,
             )
             with patch(
-                "main.LinkPrediction", wraps=link_prediction.LinkPrediction
+                "glpbench.runners.experiment.LinkPrediction", wraps=link_prediction.LinkPrediction
             ) as mock_predictor:
                 main.run_experiment(args)
 
@@ -3915,7 +4172,7 @@ class TestMainPipeline(unittest.TestCase):
                 args.gatv2_kwargs,
             )
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_weight_decay_is_applied_to_non_asymmetric_trainable_models(
         self, mock_load
     ):
@@ -3946,7 +4203,7 @@ class TestMainPipeline(unittest.TestCase):
 
         self.assertEqual({float(row["weight_decay"]) for row in rows}, {0.001})
 
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_compact_progress_emits_model_seed_events(self, mock_load):
         mock_load.return_value = self._graph()
         with tempfile.TemporaryDirectory() as directory:
@@ -3991,10 +4248,10 @@ class TestMainPipeline(unittest.TestCase):
         })
 
     @patch(
-        "main.sample_training_negative_edges",
+        "glpbench.runners.experiment.sample_training_negative_edges",
         wraps=link_prediction.sample_training_negative_edges,
     )
-    @patch("main.load_dataset")
+    @patch("glpbench.runners.experiment.load_dataset")
     def test_asymmetric_run_expands_requested_regularizers(
         self, mock_load, mock_negative_sampling
     ):

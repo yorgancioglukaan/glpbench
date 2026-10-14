@@ -7,8 +7,12 @@ import torch
 import torch_geometric.transforms as T
 from torch_geometric.data import Data
 
-from link_prediction import get_model_spec
-from utils import ComparableSplits, ValidationSplits, calculate_reduced_features
+from glpbench.models import get_model_spec
+from glpbench.protocols import (
+    ComparableSplits,
+    ValidationSplits,
+    calculate_reduced_features,
+)
 
 
 @dataclass(frozen=True)

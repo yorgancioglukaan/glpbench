@@ -9,7 +9,7 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.utils import is_undirected, negative_sampling
 
-from feature_reduction import attach_reduced_features, fit_reducer
+from glpbench.preprocessing import attach_reduced_features, fit_reducer
 
 
 class QueryNodeSets(NamedTuple):

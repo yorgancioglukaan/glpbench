@@ -8,7 +8,7 @@ dataset="Cora"
 output_file="${script_dir}/out/results.csv"
 data_root="${script_dir}/data"
 
-python "${script_dir}/main.py" \
+glpbench experiment \
     "${dataset}" \
     "${output_file}" \
     --data-root "${data_root}" \

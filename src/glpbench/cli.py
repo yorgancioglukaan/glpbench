@@ -3,13 +3,31 @@
 import argparse
 import sys
 
-
 _COMMANDS = {
-    "experiment": ("main", "Run one link-prediction experiment."),
-    "benchmark": ("benchmark", "Run a benchmark configuration."),
-    "search": ("search", "Run validation-only hyperparameter search."),
-    "audit": ("convergence_audit", "Run a convergence audit."),
+    "experiment": "Run one link-prediction experiment.",
+    "benchmark": "Run a benchmark configuration.",
+    "search": "Run validation-only hyperparameter search.",
+    "audit": "Run a convergence audit.",
 }
+
+
+def _command_module(command):
+    """Import and return one package-native runner module."""
+    if command == "experiment":
+        from glpbench.runners import experiment
+
+        return experiment
+    if command == "benchmark":
+        from glpbench.runners import benchmark
+
+        return benchmark
+    if command == "search":
+        from glpbench.runners import search
+
+        return search
+    from glpbench.runners import audit
+
+    return audit
 
 
 def _parser():
@@ -43,19 +61,16 @@ def main():
         parser.print_help()
         return 0
 
-    module_name, _ = _COMMANDS[args.command]
+    module = _command_module(args.command)
     original_argv = sys.argv
     sys.argv = [f"glpbench {args.command}", *args.arguments]
     try:
-        if module_name == "main":
-            import main as experiment_runner
-
-            run_id = experiment_runner.run_experiment(
-                experiment_runner.parse_args()
+        if args.command == "experiment":
+            run_id = module.run_experiment(
+                module.parse_args()
             )
             print(f"Completed experiment run {run_id}")
         else:
-            module = __import__(module_name)
             module.main()
     finally:
         sys.argv = original_argv

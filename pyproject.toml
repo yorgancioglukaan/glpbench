@@ -41,18 +41,8 @@ Issues = "https://github.com/yorgancioglukaan/glpbench/issues"
 glpbench = "glpbench.cli:main"
 
 [tool.setuptools]
-packages = ["glpbench"]
-py-modules = [
-    "benchmark",
-    "convergence_audit",
-    "datasets",
-    "experiment_logging",
-    "experiment_pipeline",
-    "feature_reduction",
-    "link_prediction",
-    "lr_scheduling",
-    "main",
-    "search",
-    "utils",
-]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 

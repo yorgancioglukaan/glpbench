@@ -1,5 +1,5 @@
 import torch
-from datasets import load_dataset
+from glpbench.datasets import load_dataset
 import argparse
 import copy
 import json
@@ -17,21 +17,21 @@ from sklearn.metrics import (
 )
 from tqdm.auto import tqdm
 
-from experiment_logging import (
+from glpbench.logging import (
     CSVResultLogger,
     ExperimentResult,
     make_configuration_id,
 )
-from feature_reduction import available_reduction_methods
-from lr_scheduling import (
+from glpbench.preprocessing import available_reduction_methods
+from glpbench.training import (
     available_lr_schedulers,
     build_lr_scheduler,
     current_learning_rate,
     step_lr_scheduler,
     validate_scheduler_config,
 )
-from experiment_pipeline import prepare_candidate_data
-from link_prediction import (
+from glpbench.evaluation import prepare_candidate_data
+from glpbench.models import (
     LinkPrediction,
     available_agae_regularizers,
     available_model_types,
@@ -39,7 +39,7 @@ from link_prediction import (
     get_model_spec,
     sample_training_negative_edges,
 )
-from utils import (
+from glpbench.protocols import (
     generate_comparable_splits,
     select_query_node_sets,
 )

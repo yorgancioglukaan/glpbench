@@ -1,14 +1,36 @@
-/.vscode/
+# Python caches and environments
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and operating systems
+/.vscode/
 .DS_Store
-*.ipynb
+
+# Local research notebooks and notes
+/draw_plots*.ipynb
+/manual_tests.ipynb
+/test_*.ipynb
+/AGENTS.md
+/paper_outline.md
+/remaining_work.md
+/features/
+
+# Downloaded data and generated experiment artifacts
 /assets/
 /data/
-/features/
-*.md
-!README.md
 /out/
+
+# Build artifacts
 /build/
 /dist/
-/*.egg-info/

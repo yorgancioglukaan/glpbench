@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from lr_scheduling import validate_scheduler_config
+from glpbench.training import validate_scheduler_config
 
 
 def make_configuration_id(configuration):
