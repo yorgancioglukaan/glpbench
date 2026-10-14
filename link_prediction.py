@@ -153,6 +153,10 @@ class AGAE_Model(LinkPredictionModel):
     conv_layer_type : str, optional
         Message-passing layer type. GATv2 options may be passed through
         ``gatv2_kwargs`` or as keyword arguments.
+    regularization_type : str, optional
+        Registered AGAE regularizer.
+    regularization_strength : float, optional
+        Non-negative multiplier applied to the regularization term.
     """
 
     def __init__(
@@ -306,7 +310,12 @@ def _make_mlp_decoder(out_channels, hidden_channels, dropout):
 
 
 class MLP_GAE_Model(GAE_Model):
-    """Graph autoencoder with a learned symmetric MLP decoder."""
+    """Graph autoencoder with a learned symmetric MLP decoder.
+
+    ``decoder_hidden_channels`` sets the edge-decoder width and defaults to
+    ``out_channels``. ``decoder_dropout`` is applied between decoder layers.
+    Encoder arguments match :class:`GAE_Model`.
+    """
 
     def __init__(
         self,
@@ -346,7 +355,13 @@ class MLP_GAE_Model(GAE_Model):
 
 
 class MLP_AGAE_Model(AGAE_Model):
-    """Asymmetric graph autoencoder with a learned MLP decoder."""
+    """Asymmetric graph autoencoder with a learned MLP decoder.
+
+    The decoder combines source latent vectors and target reduced features
+    using elementwise products and absolute differences. Decoder arguments
+    match :class:`MLP_GAE_Model`; encoder and regularization arguments match
+    :class:`AGAE_Model`.
+    """
 
     def __init__(
         self,
@@ -386,7 +401,19 @@ class MLP_AGAE_Model(AGAE_Model):
 
 
 class VGAE_Model(LinkPredictionModel):
-    """Variational graph autoencoder with an inner-product decoder."""
+    """Variational graph autoencoder with an inner-product decoder.
+
+    Parameters
+    ----------
+    in_channels, hidden_channels, out_channels : int
+        Input, hidden, and latent feature dimensions.
+    conv_layer_type : str, optional
+        Message-passing layer type.
+    kl_weight : float, optional
+        Non-negative multiplier for KL divergence.
+    **kwargs
+        GATv2 constructor options when ``conv_layer_type="GATv2Conv"``.
+    """
 
     def __init__(
         self,
@@ -465,6 +492,23 @@ class DEALModel(LinkPredictionModel):
     The structure branch embeds seen node identities, while the attribute
     branch maps node features into the same latent space. Query nodes have no
     trainable structural embedding and are scored through their attributes.
+
+    Parameters
+    ----------
+    in_channels, hidden_channels, out_channels : int
+        Input, attribute-hidden, and shared embedding dimensions.
+    train_data : torch_geometric.data.Data
+        Training graph with complementary Boolean ``query_mask`` and
+        ``seen_node_mask`` attributes.
+    theta_ss, theta_aa, theta_sa : float, optional
+        Non-negative training-loss weights for structural, attribute, and
+        cross-branch scores.
+    lambda_ss, lambda_aa, lambda_sa : float, optional
+        Non-negative inference weights for the same branches.
+    similarity_scale : float, optional
+        Positive scale applied to cosine-similarity logits.
+    similarity_margin : float, optional
+        Margin subtracted from similarity logits.
     """
 
     def __init__(
@@ -626,7 +670,11 @@ class DEALModel(LinkPredictionModel):
 
 
 class FeatureCosineModel(torch.nn.Module):
-    """Score edges using cosine similarity between node features."""
+    """Score edges with parameter-free cosine similarity of node features.
+
+    Similarities in ``[-1, 1]`` are mapped to probabilities in ``[0, 1]``.
+    The graph topology is ignored.
+    """
 
     def encode(self, x, edge_index):
         """Return node features without message passing."""
@@ -641,7 +689,22 @@ class FeatureCosineModel(torch.nn.Module):
 
 
 class FeatureMLPModel(LinkPredictionModel):
-    """Score node pairs with a trainable MLP over their input features."""
+    """Score node pairs with a trainable symmetric feature MLP.
+
+    Parameters
+    ----------
+    in_channels : int
+        Input node-feature dimension.
+    decoder_hidden_channels : int, optional
+        Edge-decoder width. Defaults to ``in_channels``.
+    decoder_dropout : float, optional
+        Dropout probability between decoder layers.
+
+    Notes
+    -----
+    The graph topology is ignored. Pair features concatenate the elementwise
+    product and absolute difference of endpoint features.
+    """
 
     def __init__(
         self,
@@ -742,7 +805,17 @@ def count_trainable_parameters(model):
 
 
 def sample_training_negative_edges(data, seed=None):
-    """Sample training negatives, optionally without changing RNG state."""
+    """Sample one negative edge per positive training edge.
+
+    When ``seen_node_mask`` is present, both endpoints are restricted to seen
+    nodes. Supplying ``seed`` makes sampling reproducible without changing the
+    caller's Python or PyTorch random-number-generator state.
+
+    Returns
+    -------
+    torch.Tensor
+        Negative edge index with shape ``[2, num_training_positives]``.
+    """
     def sample_edges():
         seen_node_mask = getattr(data, "seen_node_mask", None)
         if seen_node_mask is None:
@@ -807,7 +880,20 @@ class LinkPrediction:
     Parameters
     ----------
     train_data : torch_geometric.data.Data
-        Graph used for training.
+        Graph used for training. It must contain ``x``, ``edge_index``,
+        ``edge_label_index``, and ``edge_label``. Reduced-feature models also
+        require ``x_reduced``.
+    model_type : str, optional
+        Registered architecture name. Defaults to ``"symmetric"``.
+    hidden_channels, out_channels : int, optional
+        Encoder hidden and latent dimensions.
+    conv_layer_type : str, optional
+        Message-passing layer name for graph encoders.
+    learning_rate, weight_decay : float, optional
+        Adam optimizer settings for trainable models.
+    **kwargs
+        Architecture-specific decoder, regularization, VGAE, DEAL, or GATv2
+        arguments.
 
     Attributes
     ----------
@@ -829,7 +915,8 @@ class LinkPrediction:
         train_data : torch_geometric.data.Data
             Graph used for training.
         **kwargs
-            Model type, layer type, and channel dimensions.
+            Model, optimizer, encoder, decoder, and architecture-specific
+            options described by :class:`LinkPrediction`.
         """
 
         

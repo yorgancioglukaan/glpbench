@@ -14,7 +14,11 @@ from lr_scheduling import validate_scheduler_config
 
 
 def make_configuration_id(configuration):
-    """Return a stable hash for a result-producing configuration."""
+    """Return a stable SHA-256 identifier for a configuration mapping.
+
+    Dictionary keys are serialized in sorted order, so insertion order does
+    not affect the identifier. Values must be JSON serializable.
+    """
     if not isinstance(configuration, dict):
         raise TypeError("configuration must be a dictionary")
     serialized = json.dumps(
@@ -94,6 +98,14 @@ class ExperimentResult:
         Scheduler construction parameters.
     final_learning_rate : float, optional
         Learning rate after the final completed epoch.
+    roc_auc, average_precision : float, optional
+        Ranking metrics in the unit interval.
+    loss : float, optional
+        Non-negative selected-checkpoint loss.
+    accuracy, precision, recall, f1 : float, optional
+        Thresholded classification metrics in the unit interval.
+    extra_fields : dict, optional
+        Additional JSON-serializable experiment settings.
     """
 
     dataset: str
@@ -410,7 +422,7 @@ class CSVResultLogger:
         self.run_id = run_id or str(uuid4())
         return self.run_id
     def log(self, result):
-        """Append one result and return its generated run ID.
+        """Append one result and return the logger's current run ID.
 
         Parameters
         ----------
@@ -420,7 +432,7 @@ class CSVResultLogger:
         Returns
         -------
         str
-            Generated run UUID.
+            Identifier shared by rows in the current run.
         """
         if not isinstance(result, ExperimentResult):
             raise TypeError("result must be an ExperimentResult")
@@ -455,7 +467,10 @@ class CSVResultLogger:
 
 @dataclass
 class EpochHistoryRecord:
-    """Describe metrics recorded after one completed training epoch."""
+    """Describe metrics recorded after one completed training epoch.
+
+    All metric values are validated before a record can be logged.
+    """
 
     configuration_id: str
     dataset: str
@@ -511,7 +526,15 @@ class EpochHistoryRecord:
 
 
 class CSVEpochHistoryLogger:
-    """Append per-epoch training and validation metrics to a CSV file."""
+    """Append per-epoch training and validation metrics to a CSV file.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Destination CSV file.
+    run_id : str, optional
+        Identifier shared by all rows logged by this instance.
+    """
 
     FIELDNAMES = [
         "run_id",
@@ -537,7 +560,18 @@ class CSVEpochHistoryLogger:
         self.run_id = run_id or str(uuid4())
 
     def log(self, record):
-        """Append one validated epoch-history record."""
+        """Append one epoch-history record and return the current run ID.
+
+        Parameters
+        ----------
+        record : EpochHistoryRecord
+            Validated epoch metrics.
+
+        Returns
+        -------
+        str
+            Identifier shared by rows in the current run.
+        """
         if not isinstance(record, EpochHistoryRecord):
             raise TypeError("record must be an EpochHistoryRecord")
 

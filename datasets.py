@@ -112,7 +112,13 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     Returns
     -------
     torch_geometric.data.Data
-        Cloned graph with dataset metadata attached.
+        Undirected graph without self-loops. ``dataset_name`` and
+        ``dataset_family`` metadata are attached to the returned object.
+
+    Notes
+    -----
+    The loader may download data into ``root`` when it is not cached. Dataset
+    aliases ignore case and separators such as spaces, hyphens, and underscores.
     """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("name must be a non-empty string")

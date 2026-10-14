@@ -254,6 +254,26 @@ def select_query_node_sets(
     Every selected query retains at least one neighbor outside the union of
     both query sets. If validation sizing is omitted, its node count matches
     the resolved test-query count.
+
+    Parameters
+    ----------
+    data : torch_geometric.data.Data
+        Simple undirected source graph.
+    test_query, validation_query : int or sequence of int, optional
+        Explicit test or validation query-node IDs.
+    query_size, validation_query_size : int, optional
+        Exact automatically selected query counts.
+    query_fraction, validation_query_fraction : float, optional
+        Fractions of eligible non-isolated nodes selected as queries.
+    seed : int, optional
+        Seed for the local query-selection generator.
+    max_attempts : int, optional
+        Maximum randomized construction attempts.
+
+    Returns
+    -------
+    QueryNodeSets
+        Sorted, disjoint validation and test query-node IDs.
     """
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
@@ -761,6 +781,18 @@ def audit_comparable_splits(data, splits):
     The audit covers node roles, message-passing topology, positive-set
     disjointness, negative-edge validity, endpoint orientation, and matching
     of the paired test sets.
+
+    Parameters
+    ----------
+    data : torch_geometric.data.Data
+        Original simple undirected graph.
+    splits : ComparableSplits
+        Splits produced by :func:`generate_comparable_splits`.
+
+    Returns
+    -------
+    None
+        Returns only after every invariant passes.
     """
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
@@ -909,13 +941,14 @@ def generate_comparable_splits(
     Parameters
     ----------
     data : torch_geometric.data.Data
-        Undirected source graph.
+        Simple undirected source graph without self-loops or duplicate edges.
     query : int or sequence of int or torch.Tensor, optional
-        Cold-start node IDs.
+        Explicit test query-node IDs.
     test_ratio : float, optional
         Deprecated alias for ``query_fraction``.
     train_ratio : float, optional
-        Fraction of remaining edges assigned to training.
+        Controls the visible-edge validation holdout: ``1 - train_ratio`` is
+        reserved for validation before matching the transductive test size.
     query_size : int, optional
         Exact number of automatically selected query nodes.
     query_fraction : float, optional
@@ -929,6 +962,8 @@ def generate_comparable_splits(
         Fraction of eligible nodes selected as validation queries.
     seed : int, optional
         Random seed used for query selection and edge sampling.
+    **kwargs
+        Accepted for backward compatibility and ignored.
         
     Returns
     -------
@@ -1022,7 +1057,32 @@ def generate_validation_splits(
     validation_query_size=None, validation_query_fraction=None,
     train_ratio=0.8, seed=None,
 ):
-    """Generate training and validation data without materializing test splits."""
+    """Generate training and semi-inductive validation splits.
+
+    Test queries and their incident positives are reserved when sizing the
+    training graph, but no test split is returned. This prevents validation-
+    only search code from accessing test labels.
+
+    Parameters
+    ----------
+    data : torch_geometric.data.Data
+        Simple undirected source graph.
+    query_size, validation_query_size : int, optional
+        Exact test and validation query counts.
+    query_fraction, validation_query_fraction : float, optional
+        Fractions of eligible nodes used for the two query sets.
+    train_ratio : float, optional
+        Controls the validation holdout: ``1 - train_ratio`` of visible edges
+        is reserved for validation, and test-sized capacity is additionally
+        withheld to match final benchmark training sizes.
+    seed : int, optional
+        Seed used for query selection, edge splitting, and negatives.
+
+    Returns
+    -------
+    ValidationSplits
+        Training and semi-inductive validation graphs.
+    """
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
     if isinstance(data, HeteroData):
@@ -1112,9 +1172,9 @@ def inductive_split(
     Parameters
     ----------
     data : torch_geometric.data.Data
-        Undirected source graph.
+        Simple undirected source graph without self-loops or duplicate edges.
     query : int or sequence of int or torch.Tensor, optional
-        Cold-start node IDs.
+        Explicit test query-node IDs.
     test_ratio : float, optional
         Deprecated alias for ``query_fraction``.
     train_ratio : float, optional
@@ -1132,6 +1192,8 @@ def inductive_split(
         Fraction of eligible nodes selected as validation queries.
     seed : int, optional
         Random seed used for query selection and edge sampling.
+    **kwargs
+        Accepted for backward compatibility and ignored.
         
     Returns
     -------
@@ -1223,6 +1285,15 @@ def calculate_reduced_features(
         Registered reduction method.
     fit_nodes : sequence or torch.Tensor, optional
         Node indices or mask used to fit the reducer.
+    random_state : int, optional
+        Random state passed to the reducer.
+    **kwargs
+        Additional reducer-constructor arguments.
+
+    Returns
+    -------
+    torch_geometric.data.Data
+        The input graph with ``x_reduced`` and its fitted reducer attached.
     """
 
     reducer = fit_reducer(
@@ -1243,7 +1314,15 @@ def update_reduced_features(data, reduction_model = None, **kwargs):
     data : torch_geometric.data.Data
         Graph containing node features in ``x``.
     reduction_model : object, optional
-        Reducer to use. Defaults to ``data.dim_reduction``.
+        Fitted reducer. Defaults to ``data.feature_reducer`` and then the
+        legacy ``data.dim_reduction`` alias.
+    **kwargs
+        Accepted for backward compatibility and ignored.
+
+    Returns
+    -------
+    torch_geometric.data.Data
+        The input graph with refreshed ``x_reduced`` values.
     """
     if reduction_model is None:
         reduction_model = getattr(

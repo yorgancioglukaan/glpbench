@@ -16,7 +16,15 @@ _REDUCER_FACTORIES: dict[str, Callable] = {
 
 
 def register_reduction_method(name, factory):
-    """Register a reducer constructor under a stable name."""
+    """Register a reducer constructor.
+
+    Parameters
+    ----------
+    name : str
+        Unique case-normalized method name.
+    factory : callable
+        Constructor accepting ``n_components`` and ``random_state``.
+    """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("reduction method name must be a non-empty string")
     if not callable(factory):
@@ -28,7 +36,13 @@ def register_reduction_method(name, factory):
 
 
 def available_reduction_methods():
-    """Return registered reduction method names in stable order."""
+    """Return registered reduction method names in sorted order.
+
+    Returns
+    -------
+    tuple of str
+        Names accepted by :func:`fit_reducer`.
+    """
     return tuple(sorted(_REDUCER_FACTORIES))
 
 
@@ -69,7 +83,28 @@ def fit_reducer(
     random_state=None,
     **kwargs,
 ):
-    """Fit a registered reducer on selected node features."""
+    """Fit a registered reducer on selected node features.
+
+    Parameters
+    ----------
+    features : torch.Tensor
+        Node-feature matrix with shape ``[num_nodes, num_features]``.
+    fit_nodes : sequence or torch.Tensor, optional
+        One-dimensional node indices or Boolean mask used for fitting.
+    method : str, optional
+        Registered reduction method.
+    n_components : int, optional
+        Output feature dimension.
+    random_state : int, optional
+        Random state passed to the reducer constructor.
+    **kwargs
+        Additional reducer-constructor arguments.
+
+    Returns
+    -------
+    object
+        Fitted reducer providing a ``transform`` method.
+    """
     if method not in _REDUCER_FACTORIES:
         choices = ", ".join(available_reduction_methods())
         raise ValueError(f"Unknown reduction method '{method}'. Available: {choices}.")
@@ -89,7 +124,13 @@ def fit_reducer(
 
 
 def transform_features(features, reducer):
-    """Transform node features without refitting the reducer."""
+    """Transform node features without refitting the reducer.
+
+    Returns
+    -------
+    torch.Tensor
+        Dense float tensor on the input device with one row per node.
+    """
     if not hasattr(reducer, "transform") or not callable(reducer.transform):
         raise TypeError("reducer must provide a callable transform method")
     transformed = reducer.transform(_as_numpy(features))
@@ -104,7 +145,16 @@ def transform_features(features, reducer):
 
 
 def attach_reduced_features(data, reducer):
-    """Attach a reducer and its transformed node features to a graph."""
+    """Transform features and attach the result and reducer to a graph.
+
+    The input graph is modified in place and returned. Reduced features are
+    stored as ``x_reduced`` and the fitted reducer as ``feature_reducer``.
+
+    Returns
+    -------
+    torch_geometric.data.Data
+        The modified input graph.
+    """
     if data.x is None:
         raise ValueError("data must contain node features")
     data.x_reduced = transform_features(data.x, reducer)
