@@ -21,15 +21,14 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "numpy>=1.24",
     "PyYAML>=6.0",
     "scikit-learn>=1.2",
-    "torch>=2.1",
-    "torch-geometric>=2.5",
+    "torch>=2.1,<3",
+    "torch-geometric>=2.5,<3",
     "tqdm>=4.60",
 ]
 
