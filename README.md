@@ -1,9 +1,9 @@
 # GLPBench
 
-GLPBench is a reproducible evaluation pipeline for transductive and
-semi-inductive graph link prediction. It includes matched and leakage-audited
-data splits, benchmark-dataset loading, YAML benchmark grids, validation-only
-hyperparameter search, result logging, and reference model implementations.
+GLPBench is a Python library and command-line toolkit for reproducible graph
+link-prediction evaluation. It provides benchmark datasets, matched
+transductive and semi-inductive protocols, leakage audits, reference models,
+hyperparameter search, benchmark grids, and structured result logging.
 
 This is an alpha release. Its public API and configuration schema may change
 before the first stable release.
@@ -19,7 +19,7 @@ audit commands.
 
 ## Contents
 
-- [Asymmetric Graph Autoencoder](#asymmetric-graph-autoencoder)
+- [Key features](#key-features)
 - [Experiment CLI](#experiment-cli)
 - [Benchmark grids](#benchmark-grids)
 - [Hyperparameter search](#hyperparameter-search)
@@ -30,17 +30,21 @@ audit commands.
   - [Result logging](#result-logging)
 - [License](#license)
 
-## Asymmetric Graph Autoencoder
+## Key features
 
-Standard graph autoencoders score a candidate edge using graph-derived latent representations for both endpoints. This is problematic in the semi-inductive setting, where one endpoint is a new query node whose attributes are available but whose edges were not observed during training.
+- Load attributed graph benchmarks through a consistent dataset interface.
+- Generate comparable transductive and semi-inductive splits with disjoint
+  validation queries and automatic leakage checks.
+- Evaluate graph autoencoders, MLP decoders, variational models, DEAL,
+  feature-only baselines, and asymmetric decoders under the same protocol.
+- Run individual experiments, YAML-defined benchmark grids, and
+  validation-only hyperparameter searches from one CLI.
+- Reuse random seeds, graph splits, and evaluation negatives across models for
+  paired comparisons.
+- Record metrics, configuration, runtime, checkpoint, and parameter-count
+  metadata in analysis-ready CSV files.
 
-The Asymmetric Graph Autoencoder (AGAE) instead combines a message-passing representation of the observed source node with a feature-derived representation of the target node. Given latent source representations $Z \in \mathbb{R}^{n \times d}$ and reduced node features $X_{\mathrm{reduced}} \in \mathbb{R}^{n \times d}$, its decoder reconstructs link scores as
-
-$$
-\hat{A} = Z X_{\mathrm{reduced}}^{T}.
-$$
-
-The feature reducer is fitted only on training-visible nodes and can transform unseen query nodes without retraining the graph encoder. The framework evaluates this decoder under matched transductive and semi-inductive protocols alongside inner-product, MLP-decoder, variational, DEAL, and feature-only baselines.
+GLPBench currently targets simple, undirected, attributed graphs.
 
 ## Experiment CLI
 
@@ -151,6 +155,7 @@ symmetric MLP decoder directly to pairs of input node features. Repeat
 
 ```bash
 glpbench experiment cora \
+  out/results.csv \
   --model-type mlp \
   --model-type variational
 ```
@@ -165,7 +170,7 @@ glpbench experiment amazon-photo out/results.csv --verbose
 
 ## Benchmark grids
 
-`benchmark.py` expands a versioned YAML configuration and calls the Python
+The benchmark runner expands a versioned YAML configuration and calls the
 experiment API sequentially. Start from
 [`configs/example_benchmark.yaml`](configs/example_benchmark.yaml), then inspect
 the expansion without training:
@@ -192,8 +197,8 @@ appended to the configured JSONL error file while later jobs continue. Use
 rows. Dataset, model, convolution, reducer, regularization, seed, and common
 training dimensions are validated before execution.
 
-A version-2 benchmark can import the dataset-specific architecture settings
-written by `search.py`. The preliminary held-out benchmark uses the pilot
+A version-2 benchmark can import dataset-specific architecture settings
+written by the search runner. The preliminary held-out benchmark uses the pilot
 selections with new evaluation seeds:
 
 ```bash
@@ -202,14 +207,14 @@ glpbench benchmark configs/preliminary_benchmark.yaml --verbose
 ```
 
 The selected-configuration document must contain every requested
-dataset–architecture pair. Search fields for preprocessing, AGAE
-regularization, MLP decoders, VGAE, and DEAL are translated to the experiment
-API and validated before execution.
+dataset–architecture pair. Search fields for preprocessing and
+architecture-specific settings are translated to the experiment API and
+validated before execution.
 
 ## Hyperparameter search
 
-`search.py` performs validation-only model selection and never evaluates either
-test split. The pilot specification is
+The search runner performs validation-only model selection and never evaluates
+either test split. The pilot specification is
 [`configs/pilot_search.yaml`](configs/pilot_search.yaml). Inspect its
 deterministic candidate expansion without loading data or training:
 
@@ -291,16 +296,18 @@ duplicate directed edge entries rather than silently modifying them.
 
 ### Link-prediction models
 
-The model classes are:
+The model registry currently includes:
 
-- `GAE_Model`: inner-product symmetric graph autoencoder.
-- `AGAE_Model`: asymmetric latent-to-feature decoder.
-- `MLP_GAE_Model`: learned symmetric MLP edge decoder.
-- `MLP_AGAE_Model`: learned MLP decoder over latent sources and feature-derived targets.
-- `VGAE_Model`: variational encoder with inner-product decoding and KL regularization.
-- `DEALModel`: aligned structural-identity and attribute encoders for inductive prediction.
-- `FeatureCosineModel`: non-trainable cosine similarity between endpoint features.
-- `FeatureMLPModel`: trainable symmetric MLP over endpoint feature interactions.
+| Model type | Description |
+| --- | --- |
+| `symmetric` | Graph autoencoder with inner-product decoding |
+| `mlp` | Graph autoencoder with a learned symmetric MLP decoder |
+| `variational` | Variational graph autoencoder with KL regularization |
+| `deal` | Dual structural and attribute encoders for inductive prediction |
+| `feature-cosine` | Non-trainable cosine similarity over node features |
+| `feature-mlp` | Trainable graph-independent MLP over feature pairs |
+| `asymmetric` | Graph latent-to-feature inner-product decoder |
+| `asymmetric-mlp` | Learned MLP over graph-derived sources and feature-derived targets |
 
 `glpbench.models.LinkPrediction` provides the shared training and inference interface:
 
@@ -309,7 +316,7 @@ from glpbench.models import LinkPrediction
 
 predictor = LinkPrediction(
     train,
-    model_type="asymmetric",
+    model_type="symmetric",
     conv_layer_type="SAGEConv",
     hidden_channels=128,
     out_channels=64,
@@ -321,8 +328,8 @@ for _ in range(100):
 probabilities = predictor.test(test_inductive)
 ```
 
-Configure both MLP decoders with `decoder_hidden_channels` and
-`decoder_dropout`, and the variational baseline with `kl_weight`:
+Configure MLP decoders with `decoder_hidden_channels` and `decoder_dropout`,
+and the variational model with `kl_weight`:
 
 ```python
 mlp = LinkPrediction(
@@ -331,33 +338,13 @@ mlp = LinkPrediction(
     decoder_hidden_channels=64,
     decoder_dropout=0.2,
 )
-asymmetric_mlp = LinkPrediction(
-    train,
-    model_type="asymmetric-mlp",
-    decoder_hidden_channels=64,
-    decoder_dropout=0.2,
-)
 vgae = LinkPrediction(train, model_type="variational", kl_weight=1.0)
 ```
 
-AGAE supports `none`, `latent-l2`, `mse-alignment`, `cosine-alignment`, and
-`graph-smoothness` regularization. Repeat `--agae-regularization` to compare
-several methods on the same graph splits and negative samples:
-
-```bash
-glpbench experiment cora out/regularization.csv \
-  --model-type asymmetric \
-  --agae-regularization none \
-  --agae-regularization latent-l2 \
-  --agae-regularization cosine-alignment \
-  --regularization-strength 0.001
-```
-
-Use `--weight-decay` to evaluate Adam weight decay separately or in
-combination with an explicit AGAE penalty. Regularization settings are stored
-in dedicated result columns.
-
-DEAL loss weights use `theta_ss`, `theta_aa`, and `theta_sa`; inference weights use `lambda_ss`, `lambda_aa`, and `lambda_sa`. The CLI exposes these as `--deal-theta-*` and `--deal-lambda-*`, along with similarity scale and margin options.
+Architecture-specific options are available for MLP decoders, VGAE KL
+weighting, DEAL loss and inference weights, and asymmetric-model
+regularization. Run `glpbench experiment --help` for their CLI definitions;
+resolved settings are retained in the result log.
 
 GATv2-specific options can be passed directly or through `gatv2_kwargs`:
 
