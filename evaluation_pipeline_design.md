@@ -739,8 +739,8 @@ which work should begin, not the conceptual order of the preceding sections.
   working directory.
 - [x] Move the regression suite into a discoverable top-level `tests/`
   directory without reducing coverage.
-- [ ] Divide the monolithic suite incrementally into `tests/unit`,
-  `tests/integration`, `tests/regression`, and `tests/invariants`.
+- [x] Divide the monolithic suite into `tests/unit`, `tests/integration`,
+  `tests/regression`, and `tests/invariants` without changing test behavior.
 - [x] Remove root-level modules and legacy entry scripts before the next alpha
   release; no external users depended on the temporary compatibility surface.
 
