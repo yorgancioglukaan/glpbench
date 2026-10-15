@@ -36,3 +36,4 @@ htmlcov/
 # Build artifacts
 /build/
 /dist/
+/docs/_build/
