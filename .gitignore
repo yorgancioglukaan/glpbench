@@ -25,6 +25,7 @@ htmlcov/
 /paper_outline.md
 /remaining_work.md
 /features/
+/run_experiment.sh
 
 # Downloaded data and generated experiment artifacts
 /assets/
