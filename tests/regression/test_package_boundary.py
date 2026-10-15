@@ -108,7 +108,14 @@ class TestPackageMigrationBoundary(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         output_lines = completed.stdout.strip().splitlines()
-        self.assertEqual(output_lines[0], "0.1.0a1")
+        project_version = next(
+            line.split("=", 1)[1].strip().strip('"')
+            for line in (_PROJECT_ROOT / "pyproject.toml")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.startswith("version = ")
+        )
+        self.assertEqual(output_lines[0], project_version)
         self.assertTrue(
             output_lines[1].endswith("src/glpbench/__init__.py"),
             output_lines[1],
