@@ -65,8 +65,8 @@ aggregates, failures, and selected configurations are written to the artifact
 paths declared in the YAML specification.
 
 ```bash
-glpbench search configs/pilot_search.yaml --dry-run
-glpbench search configs/pilot_search.yaml --resume --verbose
+glpbench search configs/example_search.yaml --dry-run
+glpbench search configs/example_search.yaml --resume --verbose
 ```
 
 The selected-configuration YAML can subsequently be consumed by a compatible
@@ -81,8 +81,8 @@ early-stopping, and scheduler policies without repeatedly consulting test
 performance.
 
 ```bash
-glpbench audit configs/convergence_audit.yaml --dry-run
-glpbench audit configs/convergence_audit.yaml --resume --verbose
+glpbench audit configs/example_audit.yaml --dry-run
+glpbench audit configs/example_audit.yaml --resume --verbose
 ```
 
 An audit configuration normally points to the selected configurations produced
@@ -149,7 +149,7 @@ A search specification declares:
 - common and model-specific search spaces.
 
 Start from
-[`configs/pilot_search.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/pilot_search.yaml),
+[`configs/example_search.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/example_search.yaml),
 reduce `num_candidates` and the dataset list for an initial trial, and inspect
 the expansion with `--dry-run`.
 
@@ -158,7 +158,7 @@ the expansion with `--dry-run`.
 An audit specification identifies a selected-configuration file and declares
 the dataset–model pairs, validation split, seeds, maximum epoch budget,
 checkpoint policy, early stopping, and scheduler. Start from
-[`configs/convergence_audit.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/convergence_audit.yaml)
+[`configs/example_audit.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/example_audit.yaml)
 and use `--dry-run` to confirm every requested dataset–model pair resolves.
 
 ## Reproducibility

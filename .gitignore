@@ -28,6 +28,14 @@ htmlcov/
 /features/
 /run_experiment.sh
 
+# Keep only curated release examples under configs. Local experiment
+# specifications belong in this directory but remain untracked by default.
+/configs/*
+!/configs/example_benchmark.yaml
+!/configs/example_search.yaml
+!/configs/example_audit.yaml
+!/configs/example_selected_configurations.yaml
+
 # Downloaded data and generated experiment artifacts
 /assets/
 /data/

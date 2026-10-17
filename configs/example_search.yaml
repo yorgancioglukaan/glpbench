@@ -1,0 +1,158 @@
+# Small validation-only hyperparameter search suitable for trying the CLI.
+version: 1
+kind: hyperparameter-search
+
+artifacts:
+  history: out/example_search_history.csv
+  failures: out/example_search_errors.jsonl
+  selected_configurations: out/example_selected_configurations.yaml
+
+execution:
+  device: cpu
+  data_root: data
+  fail_fast: false
+
+datasets: [cora]
+
+search:
+  strategy: seeded-random
+  num_candidates: 3
+  candidate_seed: 2026
+  include_default: true
+  tuning_seeds: [0]
+  require_all_seeds_for_selection: true
+
+selection:
+  granularity: [dataset, architecture]
+  validation_setting: semi-inductive
+  tuning_conv_layer: GCNConv
+  metric: roc_auc
+  aggregation: mean
+  tie_tolerance: 0.001
+  tie_breakers:
+    - metric: average_precision
+      direction: maximize
+    - metric: trainable_parameter_count
+      direction: minimize
+
+training:
+  max_epochs: 20
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 0.001
+
+splits:
+  protocol: matched-semi-inductive
+  train_ratio: 0.8
+  validation_queries:
+    fraction: 0.05
+  test_queries:
+    fraction: 0.05
+  query_requirements:
+    require_visible_neighbor: true
+    disjoint_validation_and_test: true
+  negative_sampling:
+    method: uniform
+    ratio: 1.0
+    exclude_original_positives: true
+    paired_across_candidates: true
+  audit:
+    enabled: true
+
+common_space:
+  hidden_channels:
+    values: [32, 64]
+    sampling: random
+  out_channels:
+    values: [16, 32]
+    sampling: random
+  learning_rate:
+    values: [0.001, 0.01]
+    sampling: random
+  weight_decay:
+    values: [0.0, 0.0001]
+    sampling: random
+    applies_to: all-trainable-models
+
+preprocessing:
+  normalize_features:
+    values: [true, false]
+    sampling: balanced
+
+models:
+  symmetric: {}
+
+  asymmetric:
+    reduction_method:
+      values: [pca, truncated-svd, sparse-random-projection]
+      sampling: stratified
+    regularization:
+      type: cosine-alignment
+      strength:
+        values: [0.0, 0.001, 0.01]
+        sampling: stratified
+
+  mlp:
+    decoder_hidden_channels:
+      values: [32, 64]
+      sampling: random
+    decoder_dropout:
+      values: [0.0, 0.2]
+      sampling: random
+
+  feature-mlp:
+    decoder_hidden_channels:
+      values: [32, 64]
+      sampling: random
+    decoder_dropout:
+      values: [0.0, 0.2]
+      sampling: random
+
+  asymmetric-mlp:
+    reduction_method:
+      values: [pca, truncated-svd, sparse-random-projection]
+      sampling: stratified
+    regularization:
+      type: cosine-alignment
+      strength:
+        values: [0.0, 0.001, 0.01]
+        sampling: stratified
+    decoder_hidden_channels:
+      values: [32, 64]
+      sampling: random
+    decoder_dropout:
+      values: [0.0, 0.2]
+      sampling: random
+
+  variational:
+    kl_weight:
+      values: [0.01, 0.1, 1.0]
+      sampling: stratified
+
+  deal:
+    similarity_scale: 1.0
+    similarity_margin: 0.0
+    profiles:
+      balanced:
+        theta_ss: 1.0
+        theta_aa: 1.0
+        theta_sa: 1.0
+        lambda_ss: 1.0
+        lambda_aa: 1.0
+        lambda_sa: 1.0
+      attribute-focused:
+        theta_ss: 0.1
+        theta_aa: 1.0
+        theta_sa: 0.5
+        lambda_ss: 0.1
+        lambda_aa: 1.0
+        lambda_sa: 0.1
+      alignment-focused:
+        theta_ss: 0.1
+        theta_aa: 0.5
+        theta_sa: 1.0
+        lambda_ss: 0.1
+        lambda_aa: 0.1
+        lambda_sa: 1.0
+    sampling: stratified

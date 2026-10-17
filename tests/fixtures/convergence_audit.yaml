@@ -1,4 +1,4 @@
-# Validation-only audit of whether each selected model has converged by epoch 500.
+# Validation-only audit fixture for selected configurations.
 version: 1
 kind: validation-convergence-audit
 
@@ -12,32 +12,16 @@ execution:
   data_root: data
   fail_fast: false
 
-# Separate from tuning seeds (100--102) and preliminary benchmark seeds
-# (200--202).
 seeds: [400, 401, 402]
 
 selected_configurations:
-  path: configs/pilot_selected_configurations.yaml
+  path: tests/fixtures/audit_selected_configurations.yaml
   granularity: [dataset, architecture]
   require_all_pairs: true
 
-datasets:
-  - cora
-  - citeseer
-  - pubmed
-  - amazon-photo
-  - amazon-computers
-  - coauthor-cs
-  - dblp
-  - wikics
+datasets: [cora]
 
-models:
-  - symmetric
-  - asymmetric
-  - asymmetric-mlp
-  - mlp
-  - variational
-  - deal
+models: [symmetric, asymmetric]
 
 splits:
   protocol: matched-semi-inductive-validation-only

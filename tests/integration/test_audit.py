@@ -57,11 +57,11 @@ import glpbench.models.link_prediction as link_prediction
 class TestConvergenceAudit(unittest.TestCase):
     def test_project_audit_config_expands_all_dataset_model_pairs(self):
         config = convergence_audit.load_audit_config(
-            "configs/convergence_audit.yaml"
+            "tests/fixtures/convergence_audit.yaml"
         )
         jobs = convergence_audit.expand_audit_config(config)
 
-        self.assertEqual(len(jobs), 8 * 6)
+        self.assertEqual(len(jobs), 2)
         self.assertEqual(config.benchmark_config.seeds, (400, 401, 402))
         self.assertTrue(all(job.parameters["epochs"] == 500 for job in jobs))
         self.assertTrue(all(
@@ -73,7 +73,7 @@ class TestConvergenceAudit(unittest.TestCase):
 
     def test_dry_run_does_not_create_audit_artifacts(self):
         config = convergence_audit.load_audit_config(
-            "configs/convergence_audit.yaml"
+            "tests/fixtures/convergence_audit.yaml"
         )
         jobs = convergence_audit.expand_audit_config(config)[:2]
         with tempfile.TemporaryDirectory() as directory:
@@ -96,7 +96,9 @@ class TestConvergenceAudit(unittest.TestCase):
 
     def test_audit_config_rejects_test_or_early_stopping_options(self):
         document = yaml.safe_load(
-            Path("configs/convergence_audit.yaml").read_text(encoding="utf-8")
+            Path("tests/fixtures/convergence_audit.yaml").read_text(
+                encoding="utf-8"
+            )
         )
         document["training"]["early_stopping"] = {
             "enabled": True, "patience": 10
