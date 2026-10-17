@@ -72,7 +72,7 @@ class TestSearchRunner(unittest.TestCase):
         return data
 
     def test_pilot_spec_generates_deterministic_stratified_candidates(self):
-        config = search.load_search_config("configs/pilot_search.yaml")
+        config = search.load_search_config("tests/fixtures/pilot_search.yaml")
         self.assertEqual(config.raw["training"]["scheduler"], {"type": "none"})
         first = search.generate_candidates(config)
         second = search.generate_candidates(config)
@@ -124,7 +124,7 @@ class TestSearchRunner(unittest.TestCase):
 
     def test_search_accepts_a_fixed_scheduler_configuration(self):
         document = yaml.safe_load(
-            Path("configs/pilot_search.yaml").read_text(encoding="utf-8")
+            Path("tests/fixtures/pilot_search.yaml").read_text(encoding="utf-8")
         )
         document["training"]["scheduler"] = {
             "type": "cosine-annealing",
@@ -201,7 +201,7 @@ class TestSearchRunner(unittest.TestCase):
         ))
 
     def test_selection_uses_tolerance_then_ap_then_parameter_count(self):
-        base = search.load_search_config("configs/pilot_search.yaml")
+        base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         candidates = [
             candidate for candidate in search.generate_candidates(base)
             if candidate.dataset == "cora" and candidate.architecture == "symmetric"
@@ -248,7 +248,7 @@ class TestSearchRunner(unittest.TestCase):
     @patch("glpbench.runners.search.load_dataset")
     def test_toy_search_logs_selects_and_resumes(self, mock_load):
         mock_load.return_value = self._graph()
-        base = search.load_search_config("configs/pilot_search.yaml")
+        base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         raw = copy.deepcopy(base.raw)
         raw["training"]["max_epochs"] = 1
         raw["training"]["early_stopping"]["patience"] = 1
@@ -298,7 +298,7 @@ class TestSearchRunner(unittest.TestCase):
     ):
         mock_load.return_value = self._graph()
         mock_split.side_effect = ValueError("infeasible shared split")
-        base = search.load_search_config("configs/pilot_search.yaml")
+        base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 base,

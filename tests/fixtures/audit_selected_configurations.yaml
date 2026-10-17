@@ -1,0 +1,23 @@
+version: 1
+kind: selected-hyperparameters
+selections:
+  cora:
+    symmetric:
+      hyperparameters:
+        hidden_channels: 16
+        out_channels: 8
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+    asymmetric:
+      hyperparameters:
+        hidden_channels: 16
+        out_channels: 8
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        reduction_method: pca
+        regularization_type: none
+        regularization_strength: 0.0

@@ -198,35 +198,27 @@ rows. Dataset, model, convolution, reducer, regularization, seed, and common
 training dimensions are validated before execution.
 
 A version-2 benchmark can import dataset-specific architecture settings
-written by the search runner. The preliminary held-out benchmark uses the pilot
-selections with new evaluation seeds:
-
-```bash
-glpbench benchmark configs/preliminary_benchmark.yaml --dry-run
-glpbench benchmark configs/preliminary_benchmark.yaml --verbose
-```
-
-The selected-configuration document must contain every requested
-dataset–architecture pair. Search fields for preprocessing and
+written by the search runner. The selected-configuration document must contain
+every requested dataset–architecture pair. Search fields for preprocessing and
 architecture-specific settings are translated to the experiment API and
 validated before execution.
 
 ## Hyperparameter search
 
 The search runner performs validation-only model selection and never evaluates
-either test split. The pilot specification is
-[`configs/pilot_search.yaml`](configs/pilot_search.yaml). Inspect its
+either test split. Start with
+[`configs/example_search.yaml`](configs/example_search.yaml). Inspect its
 deterministic candidate expansion without loading data or training:
 
 ```bash
-glpbench search configs/pilot_search.yaml --dry-run
+glpbench search configs/example_search.yaml --dry-run
 ```
 
-Run or resume the CPU pilot with:
+Run or resume the example with:
 
 ```bash
-glpbench search configs/pilot_search.yaml --verbose
-glpbench search configs/pilot_search.yaml --resume --verbose
+glpbench search configs/example_search.yaml --verbose
+glpbench search configs/example_search.yaml --resume --verbose
 ```
 
 Successful candidate–seed runs are written to a search-history CSV. Selection

@@ -1,0 +1,24 @@
+# Illustrative selected settings consumed by example_audit.yaml.
+version: 1
+kind: selected-hyperparameters
+selections:
+  cora:
+    symmetric:
+      hyperparameters:
+        hidden_channels: 64
+        out_channels: 32
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+    asymmetric:
+      hyperparameters:
+        hidden_channels: 64
+        out_channels: 32
+        learning_rate: 0.01
+        weight_decay: 0.0
+        normalize_features: true
+        conv_layer_type: GCNConv
+        reduction_method: pca
+        regularization_type: cosine-alignment
+        regularization_strength: 0.001
