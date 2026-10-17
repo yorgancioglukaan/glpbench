@@ -222,11 +222,12 @@ class TestInductiveSplit(unittest.TestCase):
             [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
              (6, 7), (7, 0), (0, 4), (1, 5), (2, 6), (3, 7)],
         )
-        train, val, test_transductive, test_inductive = (
-            utils.generate_comparable_splits(
-                data, query_size=1, seed=11, train_ratio=0.75
-            )
+        splits = utils.generate_comparable_splits(
+            data, query_size=1, seed=11, train_ratio=0.75
         )
+        train, val = splits.train, splits.validation
+        test_transductive = splits.tests["transductive"]
+        test_inductive = splits.tests["semi-inductive"]
 
         expected_queries = utils.select_query_node_sets(
             data, query_size=1, seed=11
@@ -250,7 +251,7 @@ class TestInductiveSplit(unittest.TestCase):
             test_inductive.edge_label_index.size(1),
         )
 
-    def test_comparable_splits_support_named_and_legacy_access(self):
+    def test_comparable_splits_use_named_bundle_access(self):
         data = self._undirected_data(
             8,
             [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
@@ -260,13 +261,11 @@ class TestInductiveSplit(unittest.TestCase):
         splits = utils.generate_comparable_splits(
             data, query=[7], validation_query=[6], seed=3, train_ratio=0.75
         )
-        unpacked = tuple(splits)
-
-        self.assertIsInstance(splits, utils.ComparableSplits)
-        self.assertIs(splits.train, unpacked[0])
-        self.assertIs(splits.validation, unpacked[1])
-        self.assertIs(splits.test_transductive, unpacked[2])
-        self.assertIs(splits.test_inductive, unpacked[3])
+        self.assertIsInstance(splits, utils.SplitBundle)
+        self.assertEqual(
+            set(splits.tests), {"transductive", "semi-inductive"}
+        )
+        self.assertEqual(splits.metadata.name, "matched-semi-inductive")
 
     def test_split_metadata_exposes_explicit_node_and_split_roles(self):
         data = self._undirected_data(
@@ -287,8 +286,8 @@ class TestInductiveSplit(unittest.TestCase):
         expected_roles = (
             (splits.train, "train", "transductive"),
             (splits.validation, "validation", "semi-inductive"),
-            (splits.test_transductive, "test", "transductive"),
-            (splits.test_inductive, "test", "semi-inductive"),
+            (splits.tests["transductive"], "test", "transductive"),
+            (splits.tests["semi-inductive"], "test", "semi-inductive"),
         )
         for split, stage, setting in expected_roles:
             self.assertTrue(torch.equal(
@@ -300,13 +299,6 @@ class TestInductiveSplit(unittest.TestCase):
             self.assertTrue(torch.equal(
                 split.visible_node_mask,
                 ~(expected_validation_queries | expected_test_queries),
-            ))
-            self.assertTrue(torch.equal(
-                split.query_mask,
-                split.validation_query_mask | split.test_query_mask,
-            ))
-            self.assertTrue(torch.equal(
-                split.seen_node_mask, split.visible_node_mask
             ))
             self.assertEqual(split.split_stage, stage)
             self.assertEqual(split.split_setting, setting)
@@ -335,7 +327,19 @@ class TestInductiveSplit(unittest.TestCase):
         first = utils.generate_comparable_splits(data, **kwargs)
         second = utils.generate_comparable_splits(data, **kwargs)
 
-        for first_split, second_split in zip(first, second):
+        first_partitions = (
+            first.train,
+            first.validation,
+            first.tests["transductive"],
+            first.tests["semi-inductive"],
+        )
+        second_partitions = (
+            second.train,
+            second.validation,
+            second.tests["transductive"],
+            second.tests["semi-inductive"],
+        )
+        for first_split, second_split in zip(first_partitions, second_partitions):
             for attribute in (
                 "edge_index", "edge_label_index", "edge_label",
                 "visible_node_mask", "validation_query_mask",
@@ -366,9 +370,12 @@ class TestInductiveSplit(unittest.TestCase):
         comparable = utils.generate_comparable_splits(data, **kwargs)
         validation_only = utils.generate_validation_splits(data, **kwargs)
 
-        self.assertIsInstance(validation_only, utils.ValidationSplits)
-        self.assertEqual(validation_only._fields, ("train", "validation"))
-        for expected, actual in zip(comparable[:2], validation_only):
+        self.assertIsInstance(validation_only, utils.SplitBundle)
+        self.assertEqual(validation_only.tests, {})
+        for expected, actual in (
+            (comparable.train, validation_only.train),
+            (comparable.validation, validation_only.validation),
+        ):
             for attribute in (
                 "edge_index", "edge_label_index", "edge_label",
                 "visible_node_mask", "validation_query_mask",
@@ -414,35 +421,43 @@ class TestInductiveSplit(unittest.TestCase):
         ], dim=1)
         with self.assertRaisesRegex(ValueError, "query node"):
             utils.audit_comparable_splits(
-                data, clean._replace(validation=validation)
+                data, replace(clean, validation=validation)
             )
 
-        inductive = clean.test_inductive.clone()
+        inductive = clean.tests["semi-inductive"].clone()
         negative_index = int((inductive.edge_label == 1).sum())
         inductive.edge_label_index[:, negative_index] = data.edge_index[:, 0]
         with self.assertRaisesRegex(ValueError, "negative edge that is positive"):
             utils.audit_comparable_splits(
-                data, clean._replace(test_inductive=inductive)
+                data,
+                replace(
+                    clean,
+                    tests={**clean.tests, "semi-inductive": inductive},
+                ),
             )
 
-        transductive = clean.test_transductive.clone()
+        transductive = clean.tests["transductive"].clone()
         transductive.edge_label_index = transductive.edge_label_index[:, :-1]
         transductive.edge_label = transductive.edge_label[:-1]
         with self.assertRaisesRegex(ValueError, "different labeled-edge counts"):
             utils.audit_comparable_splits(
-                data, clean._replace(test_transductive=transductive)
+                data,
+                replace(
+                    clean,
+                    tests={**clean.tests, "transductive": transductive},
+                ),
             )
 
         validation = clean.validation.clone()
         validation_positive = validation.edge_label == 1
         validation.edge_label_index[:, validation_positive] = (
-            clean.test_inductive.edge_label_index[
-                :, clean.test_inductive.edge_label == 1
+            clean.tests["semi-inductive"].edge_label_index[
+                :, clean.tests["semi-inductive"].edge_label == 1
             ][:, :int(validation_positive.sum())]
         )
         with self.assertRaisesRegex(ValueError, "Positive edges overlap"):
             utils.audit_comparable_splits(
-                data, clean._replace(validation=validation)
+                data, replace(clean, validation=validation)
             )
 
     def test_query_to_query_edges_are_excluded_from_all_split_roles(self):
@@ -456,7 +471,12 @@ class TestInductiveSplit(unittest.TestCase):
         )
         query_pair = (4, 5)
 
-        for split in splits:
+        partitions = (
+            splits.train,
+            splits.validation,
+            *splits.tests.values(),
+        )
+        for split in partitions:
             represented = (
                 utils._canonical_edge_pairs(split.edge_index)
                 | utils._canonical_edge_pairs(split.edge_label_index)
@@ -466,12 +486,12 @@ class TestInductiveSplit(unittest.TestCase):
             utils._canonical_edge_pairs(
                 split.edge_label_index[:, split.edge_label == 1]
             )
-            for split in splits
+            for split in partitions
         ]
         for index, left in enumerate(positive_sets):
             for right in positive_sets[index + 1:]:
                 self.assertTrue(left.isdisjoint(right))
-        self.assertIsNone(utils.audit_comparable_splits(data, splits))
+        self.assertTrue(utils.audit_comparable_splits(data, splits).passed)
 
     def test_split_protocol_rejects_self_loops_and_duplicate_edges(self):
         self_loop = self._undirected_data(
@@ -521,20 +541,25 @@ class TestInductiveSplit(unittest.TestCase):
         with self.assertRaises(TypeError):
             utils.inductive_split(data, [[2,3],[3,4]])
         splits = utils.inductive_split(data, [5], validation_query=[4])
-        self.assertIsInstance(splits, utils.InductiveSplits)
-        train, val, test = splits
+        self.assertIsInstance(splits, utils.SplitBundle)
+        train, val = splits.train, splits.validation
+        test = splits.tests["semi-inductive"]
         self.assertIs(splits.train, train)
         self.assertIs(splits.validation, val)
-        self.assertIs(splits.test_inductive, test)
-        expected_query_mask = torch.tensor([
+        self.assertIs(splits.tests["semi-inductive"], test)
+        expected_visible_mask = ~torch.tensor([
             False, False, False, False, True, True
         ])
-        for split, split_type in (
-            (train, "train"), (val, "validation"), (test, "inductive")
+        for split, stage, setting in (
+            (train, "train", "transductive"),
+            (val, "validation", "semi-inductive"),
+            (test, "test", "semi-inductive"),
         ):
-            self.assertEqual(split.split_type, split_type)
-            self.assertTrue(torch.equal(split.query_mask, expected_query_mask))
-            self.assertTrue(torch.equal(split.seen_node_mask, ~expected_query_mask))
+            self.assertEqual(split.split_stage, stage)
+            self.assertEqual(split.split_setting, setting)
+            self.assertTrue(torch.equal(
+                split.visible_node_mask, expected_visible_mask
+            ))
 
     def test_inductive_negatives_do_not_overlap_positive_edges(self):
         data = self._undirected_data(
@@ -546,13 +571,16 @@ class TestInductiveSplit(unittest.TestCase):
         test_query_nodes = {8, 9}
         query_nodes = validation_query_nodes | test_query_nodes
 
-        train, val, test_transductive, test_inductive = utils.generate_comparable_splits(
+        splits = utils.generate_comparable_splits(
             data,
             query=list(test_query_nodes),
             validation_query=list(validation_query_nodes),
             train_ratio=0.75,
             seed=9,
         )
+        train, val = splits.train, splits.validation
+        test_transductive = splits.tests["transductive"]
+        test_inductive = splits.tests["semi-inductive"]
 
         num_positive = int(test_inductive.edge_label.sum().item())
         negative_edges = test_inductive.edge_label_index[:, num_positive:]
@@ -589,15 +617,17 @@ class TestInductiveSplit(unittest.TestCase):
         expected_query_mask = torch.tensor(
             [False, False, False, False, False, False, True, True, True, True]
         )
-        for split, split_type in (
-            (train, "train"),
-            (val, "validation"),
-            (test_transductive, "transductive"),
-            (test_inductive, "inductive"),
+        for split, stage, setting in (
+            (train, "train", "transductive"),
+            (val, "validation", "semi-inductive"),
+            (test_transductive, "test", "transductive"),
+            (test_inductive, "test", "semi-inductive"),
         ):
-            self.assertEqual(split.split_type, split_type)
-            self.assertTrue(torch.equal(split.query_mask, expected_query_mask))
-            self.assertTrue(torch.equal(split.seen_node_mask, ~expected_query_mask))
+            self.assertEqual(split.split_stage, stage)
+            self.assertEqual(split.split_setting, setting)
+            self.assertTrue(torch.equal(
+                split.visible_node_mask, ~expected_query_mask
+            ))
             self.assertTrue(all(
                 node not in query_nodes
                 for node in split.edge_index.flatten().tolist()

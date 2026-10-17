@@ -13,6 +13,7 @@ from uuid import uuid4
 from tqdm.auto import tqdm
 import yaml
 
+from glpbench.exceptions import ConfigurationError
 from glpbench.datasets import available_datasets
 from glpbench.logging import (
     CSVEpochHistoryLogger,
@@ -24,7 +25,7 @@ from glpbench.preprocessing import available_reduction_methods
 from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
-    get_model_spec,
+    get_model_registration,
 )
 from glpbench.training import validate_scheduler_config
 from glpbench.runners.experiment import run_experiment
@@ -164,7 +165,7 @@ class ExperimentJob:
         parts = [self.dataset, self.model_type]
         if self.model_type not in _NON_CONV_MODELS:
             parts.append(self.conv_layer_type)
-        if get_model_spec(self.model_type).uses_reduced_features:
+        if get_model_registration(self.model_type).capabilities.requires_reduced_features:
             parts.extend((self.reduction_method, self.regularization.type))
         policy = self.parameters.get("training_policy", "default")
         if policy != "default":
@@ -264,7 +265,7 @@ def _validate_defaults(defaults):
 def _parse_regularization(raw, model_type):
     if raw is None:
         return (RegularizationConfig("none", 0.0),)
-    if not get_model_spec(model_type).supports_agae_regularization:
+    if not get_model_registration(model_type).capabilities.supports_agae_regularization:
         raise ValueError("regularization is only supported by asymmetric models")
     entries = _require_unique_sequence(raw, "regularization")
     parsed = []
@@ -294,7 +295,7 @@ def _parse_model_grid(raw, defaults, index):
     model_type = raw.get("type")
     if model_type not in available_model_types():
         raise ValueError(f"Unknown model type '{model_type}'")
-    model_spec = get_model_spec(model_type)
+    model_registration = get_model_registration(model_type)
 
     raw_conv = raw.get("conv_layer_types")
     if model_type in _NON_CONV_MODELS:
@@ -311,7 +312,7 @@ def _parse_model_grid(raw, defaults, index):
         conv_layers = tuple(raw_conv)
 
     raw_reducers = raw.get("reduction_methods")
-    if not model_spec.uses_reduced_features and raw_reducers is not None:
+    if not model_registration.capabilities.requires_reduced_features and raw_reducers is not None:
         raise ValueError("reduction_methods are only supported by asymmetric")
     raw_reducers = (
         [defaults["reduction_method"]] if raw_reducers is None
@@ -326,7 +327,7 @@ def _parse_model_grid(raw, defaults, index):
         raise ValueError(
             f"Unknown model parameter: {sorted(unknown_parameters)[0]}"
         )
-    if not model_spec.uses_mlp_decoder and set(parameters).intersection({
+    if not model_registration.capabilities.uses_mlp_decoder and set(parameters).intersection({
         "decoder_hidden_channels", "decoder_dropout"
     }):
         raise ValueError("decoder parameters are only supported by MLP models")
@@ -673,7 +674,10 @@ def load_benchmark_config(path):
         raise ValueError(f"Unknown benchmark setting: {sorted(unknown)[0]}")
     version = raw.get("version")
     if version not in {1, 2}:
-        raise ValueError("benchmark configuration version must be 1 or 2")
+        raise ConfigurationError(
+            "benchmark configuration version must be 1 or 2",
+            component="benchmark-config",
+        )
 
     selected_path = None
     selected_raw = raw.get("selected_configurations")
@@ -791,11 +795,11 @@ def _selected_experiment_job(config, dataset, model, selections):
     if conv_layer not in _CONV_LAYER_TYPES:
         raise ValueError("Unknown selected convolution layer")
 
-    model_spec = get_model_spec(model.type)
+    model_registration = get_model_registration(model.type)
     reducer = values.pop(
         "reduction_method", config.defaults["reduction_method"]
     )
-    if model_spec.uses_reduced_features:
+    if model_registration.capabilities.requires_reduced_features:
         if reducer not in available_reduction_methods():
             raise ValueError("Unknown selected reduction method")
     elif "reduction_method" in hyperparameters:
@@ -808,10 +812,10 @@ def _selected_experiment_job(config, dataset, model, selections):
     regularization = _parse_regularization(
         [{"type": regularization_type, "strength": regularization_strength}],
         model.type,
-    ) if model_spec.supports_agae_regularization else (
+    ) if model_registration.capabilities.supports_agae_regularization else (
         RegularizationConfig("none", 0.0),
     )
-    if not model_spec.supports_agae_regularization and (
+    if not model_registration.capabilities.supports_agae_regularization and (
         "regularization_type" in hyperparameters
         or "regularization_strength" in hyperparameters
     ):
@@ -830,7 +834,10 @@ def _selected_experiment_job(config, dataset, model, selections):
         "data_root": config.data_root,
     })
     _validate_job_parameters(parameters)
-    if not model_spec.trainable and parameters["lr_scheduler"] != "none":
+    if (
+        not model_registration.capabilities.trainable
+        and parameters["lr_scheduler"] != "none"
+    ):
         raise ValueError(f"{model.type} cannot use a learning-rate scheduler")
     return ExperimentJob(
         dataset=dataset,
@@ -873,7 +880,7 @@ def expand_benchmark_config(config):
                 "lr_scheduler_kwargs": policy.lr_scheduler_kwargs,
             }
             _validate_job_parameters(parameters)
-            if not get_model_spec(job.model_type).trainable and (
+            if not get_model_registration(job.model_type).capabilities.trainable and (
                 parameters["lr_scheduler"] != "none"
             ):
                 raise ValueError(
@@ -895,7 +902,7 @@ def expand_benchmark_config(config):
                 "data_root": config.data_root,
             })
             _validate_job_parameters(parameters)
-            if not get_model_spec(model.type).trainable and (
+            if not get_model_registration(model.type).capabilities.trainable and (
                 parameters["lr_scheduler"] != "none"
             ):
                 raise ValueError(

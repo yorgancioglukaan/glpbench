@@ -16,13 +16,15 @@ from tqdm.auto import tqdm
 import yaml
 
 from glpbench.datasets import available_datasets, load_dataset
+from glpbench.contracts import TrainingPolicy
+from glpbench.exceptions import ConfigurationError
 from glpbench.evaluation import prepare_validation_data
 from glpbench.preprocessing import available_reduction_methods
 from glpbench.models import (
     LinkPrediction,
     available_model_types,
     count_trainable_parameters,
-    get_model_spec,
+    get_model_registration,
 )
 from glpbench.training import validate_scheduler_config
 from glpbench.runners.experiment import (
@@ -34,7 +36,7 @@ from glpbench.protocols import generate_comparable_splits
 
 _TRAINABLE_MODELS = tuple(
     model_type for model_type in available_model_types()
-    if get_model_spec(model_type).trainable
+    if get_model_registration(model_type).capabilities.trainable
 )
 _HISTORY_FIELDS = [
     "search_run_id", "candidate_id", "dataset", "architecture",
@@ -122,7 +124,10 @@ def load_search_config(path):
         raw = yaml.safe_load(stream)
     raw = _mapping(raw, "search specification")
     if raw.get("version") != 1 or raw.get("kind") != "hyperparameter-search":
-        raise ValueError("expected a version-1 hyperparameter-search specification")
+        raise ConfigurationError(
+            "expected a version-1 hyperparameter-search specification",
+            component="search-config",
+        )
 
     artifacts = _mapping(raw.get("artifacts"), "artifacts")
     required_artifacts = {"history", "failures", "selected_configurations"}
@@ -501,7 +506,7 @@ def _prepare_search_split(
                 root=config.raw["execution"]["data_root"],
                 normalize_features=False,
                 device="cpu",
-            )
+            ).data
         except Exception as error:
             source_cache[dataset] = _PreparationFailure(
                 "dataset-loading", error
@@ -742,8 +747,8 @@ def execute_search(
                     reduction_method=parameters.get("reduction_method", "pca"),
                     random_state=seed,
                 )
-                train_data = validation_data.train.to(device)
-                validation_split = validation_data.validation.to(device)
+                train_data = validation_data.splits.train.to(device)
+                validation_split = validation_data.splits.validation.to(device)
                 torch.manual_seed(seed)
                 predictor = LinkPrediction(
                     train_data, **_predictor_kwargs(candidate)
@@ -754,17 +759,23 @@ def execute_search(
                     predictor,
                     train_data,
                     validation_split,
-                    epochs=training["max_epochs"],
+                    training_policy=TrainingPolicy(
+                        max_epochs=training["max_epochs"],
+                        optimizer_parameters={
+                            "learning_rate": parameters["learning_rate"],
+                            "weight_decay": parameters["weight_decay"],
+                        },
+                        selection_metric="roc_auc",
+                        early_stopping_patience=stopping["patience"],
+                        early_stopping_min_delta=stopping["min_delta"],
+                        scheduler=scheduler["type"],
+                        scheduler_parameters={
+                            name: value for name, value in scheduler.items()
+                            if name != "type"
+                        },
+                    ),
                     seed=seed,
-                    selection_metric="roc_auc",
                     device=device,
-                    early_stopping_patience=stopping["patience"],
-                    early_stopping_min_delta=stopping["min_delta"],
-                    lr_scheduler=scheduler["type"],
-                    lr_scheduler_kwargs={
-                        name: value for name, value in scheduler.items()
-                        if name != "type"
-                    },
                     verbose=verbose,
                     progress_label=(
                         f"{candidate.dataset}/{candidate.architecture}/{seed}"
@@ -790,12 +801,12 @@ def execute_search(
                     "validation_roc_auc": metrics["roc_auc"],
                     "validation_average_precision": metrics["average_precision"],
                     "best_epoch": summary.best_epoch,
-                    "epochs_trained": summary.epochs_trained,
+                    "epochs_trained": summary.epochs_executed,
                     "stopped_early": summary.stopped_early,
                     "training_time_seconds": summary.training_time_seconds,
                     "reducer_fit_time_seconds": (
-                        validation_data.reducer_fit_time_seconds
-                        if validation_data.reducer_fit_time_seconds is not None
+                        validation_data.preprocessing_time_seconds
+                        if validation_data.preprocessing_time_seconds is not None
                         else ""
                     ),
                     "trainable_parameter_count": parameter_count,

@@ -9,6 +9,8 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.utils import is_undirected, negative_sampling
 
+from glpbench.contracts import AuditReport, ProtocolMetadata, SplitBundle
+from glpbench.exceptions import ProtocolError
 from glpbench.preprocessing import attach_reduced_features, fit_reducer
 
 
@@ -17,30 +19,6 @@ class QueryNodeSets(NamedTuple):
 
     validation: tuple[int, ...]
     test: tuple[int, ...]
-
-
-class ComparableSplits(NamedTuple):
-    """Store training, validation, and paired test graph splits."""
-
-    train: Data
-    validation: Data
-    test_transductive: Data
-    test_inductive: Data
-
-
-class ValidationSplits(NamedTuple):
-    """Store training and semi-inductive validation graph splits."""
-
-    train: Data
-    validation: Data
-
-
-class InductiveSplits(NamedTuple):
-    """Store training, validation, and inductive-test graph splits."""
-
-    train: Data
-    validation: Data
-    test_inductive: Data
 
 
 def _canonical_edge_pairs(edge_index):
@@ -79,15 +57,10 @@ def _attach_split_metadata(splits, query_nodes, num_nodes, device):
 
     query_mask = validation_query_mask | test_query_mask
     visible_node_mask = ~query_mask
-    for split_type, split_stage, split_setting, split in splits:
+    for _, split_stage, split_setting, split in splits:
         split.validation_query_mask = validation_query_mask.clone()
         split.test_query_mask = test_query_mask.clone()
         split.visible_node_mask = visible_node_mask.clone()
-
-        # Compatibility aliases retained while callers migrate to node roles.
-        split.query_mask = query_mask.clone()
-        split.seen_node_mask = visible_node_mask.clone()
-        split.split_type = split_type
 
         split.split_stage = split_stage
         split.split_setting = split_setting
@@ -775,7 +748,7 @@ def _apply_random_link_split(data, num_val, num_test, seed):
         return splitter(data)
 
 
-def audit_comparable_splits(data, splits):
+def _audit_comparable_splits(data, splits):
     """Raise ``ValueError`` if a comparable split violates leakage rules.
 
     The audit covers node roles, message-passing topology, positive-set
@@ -786,7 +759,7 @@ def audit_comparable_splits(data, splits):
     ----------
     data : torch_geometric.data.Data
         Original simple undirected graph.
-    splits : ComparableSplits
+    splits : SplitBundle
         Splits produced by :func:`generate_comparable_splits`.
 
     Returns
@@ -796,11 +769,20 @@ def audit_comparable_splits(data, splits):
     """
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
-    if not isinstance(splits, ComparableSplits):
-        raise TypeError("splits should be of type ComparableSplits")
+    if not isinstance(splits, SplitBundle):
+        raise TypeError("splits should be a SplitBundle")
+    if splits.validation is None or set(splits.tests) != {
+        "transductive", "semi-inductive"
+    }:
+        raise ValueError("comparable splits require both paired test settings")
     _validate_simple_undirected_graph(data)
 
-    split_items = tuple(zip(ComparableSplits._fields, splits))
+    split_items = (
+        ("train", splits.train),
+        ("validation", splits.validation),
+        ("test_transductive", splits.tests["transductive"]),
+        ("test_inductive", splits.tests["semi-inductive"]),
+    )
     for name, split in split_items:
         if split.num_nodes != data.num_nodes:
             raise ValueError(f"{name} has a different number of nodes.")
@@ -867,12 +849,13 @@ def audit_comparable_splits(data, splits):
     if not torch.equal(splits.validation.edge_index, splits.train.edge_index):
         raise ValueError("Training and validation message-passing graphs differ.")
     if not torch.equal(
-        splits.test_transductive.edge_index, splits.test_inductive.edge_index
+        splits.tests["transductive"].edge_index,
+        splits.tests["semi-inductive"].edge_index,
     ):
         raise ValueError("The paired test message-passing graphs differ.")
     if (
-        splits.test_transductive.edge_label_index.size(1)
-        != splits.test_inductive.edge_label_index.size(1)
+        splits.tests["transductive"].edge_label_index.size(1)
+        != splits.tests["semi-inductive"].edge_label_index.size(1)
     ):
         raise ValueError("The paired test sets have different labeled-edge counts.")
 
@@ -891,7 +874,7 @@ def audit_comparable_splits(data, splits):
 
     role_checks = (
         ("validation", splits.validation, validation_mask),
-        ("test_inductive", splits.test_inductive, test_mask),
+        ("test_inductive", splits.tests["semi-inductive"], test_mask),
     )
     for name, split, target_mask in role_checks:
         sources, targets = split.edge_label_index
@@ -907,11 +890,12 @@ def audit_comparable_splits(data, splits):
         if num_positive != num_negative:
             raise ValueError(f"{name} does not have a 1:1 negative ratio.")
 
-    transductive_nodes = splits.test_transductive.edge_label_index
+    transductive = splits.tests["transductive"]
+    transductive_nodes = transductive.edge_label_index
     if transductive_nodes.numel() and not bool(visible_mask[transductive_nodes].all()):
         raise ValueError("Transductive labeled edges contain a query node.")
-    if int((splits.test_transductive.edge_label == 1).sum()) != int(
-        (splits.test_transductive.edge_label == 0).sum()
+    if int((transductive.edge_label == 1).sum()) != int(
+        (transductive.edge_label == 0).sum()
     ):
         raise ValueError("The transductive test does not have a 1:1 negative ratio.")
 
@@ -928,7 +912,23 @@ def audit_comparable_splits(data, splits):
     if query_query_pairs & represented_pairs:
         raise ValueError("Query-to-query edges must be excluded from all splits.")
 
-    return None
+    return AuditReport(passed=True, checks={"all-invariants": True})
+
+
+def audit_comparable_splits(data, splits):
+    """Audit a paired split and raise ``ProtocolError`` on violations."""
+    try:
+        return _audit_comparable_splits(data, splits)
+    except ValueError as error:
+        raise ProtocolError(
+            str(error),
+            component="matched-semi-inductive",
+            seed=(
+                splits.metadata.seed
+                if isinstance(splits, SplitBundle)
+                else None
+            ),
+        ) from error
 
 
 def generate_comparable_splits(
@@ -967,9 +967,8 @@ def generate_comparable_splits(
         
     Returns
     -------
-    ComparableSplits
-        Named training, validation, transductive-test, and inductive-test splits.
-        The result also supports tuple unpacking for backward compatibility.
+    SplitBundle
+        Training, validation, and paired test partitions with protocol metadata.
     """    
 
     if not isinstance(data, Data):
@@ -1045,8 +1044,26 @@ def generate_comparable_splits(
         data.edge_index.device,
     )
 
-    splits = ComparableSplits(
-        train, validation, test_transductive, test_inductive
+    splits = SplitBundle(
+        train=train,
+        validation=validation,
+        tests={
+            "transductive": test_transductive,
+            "semi-inductive": test_inductive,
+        },
+        metadata=ProtocolMetadata(
+            name="matched-semi-inductive",
+            schema_version=1,
+            seed=seed,
+            parameters={"train_ratio": train_ratio},
+            realized_counts={
+                "validation_queries": len(query_nodes.validation),
+                "test_queries": len(query_nodes.test),
+            },
+        ),
+        validation_query_nodes=query_nodes.validation,
+        test_query_nodes=query_nodes.test,
+        visible_node_mask=visible_node_mask,
     )
     audit_comparable_splits(data, splits)
     return splits
@@ -1080,8 +1097,8 @@ def generate_validation_splits(
 
     Returns
     -------
-    ValidationSplits
-        Training and semi-inductive validation graphs.
+    SplitBundle
+        Training and validation partitions without test partitions.
     """
     if not isinstance(data, Data):
         raise TypeError("data should be of type torch_geometric.data.Data")
@@ -1158,7 +1175,24 @@ def generate_validation_splits(
         data.num_nodes,
         data.edge_index.device,
     )
-    return ValidationSplits(train, validation)
+    return SplitBundle(
+        train=train,
+        validation=validation,
+        tests={},
+        metadata=ProtocolMetadata(
+            name="matched-semi-inductive-validation-only",
+            schema_version=1,
+            seed=seed,
+            parameters={"train_ratio": train_ratio},
+            realized_counts={
+                "validation_queries": len(query_nodes.validation),
+                "reserved_test_queries": len(query_nodes.test),
+            },
+        ),
+        validation_query_nodes=query_nodes.validation,
+        test_query_nodes=query_nodes.test,
+        visible_node_mask=visible_node_mask,
+    )
 
 
 
@@ -1197,9 +1231,8 @@ def inductive_split(
         
     Returns
     -------
-    InductiveSplits
-        Named training, validation, and inductive-test splits. The result also
-        supports tuple unpacking for backward compatibility.
+    SplitBundle
+        Training, validation, and semi-inductive test partitions.
     """
 
     if not isinstance(data, Data):
@@ -1267,7 +1300,24 @@ def inductive_split(
         data.edge_index.device,
     )
 
-    return InductiveSplits(train, validation, test)
+    return SplitBundle(
+        train=train,
+        validation=validation,
+        tests={"semi-inductive": test},
+        metadata=ProtocolMetadata(
+            name="semi-inductive",
+            schema_version=1,
+            seed=seed,
+            parameters={"train_ratio": train_ratio},
+            realized_counts={
+                "validation_queries": len(query_nodes.validation),
+                "test_queries": len(query_nodes.test),
+            },
+        ),
+        validation_query_nodes=query_nodes.validation,
+        test_query_nodes=query_nodes.test,
+        visible_node_mask=visible_node_mask,
+    )
 
 def calculate_reduced_features(
     data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,

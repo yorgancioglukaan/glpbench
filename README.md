@@ -237,7 +237,9 @@ pair.
 ```python
 from glpbench.datasets import load_dataset
 
-data = load_dataset("cora", root="data", device="cpu")
+dataset = load_dataset("cora", root="data", device="cpu")
+data = dataset.data
+print(dataset.metadata)
 ```
 
 `glpbench.datasets.available_datasets()` returns the normalized names accepted by the loader.
@@ -259,11 +261,15 @@ query = select_query_nodes(data, query_size=3, seed=42)
 fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
 fit_mask[query] = False
 calculate_reduced_features(data, dim=64, fit_nodes=fit_mask)
-train, val, test_transductive, test_inductive = generate_comparable_splits(
+splits = generate_comparable_splits(
     data,
     query=query,
     train_ratio=0.8,
 )
+train = splits.train
+val = splits.validation
+test_transductive = splits.tests["transductive"]
+test_inductive = splits.tests["semi-inductive"]
 ```
 
 Available reduction methods are `pca`, `truncated-svd`, and

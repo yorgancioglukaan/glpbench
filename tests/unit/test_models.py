@@ -87,9 +87,15 @@ class TestLinkPrediction(unittest.TestCase):
             [0, 1, 1, 2, 2, 3],
             [1, 0, 2, 1, 3, 2],
         ])
-        data.query_mask = torch.tensor([False, False, False, False, True])
-        data.seen_node_mask = ~data.query_mask
-        data.split_type = "train"
+        data.validation_query_mask = torch.zeros(5, dtype=torch.bool)
+        data.test_query_mask = torch.tensor(
+            [False, False, False, False, True]
+        )
+        data.visible_node_mask = ~(
+            data.validation_query_mask | data.test_query_mask
+        )
+        data.split_stage = "train"
+        data.split_setting = "transductive"
         return data
 
     def test_model_construction_for_supported_convolutions(self):
@@ -139,16 +145,16 @@ class TestLinkPrediction(unittest.TestCase):
             ),
         )
 
-    def test_model_specs_describe_asymmetric_mlp_capabilities(self):
-        spec = link_prediction.get_model_spec("asymmetric-mlp")
+    def test_model_registrations_describe_asymmetric_mlp_capabilities(self):
+        spec = link_prediction.get_model_registration("asymmetric-mlp")
 
         self.assertIs(spec.constructor, link_prediction.MLP_AGAE_Model)
-        self.assertTrue(spec.uses_conv_layer)
-        self.assertTrue(spec.uses_reduced_features)
-        self.assertTrue(spec.supports_agae_regularization)
-        self.assertTrue(spec.uses_mlp_decoder)
+        self.assertTrue(spec.capabilities.uses_conv_layer)
+        self.assertTrue(spec.capabilities.requires_reduced_features)
+        self.assertTrue(spec.capabilities.supports_agae_regularization)
+        self.assertTrue(spec.capabilities.uses_mlp_decoder)
         with self.assertRaisesRegex(ValueError, "Unexpected model type"):
-            link_prediction.get_model_spec("unknown")
+            link_prediction.get_model_registration("unknown")
 
     def test_deal_has_structural_embeddings_only_for_seen_nodes(self):
         data = self._deal_training_data()
@@ -159,7 +165,7 @@ class TestLinkPrediction(unittest.TestCase):
         structure, attributes = predictor.model.encode(data.x, data.edge_index)
 
         self.assertEqual(predictor.model.structure_embeddings.num_embeddings, 4)
-        self.assertEqual(predictor.model.global_to_seen[4].item(), -1)
+        self.assertEqual(predictor.model.global_to_visible[4].item(), -1)
         self.assertTrue(torch.equal(structure[4], torch.zeros(2)))
         self.assertEqual(attributes.shape, (data.num_nodes, 2))
 
@@ -200,7 +206,7 @@ class TestLinkPrediction(unittest.TestCase):
         representations = predictor.model.encode(data.x, data.edge_index)
 
         transductive = data.clone()
-        transductive.split_type = "transductive"
+        transductive.split_setting = "transductive"
         transductive.edge_label_index = torch.tensor([[0], [3]])
         trans_components = predictor.model._component_logits(
             representations, transductive.edge_label_index
@@ -211,7 +217,7 @@ class TestLinkPrediction(unittest.TestCase):
         ) / 10.0
 
         inductive = data.clone()
-        inductive.split_type = "inductive"
+        inductive.split_setting = "semi-inductive"
         inductive.edge_label_index = torch.tensor([[0], [4]])
         ind_components = predictor.model._component_logits(
             representations, inductive.edge_label_index
@@ -228,7 +234,6 @@ class TestLinkPrediction(unittest.TestCase):
         ))
 
         validation = inductive.clone()
-        validation.split_type = "validation"
         validation.split_stage = "validation"
         validation.split_setting = "semi-inductive"
         self.assertTrue(torch.allclose(
@@ -236,14 +241,14 @@ class TestLinkPrediction(unittest.TestCase):
         ))
 
     def test_deal_rejects_missing_split_metadata_and_query_training_edges(self):
-        with self.assertRaisesRegex(ValueError, "query_mask"):
+        with self.assertRaisesRegex(ValueError, "validation_query_mask"):
             link_prediction.LinkPrediction(
                 self._training_data(), model_type="deal"
             )
 
         data = self._deal_training_data()
         predictor = link_prediction.LinkPrediction(data, model_type="deal")
-        with self.assertRaisesRegex(ValueError, "only seen nodes"):
+        with self.assertRaisesRegex(ValueError, "only visible nodes"):
             predictor.train(negative_edge_index=torch.tensor([[0], [4]]))
 
     def test_feature_cosine_scores_features_without_training(self):
@@ -327,11 +332,11 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_feature_mlp_spec_and_configuration(self):
         data = self._training_data()
-        spec = link_prediction.get_model_spec("feature-mlp")
+        spec = link_prediction.get_model_registration("feature-mlp")
 
         self.assertIs(spec.constructor, link_prediction.FeatureMLPModel)
-        self.assertFalse(spec.uses_conv_layer)
-        self.assertTrue(spec.uses_mlp_decoder)
+        self.assertFalse(spec.capabilities.uses_conv_layer)
+        self.assertTrue(spec.capabilities.uses_mlp_decoder)
         with self.assertRaisesRegex(ValueError, "decoder_hidden_channels"):
             link_prediction.LinkPrediction(
                 data, model_type="feature-mlp", decoder_hidden_channels=0
@@ -832,7 +837,7 @@ class TestLinkPrediction(unittest.TestCase):
 
         negatives = link_prediction.sample_training_negative_edges(data, seed=7)
 
-        self.assertTrue(bool(data.seen_node_mask[negatives].all()))
+        self.assertTrue(bool(data.visible_node_mask[negatives].all()))
 
     def test_graph_context_model_can_override_training_loss(self):
         class ContextModel(link_prediction.LinkPredictionModel):
@@ -859,10 +864,13 @@ class TestLinkPrediction(unittest.TestCase):
 
         data = self._training_data()
         negative_edges = torch.tensor([[0, 4], [3, 1]])
-        spec = link_prediction.ModelSpec(
+        spec = link_prediction.ModelRegistration(
             ContextModel,
-            uses_conv_layer=False,
-            uses_graph_context=True,
+            link_prediction.ModelCapabilities(
+                uses_message_passing=False,
+                uses_conv_layer=False,
+                requires_graph_context=True,
+            ),
         )
         with patch.dict(
             link_prediction._MODEL_REGISTRY, {"context-test": spec}

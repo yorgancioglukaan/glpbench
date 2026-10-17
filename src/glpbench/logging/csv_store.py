@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Mapping
 import csv
 import hashlib
 import json
@@ -11,6 +12,23 @@ from typing import Any
 from uuid import uuid4
 
 from glpbench.training import validate_scheduler_config
+from glpbench.contracts import (
+    EvaluationResult,
+    ResolvedExperimentSpec,
+    TrainingResult,
+)
+from glpbench.exceptions import PersistenceError
+
+
+def _mutable_value(value):
+    """Convert structurally frozen contract values to persistence values."""
+    if isinstance(value, Mapping):
+        return {key: _mutable_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_value(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_mutable_value(item) for item in value)
+    return value
 
 
 def make_configuration_id(configuration):
@@ -443,7 +461,11 @@ class CSVResultLogger:
             with self.path.open("r", newline="", encoding="utf-8") as csv_file:
                 header = next(csv.reader(csv_file), None)
             if header != self.FIELDNAMES:
-                raise ValueError("existing CSV schema does not match the logger schema")
+                raise PersistenceError(
+                    "existing CSV schema does not match the logger schema",
+                    component="csv-result-store",
+                    context={"path": str(self.path)},
+                )
 
         row = asdict(result)
         row["extra_fields"] = json.dumps(row["extra_fields"], sort_keys=True)
@@ -463,6 +485,87 @@ class CSVResultLogger:
                 writer.writeheader()
             writer.writerow(row)
         return self.run_id
+
+    def write(self, specification, training, evaluations):
+        """Persist typed evaluation results using the stable CSV schema."""
+        if not isinstance(specification, ResolvedExperimentSpec):
+            raise TypeError("specification must be a ResolvedExperimentSpec")
+        if training is not None and not isinstance(training, TrainingResult):
+            raise TypeError("training must be a TrainingResult or None")
+        evaluations = tuple(evaluations)
+        if any(not isinstance(item, EvaluationResult) for item in evaluations):
+            raise TypeError("evaluations must contain EvaluationResult objects")
+
+        dataset = specification.dataset_parameters
+        protocol = specification.protocol_parameters
+        model = specification.model_parameters
+        preprocessing = specification.preprocessing_parameters
+        policy = specification.training_policy
+        for evaluation in evaluations:
+            if evaluation.run_id is not None and evaluation.run_id != self.run_id:
+                raise ValueError("evaluation run_id does not match the result store")
+            metrics = evaluation.metrics
+            result = ExperimentResult(
+                configuration_id=evaluation.configuration_id,
+                dataset=specification.dataset,
+                model_type=specification.model_type,
+                split_type=evaluation.setting,
+                conv_layer_type=model["conv_layer_type"],
+                hidden_channels=model["hidden_channels"],
+                out_channels=model["out_channels"],
+                query_size=protocol["query_size"],
+                train_ratio=protocol["train_ratio"],
+                epochs=policy.max_epochs,
+                random_seed=specification.seed,
+                normalize_features=dataset["normalize_features"],
+                training_time_seconds=(
+                    training.training_time_seconds if training else None
+                ),
+                trainable_parameter_count=(
+                    training.trainable_parameter_count if training else 0
+                ),
+                reducer_fit_time_seconds=preprocessing.get(
+                    "reducer_fit_time_seconds"
+                ),
+                epochs_trained=(training.epochs_executed if training else 0),
+                best_epoch=(training.best_epoch if training else None),
+                selected_epoch=(training.selected_epoch if training else None),
+                training_policy=protocol.get("training_policy", "default"),
+                checkpoint_strategy=(
+                    training.checkpoint_strategy if training else None
+                ),
+                selection_metric=(training.selection_metric if training else None),
+                best_validation_score=(
+                    training.best_validation_score if training else None
+                ),
+                early_stopping_patience=policy.early_stopping_patience,
+                early_stopping_min_delta=policy.early_stopping_min_delta,
+                early_stopping_minimum_epochs=(
+                    policy.early_stopping_minimum_epochs
+                ),
+                stopped_early=(training.stopped_early if training else False),
+                regularization_type=model.get("regularization_type", "none"),
+                regularization_strength=model.get(
+                    "regularization_strength", 0.0
+                ),
+                weight_decay=model.get("weight_decay", 0.0),
+                lr_scheduler=policy.scheduler,
+                lr_scheduler_kwargs=dict(policy.scheduler_parameters),
+                final_learning_rate=(
+                    training.final_learning_rate if training else None
+                ),
+                roc_auc=metrics.get("roc_auc"),
+                average_precision=metrics.get("average_precision"),
+                loss=(training.selected_loss if training else None),
+                accuracy=metrics.get("accuracy"),
+                precision=metrics.get("precision"),
+                recall=metrics.get("recall"),
+                f1=metrics.get("f1"),
+                extra_fields=_mutable_value(
+                    preprocessing.get("extra_fields", {})
+                ),
+            )
+            self.log(result)
 
 
 @dataclass

@@ -87,8 +87,8 @@ class TestDatasetLoading(unittest.TestCase):
                 mock_planetoid.assert_called_once_with(
                     root="benchmark-data", name=canonical_name
                 )
-                self.assertEqual(data.dataset_name, canonical_name)
-                self.assertEqual(data.dataset_family, "Planetoid")
+                self.assertEqual(data.metadata.name, canonical_name)
+                self.assertEqual(data.metadata.family, "Planetoid")
 
     @patch("glpbench.datasets.builtin.Amazon")
     def test_amazon_photo_loader_and_aliases(self, mock_amazon):
@@ -102,8 +102,8 @@ class TestDatasetLoading(unittest.TestCase):
                 mock_amazon.assert_called_once_with(
                     root="benchmark-data", name="Photo"
                 )
-                self.assertEqual(data.dataset_name, "AmazonPhoto")
-                self.assertEqual(data.dataset_family, "Amazon")
+                self.assertEqual(data.metadata.name, "AmazonPhoto")
+                self.assertEqual(data.metadata.family, "Amazon")
 
     @patch("glpbench.datasets.builtin.Amazon")
     def test_amazon_computers_loader_and_aliases(self, mock_amazon):
@@ -119,8 +119,8 @@ class TestDatasetLoading(unittest.TestCase):
                 mock_amazon.assert_called_once_with(
                     root="benchmark-data", name="Computers"
                 )
-                self.assertEqual(data.dataset_name, "AmazonComputers")
-                self.assertEqual(data.dataset_family, "Amazon")
+                self.assertEqual(data.metadata.name, "AmazonComputers")
+                self.assertEqual(data.metadata.family, "Amazon")
 
     @patch("glpbench.datasets.builtin.Coauthor")
     def test_coauthor_cs_loader_and_aliases(self, mock_coauthor):
@@ -132,8 +132,8 @@ class TestDatasetLoading(unittest.TestCase):
                     supplied_name, root="benchmark-data", normalize_features=False
                 )
                 mock_coauthor.assert_called_once_with(root="benchmark-data", name="CS")
-                self.assertEqual(data.dataset_name, "CoauthorCS")
-                self.assertEqual(data.dataset_family, "Coauthor")
+                self.assertEqual(data.metadata.name, "CoauthorCS")
+                self.assertEqual(data.metadata.family, "Coauthor")
 
     @patch("glpbench.datasets.builtin.CitationFull")
     def test_dblp_loader(self, mock_citation_full):
@@ -144,8 +144,8 @@ class TestDatasetLoading(unittest.TestCase):
         mock_citation_full.assert_called_once_with(
             root="benchmark-data", name="DBLP", to_undirected=True
         )
-        self.assertEqual(data.dataset_name, "DBLP")
-        self.assertEqual(data.dataset_family, "CitationFull")
+        self.assertEqual(data.metadata.name, "DBLP")
+        self.assertEqual(data.metadata.family, "CitationFull")
 
     @patch("glpbench.datasets.builtin.WikiCS")
     def test_wikics_loader_requests_undirected_graph(self, mock_wikics):
@@ -156,8 +156,8 @@ class TestDatasetLoading(unittest.TestCase):
         mock_wikics.assert_called_once_with(
             root="benchmark-data", is_undirected=True
         )
-        self.assertEqual(data.dataset_name, "WikiCS")
-        self.assertEqual(data.dataset_family, "WikiCS")
+        self.assertEqual(data.metadata.name, "WikiCS")
+        self.assertEqual(data.metadata.family, "WikiCS")
 
     @patch("glpbench.datasets.builtin.DeezerEurope")
     def test_deezer_loader_and_alias(self, mock_deezer):
@@ -166,8 +166,8 @@ class TestDatasetLoading(unittest.TestCase):
             "Deezer Europe", root="benchmark-data", normalize_features=False
         )
         mock_deezer.assert_called_once_with(root="benchmark-data")
-        self.assertEqual(data.dataset_name, "DeezerEurope")
-        self.assertEqual(data.dataset_family, "Deezer")
+        self.assertEqual(data.metadata.name, "DeezerEurope")
+        self.assertEqual(data.metadata.family, "Deezer")
 
     @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_clones_normalizes_and_moves_graph(self, mock_planetoid):
@@ -176,10 +176,10 @@ class TestDatasetLoading(unittest.TestCase):
 
         loaded = datasets.load_dataset("cora", device=torch.device("cpu"))
 
-        self.assertIsNot(loaded, original)
-        self.assertTrue(torch.allclose(loaded.x.sum(dim=1), torch.ones(3)))
+        self.assertIsNot(loaded.data, original)
+        self.assertTrue(torch.allclose(loaded.data.x.sum(dim=1), torch.ones(3)))
         self.assertTrue(torch.equal(original.x, self._graph().x))
-        self.assertEqual(loaded.x.device.type, "cpu")
+        self.assertEqual(loaded.data.x.device.type, "cpu")
 
     @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_can_skip_feature_normalization(self, mock_planetoid):
@@ -188,7 +188,7 @@ class TestDatasetLoading(unittest.TestCase):
 
         loaded = datasets.load_dataset("cora", normalize_features=False)
 
-        self.assertTrue(torch.equal(loaded.x, original.x))
+        self.assertTrue(torch.equal(loaded.data.x, original.x))
 
     @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_removes_self_loops_without_mutating_source(
@@ -206,13 +206,13 @@ class TestDatasetLoading(unittest.TestCase):
 
         loaded = datasets.load_dataset("cora", normalize_features=False)
 
-        self.assertFalse(torch.any(loaded.edge_index[0] == loaded.edge_index[1]))
+        self.assertFalse(torch.any(loaded.data.edge_index[0] == loaded.data.edge_index[1]))
         self.assertTrue(torch.equal(
-            loaded.edge_index,
+            loaded.data.edge_index,
             torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]]),
         ))
         self.assertTrue(torch.equal(
-            loaded.edge_attr,
+            loaded.data.edge_attr,
             torch.tensor([[1.0], [2.0], [4.0], [5.0]]),
         ))
         self.assertTrue(torch.equal(original.edge_index, original_edges))

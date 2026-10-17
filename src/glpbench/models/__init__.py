@@ -10,12 +10,12 @@ from glpbench.models.link_prediction import (
     LinkPredictionModel,
     MLP_AGAE_Model,
     MLP_GAE_Model,
-    ModelSpec,
+    ModelRegistration,
     VGAE_Model,
     available_agae_regularizers,
     available_model_types,
     count_trainable_parameters,
-    get_model_spec,
+    get_model_registration,
     sample_training_negative_edges,
 )
 
@@ -29,11 +29,11 @@ __all__ = [
     "LinkPredictionModel",
     "MLP_AGAE_Model",
     "MLP_GAE_Model",
-    "ModelSpec",
+    "ModelRegistration",
     "VGAE_Model",
     "available_agae_regularizers",
     "available_model_types",
     "count_trainable_parameters",
-    "get_model_spec",
+    "get_model_registration",
     "sample_training_negative_edges",
 ]

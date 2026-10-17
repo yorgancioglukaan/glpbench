@@ -6,6 +6,9 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.utils import negative_sampling
 
+from glpbench.contracts import ModelCapabilities
+from glpbench.exceptions import CompatibilityError
+
 
 _GATV2_ARGUMENTS = {
     "heads",
@@ -48,12 +51,12 @@ def _regularize_none(model, data, z):
 
 def _seen_representations(data, z):
     """Select representations belonging to training-visible nodes."""
-    seen_node_mask = getattr(data, "seen_node_mask", None)
-    return z if seen_node_mask is None else z[seen_node_mask]
+    visible_node_mask = getattr(data, "visible_node_mask", None)
+    return z if visible_node_mask is None else z[visible_node_mask]
 
 
 def _regularize_latent_l2(model, data, z):
-    """Penalize squared latent-vector norms on seen nodes."""
+    """Penalize squared latent-vector norms on visible nodes."""
     return _seen_representations(data, z).square().sum(dim=-1).mean()
 
 
@@ -63,20 +66,20 @@ def _aligned_seen_representations(data, z):
         raise ValueError("alignment regularization requires data.x_reduced")
     if z.size(-1) != data.x_reduced.size(-1):
         raise ValueError("z and x_reduced must have the same feature dimension")
-    seen_node_mask = getattr(data, "seen_node_mask", None)
-    if seen_node_mask is None:
+    visible_node_mask = getattr(data, "visible_node_mask", None)
+    if visible_node_mask is None:
         return z, data.x_reduced
-    return z[seen_node_mask], data.x_reduced[seen_node_mask]
+    return z[visible_node_mask], data.x_reduced[visible_node_mask]
 
 
 def _regularize_mse_alignment(model, data, z):
-    """Penalize squared distance from reduced features on seen nodes."""
+    """Penalize squared distance from reduced features on visible nodes."""
     latent, reduced = _aligned_seen_representations(data, z)
     return F.mse_loss(latent, reduced)
 
 
 def _regularize_cosine_alignment(model, data, z):
-    """Penalize cosine distance from reduced features on seen nodes."""
+    """Penalize cosine distance from reduced features on visible nodes."""
     latent, reduced = _aligned_seen_representations(data, z)
     return 1.0 - F.cosine_similarity(
         latent, reduced, dim=-1, eps=1e-8
@@ -86,9 +89,9 @@ def _regularize_cosine_alignment(model, data, z):
 def _regularize_graph_smoothness(model, data, z):
     """Penalize latent differences across training graph edges."""
     edge_index = data.edge_index
-    seen_node_mask = getattr(data, "seen_node_mask", None)
-    if seen_node_mask is not None:
-        seen_edges = seen_node_mask[edge_index].all(dim=0)
+    visible_node_mask = getattr(data, "visible_node_mask", None)
+    if visible_node_mask is not None:
+        seen_edges = visible_node_mask[edge_index].all(dim=0)
         edge_index = edge_index[:, seen_edges]
     if edge_index.size(1) == 0:
         return z.new_zeros(())
@@ -489,7 +492,7 @@ class VGAE_Model(LinkPredictionModel):
 class DEALModel(LinkPredictionModel):
     """Deep embedding alignment model for attributed link prediction.
 
-    The structure branch embeds seen node identities, while the attribute
+    The structure branch embeds visible node identities, while the attribute
     branch maps node features into the same latent space. Query nodes have no
     trainable structural embedding and are scored through their attributes.
 
@@ -498,8 +501,8 @@ class DEALModel(LinkPredictionModel):
     in_channels, hidden_channels, out_channels : int
         Input, attribute-hidden, and shared embedding dimensions.
     train_data : torch_geometric.data.Data
-        Training graph with complementary Boolean ``query_mask`` and
-        ``seen_node_mask`` attributes.
+        Training graph with Boolean validation-query, test-query, and
+        visible-node masks.
     theta_ss, theta_aa, theta_sa : float, optional
         Non-negative training-loss weights for structural, attribute, and
         cross-branch scores.
@@ -541,10 +544,15 @@ class DEALModel(LinkPredictionModel):
         if not isinstance(similarity_margin, (int, float)):
             raise TypeError("similarity_margin must be numeric")
 
-        query_mask = getattr(train_data, "query_mask", None)
-        seen_node_mask = getattr(train_data, "seen_node_mask", None)
+        validation_query_mask = getattr(
+            train_data, "validation_query_mask", None
+        )
+        test_query_mask = getattr(train_data, "test_query_mask", None)
+        visible_node_mask = getattr(train_data, "visible_node_mask", None)
         for name, mask in (
-            ("query_mask", query_mask), ("seen_node_mask", seen_node_mask)
+            ("validation_query_mask", validation_query_mask),
+            ("test_query_mask", test_query_mask),
+            ("visible_node_mask", visible_node_mask),
         ):
             if not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool:
                 raise ValueError(f"train_data.{name} must be a boolean tensor")
@@ -552,26 +560,27 @@ class DEALModel(LinkPredictionModel):
                 raise ValueError(
                     f"train_data.{name} must have one entry per node"
                 )
-        if not torch.equal(query_mask, ~seen_node_mask):
-            raise ValueError("query_mask and seen_node_mask must be complements")
+        query_node_mask = validation_query_mask | test_query_mask
+        if not torch.equal(query_node_mask, ~visible_node_mask):
+            raise ValueError("query and visible node masks must be complements")
 
-        seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
-        if seen_node_ids.numel() == 0:
-            raise ValueError("DEAL requires at least one seen node")
-        global_to_seen = torch.full(
+        visible_node_ids = visible_node_mask.nonzero(as_tuple=False).view(-1)
+        if visible_node_ids.numel() == 0:
+            raise ValueError("DEAL requires at least one visible node")
+        global_to_visible = torch.full(
             (train_data.num_nodes,), -1, dtype=torch.long,
-            device=seen_node_ids.device,
+            device=visible_node_ids.device,
         )
-        global_to_seen[seen_node_ids] = torch.arange(
-            seen_node_ids.numel(), device=seen_node_ids.device
+        global_to_visible[visible_node_ids] = torch.arange(
+            visible_node_ids.numel(), device=visible_node_ids.device
         )
-        self.register_buffer("query_mask", query_mask.clone())
-        self.register_buffer("seen_node_mask", seen_node_mask.clone())
-        self.register_buffer("seen_node_ids", seen_node_ids)
-        self.register_buffer("global_to_seen", global_to_seen)
+        self.register_buffer("query_node_mask", query_node_mask.clone())
+        self.register_buffer("visible_node_mask", visible_node_mask.clone())
+        self.register_buffer("visible_node_ids", visible_node_ids)
+        self.register_buffer("global_to_visible", global_to_visible)
 
         self.structure_embeddings = torch.nn.Embedding(
-            seen_node_ids.numel(), out_channels
+            visible_node_ids.numel(), out_channels
         )
         self.attribute_encoder = torch.nn.Sequential(
             torch.nn.Linear(in_channels, hidden_channels),
@@ -599,7 +608,7 @@ class DEALModel(LinkPredictionModel):
     def encode(self, x, edge_index):
         """Return structural and attribute representations for all nodes."""
         structure = x.new_zeros((x.size(0), self.structure_embeddings.embedding_dim))
-        structure[self.seen_node_ids] = self.structure_embeddings.weight
+        structure[self.visible_node_ids] = self.structure_embeddings.weight
         return structure, self.attribute_encoder(x)
 
     def _similarity(self, source, target):
@@ -627,8 +636,8 @@ class DEALModel(LinkPredictionModel):
         self, data, edge_label_index, edge_label, criterion
     ):
         """Calculate DEAL's structure, attribute, and alignment losses."""
-        if not bool(self.seen_node_mask[edge_label_index].all()):
-            raise ValueError("DEAL training edges must contain only seen nodes")
+        if not bool(self.visible_node_mask[edge_label_index].all()):
+            raise ValueError("DEAL training edges must contain only visible nodes")
         representations = self.encode(data.x, data.edge_index)
         logits = self._component_logits(representations, edge_label_index)
         losses = tuple(criterion(component, edge_label) for component in logits)
@@ -643,23 +652,17 @@ class DEALModel(LinkPredictionModel):
         """Score transductive or inductive edges with valid DEAL branches."""
         component_logits = self._component_logits(representations, edge_label_index)
         split_setting = getattr(data, "split_setting", None)
-        if split_setting is None:
-            legacy_split_type = getattr(data, "split_type", None)
-            split_setting = {
-                "transductive": "transductive",
-                "inductive": "semi-inductive",
-            }.get(legacy_split_type)
         if split_setting == "transductive":
-            if not bool(self.seen_node_mask[edge_label_index].all()):
-                raise ValueError("transductive DEAL edges must contain only seen nodes")
+            if not bool(self.visible_node_mask[edge_label_index].all()):
+                raise ValueError("transductive DEAL edges must contain only visible nodes")
             return self._weighted_mean(component_logits, self.lambdas)
         if split_setting == "semi-inductive":
             source, target = edge_label_index
-            if not bool(self.seen_node_mask[source].all()) or not bool(
-                self.query_mask[target].all()
+            if not bool(self.visible_node_mask[source].all()) or not bool(
+                self.query_node_mask[target].all()
             ):
                 raise ValueError(
-                    "inductive DEAL edges must be oriented from seen to query nodes"
+                    "inductive DEAL edges must be oriented from visible to query nodes"
                 )
             return self._weighted_mean(
                 component_logits[1:], self.lambdas[1:]
@@ -732,50 +735,60 @@ class FeatureMLPModel(LinkPredictionModel):
         return self.edge_decoder(edge_features).squeeze(-1)
 
 
-@dataclass(frozen=True)
-class ModelSpec:
-    """Describe construction and training requirements for an architecture."""
+@dataclass(frozen=True, slots=True)
+class ModelRegistration:
+    """Associate a model constructor with declarative capabilities."""
 
     constructor: type[torch.nn.Module]
-    trainable: bool = True
-    uses_conv_layer: bool = True
-    outputs_probabilities: bool = False
-    uses_graph_context: bool = False
-    uses_reduced_features: bool = False
-    supports_agae_regularization: bool = False
-    uses_mlp_decoder: bool = False
+    capabilities: ModelCapabilities
 
 
 _MODEL_REGISTRY = {
-    "symmetric": ModelSpec(GAE_Model),
-    "asymmetric": ModelSpec(
+    "symmetric": ModelRegistration(GAE_Model, ModelCapabilities()),
+    "asymmetric": ModelRegistration(
         AGAE_Model,
-        uses_reduced_features=True,
-        supports_agae_regularization=True,
+        ModelCapabilities(
+            requires_reduced_features=True,
+            supports_agae_regularization=True,
+        ),
     ),
-    "mlp": ModelSpec(MLP_GAE_Model, uses_mlp_decoder=True),
-    "asymmetric-mlp": ModelSpec(
+    "mlp": ModelRegistration(
+        MLP_GAE_Model,
+        ModelCapabilities(uses_mlp_decoder=True),
+    ),
+    "asymmetric-mlp": ModelRegistration(
         MLP_AGAE_Model,
-        uses_reduced_features=True,
-        supports_agae_regularization=True,
-        uses_mlp_decoder=True,
+        ModelCapabilities(
+            requires_reduced_features=True,
+            supports_agae_regularization=True,
+            uses_mlp_decoder=True,
+        ),
     ),
-    "variational": ModelSpec(VGAE_Model),
-    "deal": ModelSpec(
+    "variational": ModelRegistration(VGAE_Model, ModelCapabilities()),
+    "deal": ModelRegistration(
         DEALModel,
-        uses_conv_layer=False,
-        uses_graph_context=True,
+        ModelCapabilities(
+            uses_message_passing=False,
+            uses_conv_layer=False,
+            requires_graph_context=True,
+        ),
     ),
-    "feature-cosine": ModelSpec(
+    "feature-cosine": ModelRegistration(
         FeatureCosineModel,
-        trainable=False,
-        uses_conv_layer=False,
-        outputs_probabilities=True,
+        ModelCapabilities(
+            trainable=False,
+            uses_message_passing=False,
+            uses_conv_layer=False,
+            output_kind="probabilities",
+        ),
     ),
-    "feature-mlp": ModelSpec(
+    "feature-mlp": ModelRegistration(
         FeatureMLPModel,
-        uses_conv_layer=False,
-        uses_mlp_decoder=True,
+        ModelCapabilities(
+            uses_message_passing=False,
+            uses_conv_layer=False,
+            uses_mlp_decoder=True,
+        ),
     ),
 }
 
@@ -785,12 +798,16 @@ def available_model_types():
     return tuple(_MODEL_REGISTRY)
 
 
-def get_model_spec(model_type):
-    """Return capability metadata for a registered model type."""
+def get_model_registration(model_type):
+    """Return the constructor and capabilities for a registered model type."""
     try:
         return _MODEL_REGISTRY[model_type]
     except KeyError as error:
-        raise ValueError(f"Unexpected model type: {model_type}") from error
+        raise CompatibilityError(
+            f"Unexpected model type: {model_type}",
+            component="model-registry",
+            model=str(model_type),
+        ) from error
 
 
 def count_trainable_parameters(model):
@@ -807,8 +824,8 @@ def count_trainable_parameters(model):
 def sample_training_negative_edges(data, seed=None):
     """Sample one negative edge per positive training edge.
 
-    When ``seen_node_mask`` is present, both endpoints are restricted to seen
-    nodes. Supplying ``seed`` makes sampling reproducible without changing the
+    When ``visible_node_mask`` is present, both endpoints are restricted to
+    visible nodes. Supplying ``seed`` makes sampling reproducible without changing the
     caller's Python or PyTorch random-number-generator state.
 
     Returns
@@ -817,30 +834,30 @@ def sample_training_negative_edges(data, seed=None):
         Negative edge index with shape ``[2, num_training_positives]``.
     """
     def sample_edges():
-        seen_node_mask = getattr(data, "seen_node_mask", None)
-        if seen_node_mask is None:
+        visible_node_mask = getattr(data, "visible_node_mask", None)
+        if visible_node_mask is None:
             return negative_sampling(
                 edge_index=data.edge_index,
                 num_nodes=data.num_nodes,
                 num_neg_samples=data.edge_label_index.size(1),
             )
 
-        seen_node_ids = seen_node_mask.nonzero(as_tuple=False).view(-1)
-        global_to_seen = torch.full(
+        visible_node_ids = visible_node_mask.nonzero(as_tuple=False).view(-1)
+        global_to_visible = torch.full(
             (data.num_nodes,), -1, dtype=torch.long, device=data.edge_index.device
         )
-        global_to_seen[seen_node_ids] = torch.arange(
-            seen_node_ids.numel(), device=data.edge_index.device
+        global_to_visible[visible_node_ids] = torch.arange(
+            visible_node_ids.numel(), device=data.edge_index.device
         )
-        local_edge_index = global_to_seen[data.edge_index]
+        local_edge_index = global_to_visible[data.edge_index]
         if bool((local_edge_index < 0).any()):
-            raise ValueError("training edge_index must contain only seen nodes")
+            raise ValueError("training edge_index must contain only visible nodes")
         local_negatives = negative_sampling(
             edge_index=local_edge_index,
-            num_nodes=seen_node_ids.numel(),
+            num_nodes=visible_node_ids.numel(),
             num_neg_samples=data.edge_label_index.size(1),
         )
-        return seen_node_ids[local_negatives]
+        return visible_node_ids[local_negatives]
 
     if seed is None:
         return sample_edges()
@@ -940,14 +957,13 @@ class LinkPrediction:
             }
         }
 
-        if self.model_type not in _MODEL_REGISTRY:
-             raise ValueError("Unexpected model type: " + self.model_type)
-        self.model_spec = _MODEL_REGISTRY[self.model_type]
-        self.trainable = self.model_spec.trainable
+        self.model_registration = get_model_registration(self.model_type)
+        capabilities = self.model_registration.capabilities
+        self.trainable = capabilities.trainable
         if (
-            self.model_spec.uses_conv_layer
-            or self.model_spec.uses_graph_context
-            or self.model_spec.uses_mlp_decoder
+            capabilities.uses_conv_layer
+            or capabilities.requires_graph_context
+            or capabilities.uses_mlp_decoder
         ):
             constructor_kwargs = {
                 "in_channels": train_data.num_features,
@@ -955,15 +971,15 @@ class LinkPrediction:
                 "out_channels": out_channels,
                 **model_kwargs,
             }
-            if self.model_spec.uses_conv_layer:
+            if capabilities.uses_conv_layer:
                 constructor_kwargs["conv_layer_type"] = conv_layer_type
-            if self.model_spec.uses_graph_context:
+            if capabilities.requires_graph_context:
                 constructor_kwargs["train_data"] = train_data
-            self.model = self.model_spec.constructor(
+            self.model = self.model_registration.constructor(
                 **constructor_kwargs,
             )
         else:
-            self.model = self.model_spec.constructor()
+            self.model = self.model_registration.constructor()
 
         self.optimizer = (
             torch.optim.Adam(
@@ -1049,6 +1065,6 @@ class LinkPrediction:
         z = self.model.encode(data.x, data.edge_index)
         out = self.model.decode_edges(z, data.edge_label_index, data)
         out = out.view(-1)
-        if not self.model_spec.outputs_probabilities:
+        if self.model_registration.capabilities.output_kind != "probabilities":
             out = out.sigmoid()
         return out

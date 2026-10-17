@@ -265,11 +265,15 @@ class ModelCapabilities:
 
     trainable: bool = True
     uses_message_passing: bool = True
+    uses_conv_layer: bool = True
+    requires_graph_context: bool = False
     requires_reduced_features: bool = False
     supports_unseen_sources: bool = False
     supports_unseen_targets: bool = False
     requires_labels: bool = False
     requires_auxiliary_data: bool = False
+    supports_agae_regularization: bool = False
+    uses_mlp_decoder: bool = False
     output_kind: str = "raw-scores"
     supported_devices: tuple[str, ...] = ("cpu",)
 
@@ -277,11 +281,15 @@ class ModelCapabilities:
         boolean_fields = (
             "trainable",
             "uses_message_passing",
+            "uses_conv_layer",
+            "requires_graph_context",
             "requires_reduced_features",
             "supports_unseen_sources",
             "supports_unseen_targets",
             "requires_labels",
             "requires_auxiliary_data",
+            "supports_agae_regularization",
+            "uses_mlp_decoder",
         )
         for name in boolean_fields:
             if not isinstance(getattr(self, name), bool):
@@ -370,12 +378,13 @@ class TrainingResult:
     final_epoch: int | None
     best_epoch: int | None
     selected_epoch: int | None
-    checkpoint_strategy: str
+    checkpoint_strategy: str | None
     selection_metric: str | None
     best_validation_score: float | None
     stopped_early: bool
     training_time_seconds: float | None
     trainable_parameter_count: int
+    selected_loss: float | None = None
     loss_history: tuple[float, ...] = ()
     final_learning_rate: float | None = None
 
@@ -396,7 +405,9 @@ class TrainingResult:
                     raise ValueError(f"{name} cannot exceed epochs_executed")
         if self.epochs_executed == 0 and self.final_epoch is not None:
             raise ValueError("final_epoch must be absent when no epochs were executed")
-        _require_non_empty_string(self.checkpoint_strategy, "checkpoint_strategy")
+        _require_optional_non_empty_string(
+            self.checkpoint_strategy, "checkpoint_strategy"
+        )
         _require_optional_non_empty_string(self.selection_metric, "selection_metric")
         if not isinstance(self.stopped_early, bool):
             raise TypeError("stopped_early must be a boolean")
@@ -404,6 +415,8 @@ class TrainingResult:
             _require_finite_number(
                 self.best_validation_score, "best_validation_score"
             )
+        if self.selected_loss is not None:
+            _require_finite_number(self.selected_loss, "selected_loss")
         for value, name in (
             (self.training_time_seconds, "training_time_seconds"),
             (self.final_learning_rate, "final_learning_rate"),
@@ -454,6 +467,25 @@ class EvaluationResult:
             )
         _require_optional_non_empty_string(self.run_id, "run_id")
         _require_optional_non_empty_string(self.configuration_id, "configuration_id")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationResult:
+    """Pair prepared graph partitions with preprocessing runtime metadata."""
+
+    splits: SplitBundle
+    preprocessing_time_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.splits, SplitBundle):
+            raise TypeError("splits must be a SplitBundle")
+        if self.preprocessing_time_seconds is not None:
+            _require_finite_number(
+                self.preprocessing_time_seconds,
+                "preprocessing_time_seconds",
+            )
+            if self.preprocessing_time_seconds < 0:
+                raise ValueError("preprocessing_time_seconds must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -510,6 +542,7 @@ __all__ = [
     "EvaluationResult",
     "LoadedDataset",
     "ModelCapabilities",
+    "PreparationResult",
     "ProtocolMetadata",
     "ResolvedExperimentSpec",
     "SplitBundle",

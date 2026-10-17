@@ -28,6 +28,7 @@ from glpbench.interfaces import (  # noqa: E402
     ResultStore,
     SplitProtocol,
 )
+from glpbench.logging import CSVResultLogger  # noqa: E402
 
 
 class _DatasetProvider:
@@ -105,6 +106,9 @@ class TestComponentInterfaces(unittest.TestCase):
                 return 0.0
 
         self.assertNotIsInstance(IncompleteMetric(), EvaluationMetric)
+
+    def test_csv_logger_implements_result_store_boundary(self):
+        self.assertIsInstance(CSVResultLogger("unused.csv"), ResultStore)
 
 
 class TestAuditReport(unittest.TestCase):

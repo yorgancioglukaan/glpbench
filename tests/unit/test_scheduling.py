@@ -138,12 +138,14 @@ class TestLearningRateScheduling(unittest.TestCase):
                 predictor,
                 Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
                 Data(edge_label=torch.tensor([1.0, 0.0])),
-                epochs=3,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=3,
+                    selection_metric="roc_auc",
+                    scheduler="reduce-on-plateau",
+                    scheduler_parameters={"factor": 0.5, "patience": 0},
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
-                lr_scheduler="reduce-on-plateau",
-                lr_scheduler_kwargs={"factor": 0.5, "patience": 0},
                 epoch_callback=records.append,
             )
 
@@ -152,7 +154,6 @@ class TestLearningRateScheduling(unittest.TestCase):
             [0.1, 0.1, 0.05],
         )
         self.assertAlmostEqual(summary.final_learning_rate, 0.025)
-        self.assertEqual(summary.lr_scheduler, "reduce-on-plateau")
-        self.assertEqual(summary.lr_scheduler_kwargs["factor"], 0.5)
+        self.assertEqual(summary.epochs_executed, 3)
 
 

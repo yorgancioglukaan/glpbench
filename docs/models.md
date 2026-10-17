@@ -38,4 +38,5 @@ probabilities = predictor.test(test_data)
 ```
 
 Use `available_model_types()` to inspect the active model registry and
-`get_model_spec()` to inspect a model's declared requirements and capabilities.
+`get_model_registration()` to inspect a model's constructor and declared
+capabilities.

@@ -14,13 +14,15 @@ from tqdm.auto import tqdm
 import yaml
 
 import glpbench.runners.benchmark as benchmark
+from glpbench.contracts import TrainingPolicy
+from glpbench.exceptions import ConfigurationError
 from glpbench.datasets import load_dataset
 from glpbench.logging import CSVEpochHistoryLogger, EpochHistoryRecord
 from glpbench.evaluation import prepare_validation_data
 from glpbench.models import (
     LinkPrediction,
     count_trainable_parameters,
-    get_model_spec,
+    get_model_registration,
 )
 from glpbench.runners.experiment import (
     calculate_metrics,
@@ -88,8 +90,9 @@ def load_audit_config(path):
     if raw.get("version") != 1 or raw.get("kind") != (
         "validation-convergence-audit"
     ):
-        raise ValueError(
-            "expected a version-1 validation-convergence-audit specification"
+        raise ConfigurationError(
+            "expected a version-1 validation-convergence-audit specification",
+            component="audit-config",
         )
     unknown = set(raw).difference({
         "version", "kind", "artifacts", "execution", "seeds",
@@ -130,7 +133,7 @@ def load_audit_config(path):
         for name in _unique_list(raw.get("datasets"), "datasets")
     )
     model_names = _unique_list(raw.get("models"), "models")
-    if any(not get_model_spec(name).trainable for name in model_names):
+    if any(not get_model_registration(name).capabilities.trainable for name in model_names):
         raise ValueError("convergence audits require trainable models")
 
     split = _mapping(raw.get("splits"), "splits")
@@ -226,7 +229,7 @@ def _predictor_kwargs(job):
         "similarity_scale": parameters["deal_similarity_scale"],
         "similarity_margin": parameters["deal_similarity_margin"],
     }
-    if get_model_spec(job.model_type).supports_agae_regularization:
+    if get_model_registration(job.model_type).capabilities.supports_agae_regularization:
         kwargs.update({
             "regularization_type": job.regularization.type,
             "regularization_strength": job.regularization.strength,
@@ -318,7 +321,7 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                         root=config.benchmark_config.data_root,
                         normalize_features=False,
                         device="cpu",
-                    )
+                    ).data
                 source = source_cache[job.dataset]
                 split_key = (job.dataset, seed)
                 if split_key not in split_cache:
@@ -341,8 +344,8 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     random_state=seed,
                 )
                 device = torch.device(job.parameters["device"])
-                train = prepared.train.to(device)
-                validation = prepared.validation.to(device)
+                train = prepared.splits.train.to(device)
+                validation = prepared.splits.validation.to(device)
                 random.seed(seed)
                 torch.manual_seed(seed)
                 predictor = LinkPrediction(train, **_predictor_kwargs(job))
@@ -373,12 +376,18 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     predictor,
                     train,
                     validation,
-                    epochs=job.parameters["epochs"],
+                    training_policy=TrainingPolicy(
+                        max_epochs=job.parameters["epochs"],
+                        optimizer_parameters={
+                            "learning_rate": job.parameters["learning_rate"],
+                            "weight_decay": job.parameters["weight_decay"],
+                        },
+                        selection_metric=job.parameters["selection_metric"],
+                        checkpoint_strategy="best-validation",
+                        scheduler="none",
+                    ),
                     seed=seed,
-                    selection_metric=job.parameters["selection_metric"],
                     device=device,
-                    checkpoint_strategy="best-validation",
-                    lr_scheduler="none",
                     epoch_callback=record_epoch,
                     verbose=verbose,
                     progress_label=f"{job.dataset}/{job.model_type}/{seed}",
@@ -405,7 +414,7 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     ),
                     "train_ratio": job.parameters["train_ratio"],
                     "epochs": job.parameters["epochs"],
-                    "epochs_trained": summary.epochs_trained,
+                    "epochs_trained": summary.epochs_executed,
                     "best_epoch": summary.best_epoch,
                     "selected_epoch": summary.selected_epoch,
                     "selection_metric": summary.selection_metric,
@@ -415,14 +424,14 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     "training_time_seconds": summary.training_time_seconds,
                     "trainable_parameter_count": parameter_count,
                     "reducer_fit_time_seconds": (
-                        prepared.reducer_fit_time_seconds
-                        if prepared.reducer_fit_time_seconds is not None else ""
+                        prepared.preprocessing_time_seconds
+                        if prepared.preprocessing_time_seconds is not None else ""
                     ),
                     "learning_rate": job.parameters["learning_rate"],
                     "weight_decay": job.parameters["weight_decay"],
-                    "lr_scheduler": summary.lr_scheduler,
+                    "lr_scheduler": "none",
                     "lr_scheduler_kwargs": json.dumps(
-                        summary.lr_scheduler_kwargs, sort_keys=True
+                        {}, sort_keys=True
                     ),
                     "final_learning_rate": summary.final_learning_rate,
                     "normalize_features": job.parameters["normalize_features"],

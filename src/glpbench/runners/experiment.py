@@ -5,7 +5,6 @@ import copy
 import json
 import random
 import time
-from dataclasses import dataclass
 
 from sklearn.metrics import (
     accuracy_score,
@@ -19,9 +18,15 @@ from tqdm.auto import tqdm
 
 from glpbench.logging import (
     CSVResultLogger,
-    ExperimentResult,
     make_configuration_id,
 )
+from glpbench.contracts import (
+    EvaluationResult,
+    ResolvedExperimentSpec,
+    TrainingPolicy,
+    TrainingResult,
+)
+from glpbench.exceptions import TrainingError
 from glpbench.preprocessing import available_reduction_methods
 from glpbench.training import (
     available_lr_schedulers,
@@ -36,7 +41,7 @@ from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
     count_trainable_parameters,
-    get_model_spec,
+    get_model_registration,
     sample_training_negative_edges,
 )
 from glpbench.protocols import (
@@ -117,36 +122,25 @@ def _resolve_seeds(args):
     return seeds
 
 
-@dataclass(frozen=True)
-class TrainingSummary:
-    """Store fixed-budget training and checkpoint-selection outcomes."""
-
-    selected_loss: torch.Tensor | None
-    training_time_seconds: float | None
-    epochs_trained: int
-    best_epoch: int | None
-    selected_epoch: int | None
-    checkpoint_strategy: str | None
-    selection_metric: str | None
-    best_validation_score: float | None
-    early_stopping_patience: int | None
-    early_stopping_min_delta: float
-    early_stopping_minimum_epochs: int
-    stopped_early: bool
-    lr_scheduler: str
-    lr_scheduler_kwargs: dict
-    final_learning_rate: float | None
-
-
 def train_with_validation_selection(
-    predictor, train_data, validation_data, *, epochs, seed,
-    selection_metric, device, early_stopping_patience=None,
-    early_stopping_min_delta=0.0, early_stopping_minimum_epochs=0,
-    checkpoint_strategy="best-validation", verbose=False,
+    predictor, train_data, validation_data, *, training_policy, seed, device,
+    verbose=False,
     progress_label="model", progress_position=1, compact_progress=False,
-    epoch_callback=None, lr_scheduler="none", lr_scheduler_kwargs=None,
+    epoch_callback=None,
 ):
     """Train with validation checkpointing and optional early stopping."""
+    if not isinstance(training_policy, TrainingPolicy):
+        raise TypeError("training_policy must be a TrainingPolicy")
+    epochs = training_policy.max_epochs
+    selection_metric = training_policy.selection_metric
+    early_stopping_patience = training_policy.early_stopping_patience
+    early_stopping_min_delta = training_policy.early_stopping_min_delta
+    early_stopping_minimum_epochs = (
+        training_policy.early_stopping_minimum_epochs
+    )
+    checkpoint_strategy = training_policy.checkpoint_strategy
+    lr_scheduler = training_policy.scheduler
+    lr_scheduler_kwargs = dict(training_policy.scheduler_parameters)
     if selection_metric not in {"roc_auc", "average_precision"}:
         raise ValueError("unsupported checkpoint selection metric")
     if checkpoint_strategy not in {"best-validation", "final"}:
@@ -179,21 +173,20 @@ def train_with_validation_selection(
     if not predictor.trainable:
         if lr_scheduler != "none":
             raise ValueError("learning-rate schedulers require a trainable model")
-        return TrainingSummary(
+        return TrainingResult(
             selected_loss=None,
             training_time_seconds=None,
-            epochs_trained=0,
+            epochs_executed=0,
+            final_epoch=None,
             best_epoch=None,
             selected_epoch=None,
             checkpoint_strategy=None,
             selection_metric=None,
             best_validation_score=None,
-            early_stopping_patience=early_stopping_patience,
-            early_stopping_min_delta=float(early_stopping_min_delta),
-            early_stopping_minimum_epochs=early_stopping_minimum_epochs,
             stopped_early=False,
-            lr_scheduler="none",
-            lr_scheduler_kwargs={},
+            trainable_parameter_count=count_trainable_parameters(
+                predictor.model
+            ),
             final_learning_rate=None,
         )
 
@@ -221,6 +214,7 @@ def train_with_validation_selection(
     epochs_without_improvement = 0
     epochs_trained = 0
     stopped_early = False
+    loss_history = []
 
     _synchronize_device(device)
     training_start = time.perf_counter()
@@ -229,6 +223,7 @@ def train_with_validation_selection(
             train_data, seed=seed + epoch
         )
         loss = predictor.train(negative_edge_index=negative_edges)
+        loss_history.append(float(loss.detach().item()))
         final_loss = loss.detach().clone()
         validation_probabilities = predictor.test(validation_data)
         validation_metrics = calculate_metrics(
@@ -299,7 +294,11 @@ def train_with_validation_selection(
             break
 
     if best_state is None:
-        raise RuntimeError("training did not produce a validation checkpoint")
+        raise TrainingError(
+            "training did not produce a validation checkpoint",
+            component="checkpoint-selection",
+            seed=seed,
+        )
     if checkpoint_strategy == "best-validation":
         predictor.model.load_state_dict(best_state)
         selected_epoch = best_epoch
@@ -308,30 +307,26 @@ def train_with_validation_selection(
         selected_epoch = epochs_trained
     _synchronize_device(device)
     training_time_seconds = time.perf_counter() - training_start
-    return TrainingSummary(
-        selected_loss=selected_loss,
+    return TrainingResult(
+        selected_loss=(
+            float(selected_loss.detach().cpu())
+            if selected_loss is not None else None
+        ),
         training_time_seconds=training_time_seconds,
-        epochs_trained=epochs_trained,
+        epochs_executed=epochs_trained,
+        final_epoch=epochs_trained,
         best_epoch=best_epoch,
         selected_epoch=selected_epoch,
         checkpoint_strategy=checkpoint_strategy,
         selection_metric=selection_metric,
         best_validation_score=best_score,
-        early_stopping_patience=early_stopping_patience,
-        early_stopping_min_delta=float(early_stopping_min_delta),
-        early_stopping_minimum_epochs=early_stopping_minimum_epochs,
         stopped_early=stopped_early,
-        lr_scheduler=lr_scheduler,
-        lr_scheduler_kwargs=scheduler_parameters,
+        trainable_parameter_count=count_trainable_parameters(predictor.model),
+        loss_history=loss_history,
         final_learning_rate=current_learning_rate(
             getattr(predictor, "optimizer", None)
         ),
     )
-
-
-# Compatibility alias for existing API users and tests.
-_train_with_checkpoint_selection = train_with_validation_selection
-
 
 def parse_args():
     """Parse command-line experiment parameters."""
@@ -521,11 +516,11 @@ def run_experiment(
         raise ValueError(
             f"Unknown AGAE regularization: {sorted(unknown_regularizers)[0]}"
         )
-    model_specs = {
-        model_type: get_model_spec(model_type) for model_type in model_types
+    model_registrations = {
+        model_type: get_model_registration(model_type) for model_type in model_types
     }
     if (
-        not any(spec.supports_agae_regularization for spec in model_specs.values())
+        not any(spec.capabilities.supports_agae_regularization for spec in model_registrations.values())
         and selected_regularizers != ("none",)
     ):
         raise ValueError(
@@ -536,7 +531,7 @@ def run_experiment(
         for model_type in model_types
         for regularization_type in (
             selected_regularizers
-            if model_specs[model_type].supports_agae_regularization
+            if model_registrations[model_type].capabilities.supports_agae_regularization
             else ("none",)
         )
     ]
@@ -544,12 +539,14 @@ def run_experiment(
     # Load once, then clone before seed-specific preprocessing.
     emit("stage", dataset=args.dataset, stage="loading")
     report(f"Loading {args.dataset}...")
-    source_data = load_dataset(
+    loaded_dataset = load_dataset(
         args.dataset,
         root=args.data_root,
         normalize_features=False,
         device="cpu",
     )
+    source_data = loaded_dataset.data
+    dataset_metadata = loaded_dataset.metadata
     reduction_method = getattr(args, "reduction_method", "pca")
     gatv2_kwargs = getattr(args, "gatv2_kwargs", None) or {}
     if not isinstance(gatv2_kwargs, dict):
@@ -620,7 +617,7 @@ def run_experiment(
             seed=seed,
         )
 
-        if any(spec.uses_reduced_features for spec in model_specs.values()):
+        if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
             fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
             fit_mask[list(query_nodes.validation)] = False
             fit_mask[list(query_nodes.test)] = False
@@ -639,7 +636,7 @@ def run_experiment(
             train_ratio=args.train_ratio,
             seed=seed,
         )
-        if any(spec.uses_reduced_features for spec in model_specs.values()):
+        if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
             report(f"Calculating reduced node features for seed {seed}...")
             preparation_model_type = "asymmetric"
         else:
@@ -654,11 +651,11 @@ def run_experiment(
             reduction_method=reduction_method,
             random_state=seed,
         )
-        reducer_fit_time_seconds = candidate_data.reducer_fit_time_seconds
-        train = candidate_data.train.to(device)
-        validation = candidate_data.validation.to(device)
-        test_transductive = candidate_data.test_transductive.to(device)
-        test_inductive = candidate_data.test_inductive.to(device)
+        reducer_fit_time_seconds = candidate_data.preprocessing_time_seconds
+        train = candidate_data.splits.train.to(device)
+        validation = candidate_data.splits.validation.to(device)
+        test_transductive = candidate_data.splits.tests["transductive"].to(device)
+        test_inductive = candidate_data.splits.tests["semi-inductive"].to(device)
 
         model_progress = tqdm(
             experiment_configs,
@@ -669,9 +666,9 @@ def run_experiment(
             position=1 if len(seeds) > 1 else 0,
         )
         for model_type, regularization_type in model_progress:
-            model_spec = model_specs[model_type]
+            model_registration = model_registrations[model_type]
             progress_label = model_type
-            if model_spec.supports_agae_regularization:
+            if model_registration.capabilities.supports_agae_regularization:
                 progress_label += f"/{regularization_type}"
             model_progress.set_postfix_str(progress_label)
             emit(
@@ -683,7 +680,7 @@ def run_experiment(
             )
             torch.manual_seed(seed)
             effective_weight_decay = (
-                weight_decay if model_spec.trainable else 0.0
+                weight_decay if model_registration.capabilities.trainable else 0.0
             )
             predictor_kwargs = dict(
                 model_type=model_type,
@@ -698,19 +695,16 @@ def run_experiment(
                 gatv2_kwargs=gatv2_kwargs,
                 **deal_config,
             )
-            if model_spec.supports_agae_regularization:
+            if model_registration.capabilities.supports_agae_regularization:
                 predictor_kwargs.update({
                     "regularization_type": regularization_type,
                     "regularization_strength": regularization_strength,
                 })
             predictor = LinkPrediction(train, **predictor_kwargs)
             predictor.model = predictor.model.to(device)
-            trainable_parameter_count = count_trainable_parameters(
-                predictor.model
-            )
             effective_conv_layer = (
                 args.conv_layer_type
-                if model_spec.uses_conv_layer else "None"
+                if model_registration.capabilities.uses_conv_layer else "None"
             )
             extra_fields = {
                 "reduction_method": reduction_method,
@@ -743,11 +737,11 @@ def run_experiment(
                 },
             }
             if (
-                model_spec.uses_conv_layer
+                model_registration.capabilities.uses_conv_layer
                 and args.conv_layer_type == "GATv2Conv"
             ):
                 extra_fields["gatv2_kwargs"] = gatv2_kwargs
-            if model_spec.uses_mlp_decoder:
+            if model_registration.capabilities.uses_mlp_decoder:
                 extra_fields.update({
                     "decoder_hidden_channels": decoder_hidden_channels,
                     "decoder_dropout": decoder_dropout,
@@ -759,9 +753,67 @@ def run_experiment(
                     f"deal_{name}": value for name, value in deal_config.items()
                 })
 
+            resolved_training_policy = TrainingPolicy(
+                max_epochs=args.epochs,
+                optimizer_parameters={
+                    "learning_rate": learning_rate,
+                    "weight_decay": effective_weight_decay,
+                },
+                checkpoint_strategy=checkpoint_strategy,
+                selection_metric=selection_metric,
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_min_delta=early_stopping_min_delta,
+                early_stopping_minimum_epochs=early_stopping_minimum_epochs,
+                scheduler=lr_scheduler,
+                scheduler_parameters=lr_scheduler_kwargs or {},
+            )
+            resolved_specification = ResolvedExperimentSpec(
+                schema_version=1,
+                dataset=dataset_metadata.name,
+                model_type=model_type,
+                protocol=splits.metadata.name,
+                seed=seed,
+                device=str(device),
+                training_policy=resolved_training_policy,
+                dataset_parameters={
+                    "normalize_features": args.normalize_features,
+                },
+                protocol_parameters={
+                    "query_size": len(query_nodes.test),
+                    "validation_query_size": len(query_nodes.validation),
+                    "train_ratio": args.train_ratio,
+                    "training_policy": training_policy,
+                },
+                preprocessing=(
+                    reduction_method
+                    if model_registration.capabilities.requires_reduced_features
+                    else None
+                ),
+                preprocessing_parameters={
+                    "reducer_fit_time_seconds": (
+                        reducer_fit_time_seconds
+                        if model_registration.capabilities.requires_reduced_features
+                        else None
+                    ),
+                    "extra_fields": extra_fields,
+                },
+                model_parameters={
+                    "conv_layer_type": effective_conv_layer,
+                    "hidden_channels": args.hidden_channels,
+                    "out_channels": args.out_channels,
+                    "regularization_type": regularization_type,
+                    "regularization_strength": (
+                        regularization_strength
+                        if model_registration.capabilities.supports_agae_regularization
+                        else 0.0
+                    ),
+                    "weight_decay": effective_weight_decay,
+                },
+            )
+
             configuration_ids = {
                 split_type: make_configuration_id({
-                    "dataset": data.dataset_name,
+                    "dataset": dataset_metadata.name,
                     "model_type": model_type,
                     "split_type": split_type,
                     "conv_layer_type": effective_conv_layer,
@@ -775,7 +827,7 @@ def run_experiment(
                     "regularization_type": regularization_type,
                     "regularization_strength": (
                         regularization_strength
-                        if model_spec.supports_agae_regularization else 0.0
+                        if model_registration.capabilities.supports_agae_regularization else 0.0
                     ),
                     "weight_decay": effective_weight_decay,
                     "selection_metric": selection_metric,
@@ -826,26 +878,19 @@ def run_experiment(
             if epoch_callback is not None:
                 def training_epoch_callback(record):
                     epoch_callback({
-                        "dataset": data.dataset_name,
+                        "dataset": dataset_metadata.name,
                         "model_type": model_type,
                         "random_seed": seed,
                         "training_policy": training_policy,
                         **record,
                     })
-            training_summary = _train_with_checkpoint_selection(
+            training_summary = train_with_validation_selection(
                 predictor,
                 train,
                 validation,
-                epochs=args.epochs,
+                training_policy=resolved_training_policy,
                 seed=seed,
-                selection_metric=selection_metric,
                 device=device,
-                early_stopping_patience=early_stopping_patience,
-                early_stopping_min_delta=early_stopping_min_delta,
-                early_stopping_minimum_epochs=early_stopping_minimum_epochs,
-                checkpoint_strategy=checkpoint_strategy,
-                lr_scheduler=lr_scheduler,
-                lr_scheduler_kwargs=lr_scheduler_kwargs,
                 verbose=verbose,
                 progress_label=(
                     f"{args.dataset}/{progress_label}/seed={seed}"
@@ -877,61 +922,19 @@ def run_experiment(
                 probabilities = predictor.test(test_data)
                 metrics = calculate_metrics(test_data.edge_label, probabilities)
                 configuration_id = configuration_ids[split_type]
-                result = ExperimentResult(
+                evaluation = EvaluationResult(
+                    setting=split_type,
+                    metrics={name: float(value) for name, value in metrics.items()},
+                    positive_count=int((test_data.edge_label == 1).sum()),
+                    negative_count=int((test_data.edge_label == 0).sum()),
                     configuration_id=configuration_id,
-                    dataset=data.dataset_name,
-                    model_type=model_type,
-                    split_type=split_type,
-                    conv_layer_type=effective_conv_layer,
-                    hidden_channels=args.hidden_channels,
-                    out_channels=args.out_channels,
-                    query_size=len(query_nodes.test),
-                    train_ratio=args.train_ratio,
-                    epochs=args.epochs,
-                    random_seed=seed,
-                    normalize_features=args.normalize_features,
-                    training_time_seconds=training_summary.training_time_seconds,
-                    trainable_parameter_count=trainable_parameter_count,
-                    reducer_fit_time_seconds=(
-                        reducer_fit_time_seconds
-                        if model_spec.uses_reduced_features else None
-                    ),
-                    epochs_trained=training_summary.epochs_trained,
-                    best_epoch=training_summary.best_epoch,
-                    selected_epoch=training_summary.selected_epoch,
-                    training_policy=training_policy,
-                    checkpoint_strategy=training_summary.checkpoint_strategy,
-                    lr_scheduler=training_summary.lr_scheduler,
-                    lr_scheduler_kwargs=training_summary.lr_scheduler_kwargs,
-                    final_learning_rate=training_summary.final_learning_rate,
-                    selection_metric=training_summary.selection_metric,
-                    best_validation_score=(
-                        training_summary.best_validation_score
-                    ),
-                    early_stopping_patience=(
-                        training_summary.early_stopping_patience
-                    ),
-                    early_stopping_min_delta=(
-                        training_summary.early_stopping_min_delta
-                    ),
-                    early_stopping_minimum_epochs=(
-                        training_summary.early_stopping_minimum_epochs
-                    ),
-                    stopped_early=training_summary.stopped_early,
-                    regularization_type=regularization_type,
-                    regularization_strength=(
-                        regularization_strength
-                        if model_spec.supports_agae_regularization else 0.0
-                    ),
-                    weight_decay=effective_weight_decay,
-                    loss=(
-                        float(training_summary.selected_loss.detach().cpu())
-                        if training_summary.selected_loss is not None else None
-                    ),
-                    extra_fields=extra_fields,
-                    **metrics,
+                    run_id=logger.run_id,
                 )
-                logger.log(result)
+                logger.write(
+                    resolved_specification,
+                    training_summary,
+                    (evaluation,),
+                )
                 completed_results.add((configuration_id, seed))
             emit(
                 "run_completed",

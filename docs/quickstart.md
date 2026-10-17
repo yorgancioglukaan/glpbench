@@ -39,8 +39,9 @@ glpbench benchmark configs/example_benchmark.yaml --resume --verbose
 ```python
 from glpbench.datasets import load_dataset
 
-data = load_dataset("cora", root="data", device="cpu")
-print(data.dataset_metadata)
+dataset = load_dataset("cora", root="data", device="cpu")
+print(dataset.metadata)
+data = dataset.data
 ```
 
 See the {doc}`cli` and {doc}`api` pages for the complete entry points.
