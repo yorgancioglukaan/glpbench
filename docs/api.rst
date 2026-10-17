@@ -4,6 +4,16 @@ Python API
 The following modules form the current forward-facing API. GLPBench remains an
 alpha release, so interfaces may evolve before version 1.0.
 
+Core contracts
+--------------
+
+The contract objects are structurally immutable: their fields and parameter
+mappings cannot be reassigned, while contained PyTorch tensors and PyG data
+objects retain their normal mutable behavior.
+
+.. automodule:: glpbench.contracts
+   :members:
+
 Datasets
 --------
 
