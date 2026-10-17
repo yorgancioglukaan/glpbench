@@ -191,6 +191,30 @@ class ProtocolMetadata:
             object.__setattr__(self, attribute, _freeze_mapping(counts, attribute))
 
 
+@dataclass(frozen=True, slots=True)
+class AuditReport:
+    """Record the outcome of a split-protocol invariant audit."""
+
+    passed: bool
+    checks: Mapping[str, bool]
+    details: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.passed, bool):
+            raise TypeError("passed must be a boolean")
+        for check_name, outcome in self.checks.items():
+            _require_non_empty_string(check_name, "check name")
+            if not isinstance(outcome, bool):
+                raise TypeError(f"check {check_name} outcome must be a boolean")
+        for check_name, detail in self.details.items():
+            _require_non_empty_string(check_name, "detail name")
+            _require_non_empty_string(detail, f"detail {check_name}")
+        if self.passed != all(self.checks.values()):
+            raise ValueError("passed must agree with the individual check outcomes")
+        object.__setattr__(self, "checks", _freeze_mapping(self.checks, "checks"))
+        object.__setattr__(self, "details", _freeze_mapping(self.details, "details"))
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class SplitBundle:
     """Group native PyG partitions and metadata for one protocol realization."""
@@ -481,6 +505,7 @@ class ResolvedExperimentSpec:
 
 
 __all__ = [
+    "AuditReport",
     "DatasetMetadata",
     "EvaluationResult",
     "LoadedDataset",

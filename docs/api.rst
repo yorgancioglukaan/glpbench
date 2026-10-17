@@ -14,6 +14,21 @@ objects retain their normal mutable behavior.
 .. automodule:: glpbench.contracts
    :members:
 
+Component interfaces
+--------------------
+
+These runtime-checkable protocols define extension boundaries without
+requiring user components to inherit from GLPBench base classes.
+
+.. automodule:: glpbench.interfaces
+   :members:
+
+Exceptions
+----------
+
+.. automodule:: glpbench.exceptions
+   :members:
+
 Datasets
 --------
 
