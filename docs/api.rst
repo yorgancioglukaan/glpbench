@@ -29,6 +29,17 @@ Exceptions
 .. automodule:: glpbench.exceptions
    :members:
 
+Configuration
+-------------
+
+Canonical configuration files are parsed strictly into frozen dataclasses.
+Unknown fields and invalid nested values raise path-aware
+``ConfigurationError`` exceptions.
+
+.. automodule:: glpbench.configuration
+   :members:
+   :imported-members:
+
 Datasets
 --------
 
