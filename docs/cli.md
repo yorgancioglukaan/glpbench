@@ -7,7 +7,7 @@ GLPBench exposes four subcommands through one `glpbench` entry point:
 | `experiment` | Run models on one dataset and one matched split |
 | `benchmark` | Expand and execute a YAML benchmark grid |
 | `search` | Select configurations using validation data only |
-| `audit` | Compare training and checkpoint policies without test evaluation |
+| `audit` | Record validation convergence without test evaluation |
 
 Display the top-level help or the complete options for any command with:
 
@@ -75,10 +75,10 @@ evaluation.
 
 ## `audit`: inspect convergence
 
-`audit` runs selected configurations for a specified training budget and logs
-validation trajectories. It is intended for evaluating checkpoint,
-early-stopping, and scheduler policies without repeatedly consulting test
-performance.
+`audit` runs selected configurations for a specified full training budget and
+logs validation trajectories without consulting test performance. It uses
+best-validation checkpoint selection with early stopping and learning-rate
+scheduling disabled.
 
 ```bash
 glpbench audit configs/example_audit.yaml --dry-run
@@ -86,7 +86,9 @@ glpbench audit configs/example_audit.yaml --resume --verbose
 ```
 
 An audit configuration normally points to the selected configurations produced
-by a search and declares its own seeds, epoch budget, and output artifacts.
+by a search and declares its own seeds, epoch budget, and output artifacts. Use
+a training-policy ablation benchmark when comparing checkpoint, early-stopping,
+or scheduler policies.
 
 ## Creating configuration files
 
@@ -94,6 +96,10 @@ Configuration-driven commands use versioned YAML files. Keep configurations in
 the repository so that a result can be traced to the exact grid and training
 policy used to produce it. Paths inside a configuration are resolved from the
 working directory where the command is run.
+
+The CLI currently consumes the documented legacy `version` formats. Canonical
+`schema_version` configurations introduced in `0.1.0a3` are available through
+the Python configuration API but are not yet direct CLI inputs.
 
 ### Benchmark configuration
 
@@ -156,8 +162,9 @@ the expansion with `--dry-run`.
 ### Audit configuration
 
 An audit specification identifies a selected-configuration file and declares
-the dataset–model pairs, validation split, seeds, maximum epoch budget,
-checkpoint policy, early stopping, and scheduler. Start from
+the dataset–model pairs, validation split, seeds, and maximum epoch budget. Its
+checkpoint, early-stopping, and scheduler settings are fixed by the audit
+protocol. Start from
 [`configs/example_audit.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/example_audit.yaml)
 and use `--dry-run` to confirm every requested dataset–model pair resolves.
 

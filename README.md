@@ -23,6 +23,8 @@ audit commands.
 - [Experiment CLI](#experiment-cli)
 - [Benchmark grids](#benchmark-grids)
 - [Hyperparameter search](#hyperparameter-search)
+- [Convergence audits](#convergence-audits)
+- [Configuration formats](#configuration-formats)
 - [Python API](#python-api)
   - [Dataset loading](#dataset-loading)
   - [Feature preprocessing and graph splits](#feature-preprocessing-and-graph-splits)
@@ -37,8 +39,8 @@ audit commands.
   validation queries and automatic leakage checks.
 - Evaluate graph autoencoders, MLP decoders, variational models, DEAL,
   feature-only baselines, and asymmetric decoders under the same protocol.
-- Run individual experiments, YAML-defined benchmark grids, and
-  validation-only hyperparameter searches from one CLI.
+- Run individual experiments, YAML-defined benchmark grids, validation-only
+  hyperparameter searches, and convergence audits from one CLI.
 - Reuse random seeds, graph splits, and evaluation negatives across models for
   paired comparisons.
 - Record metrics, configuration, runtime, checkpoint, and parameter-count
@@ -60,8 +62,8 @@ rows under one run ID after evaluation on both test settings. The
 feature-cosine baseline is evaluated directly without training.
 
 For trainable architectures, each result row records
-`training_time_seconds`, the total wall-clock time spent across all requested
-training epochs and validation-based checkpoint selection. Every architecture
+`training_time_seconds`, the total wall-clock time spent across all executed
+training epochs, validation, and checkpoint selection. Every architecture
 also records its exact `trainable_parameter_count`. Reduced-feature models
 record `reducer_fit_time_seconds` separately; other models leave that field
 empty. Paired transductive and inductive rows share these values because they
@@ -111,11 +113,11 @@ the resolved test-query size; use `--validation-query-size` or
 `--validation-query-fraction` to override it. Both query populations are
 excluded from feature-reducer fitting and from the training topology.
 
-Trainable models run for the full requested epoch budget. After every epoch,
-the model is evaluated on the semi-inductive validation split, and the best
-checkpoint is restored before either test split is evaluated. Checkpoints use
-ROC-AUC by default; `--selection-metric average_precision` selects by average
-precision instead.
+Without early stopping, trainable models run for the full requested epoch
+budget. After every epoch, the model is evaluated on the semi-inductive
+validation split, and the best checkpoint is restored before either test split
+is evaluated. Checkpoints use ROC-AUC by default;
+`--selection-metric average_precision` selects by average precision instead.
 
 GATv2 constructor options can be supplied as a JSON object with
 `--gatv2-kwargs`. Result rows retain these options in `extra_fields` alongside
@@ -227,6 +229,35 @@ ROC-AUC, then average precision and trainable parameter count as tie-breakers.
 The runner also writes an aggregate CSV, a JSONL failure log, and a YAML file
 containing the selected resolved configuration for each dataset–architecture
 pair.
+
+## Convergence audits
+
+The audit runner records validation trajectories for selected model
+configurations under a fixed full-epoch budget. It uses best-validation
+checkpoint selection with early stopping and learning-rate scheduling disabled,
+allowing convergence behavior to be inspected without evaluating either test
+split.
+
+Start from [`configs/example_audit.yaml`](configs/example_audit.yaml), inspect
+the resolved jobs, and then run or resume the audit:
+
+```bash
+glpbench audit configs/example_audit.yaml --dry-run
+glpbench audit configs/example_audit.yaml --verbose
+glpbench audit configs/example_audit.yaml --resume --verbose
+```
+
+## Configuration formats
+
+The benchmark, search, and audit CLI commands continue to accept the documented
+`version`-based YAML formats. GLPBench also provides a strict canonical
+configuration API using `schema_version`, frozen dataclasses, unknown-field
+rejection, and path-aware validation errors. In `0.1.0a3`, canonical
+configurations are loaded and inspected through the Python API; they are not
+yet accepted directly by the CLI runners.
+
+See the [configuration guide](docs/configuration.md) for the supported legacy
+format matrix and canonical API entry points.
 
 ## Python API
 
