@@ -37,6 +37,7 @@ import glpbench.evaluation as glp_evaluation
 import glpbench.logging as glp_logging
 import glpbench.models as glp_models
 import glpbench.protocols as glp_protocols
+import glpbench.configuration as glp_configuration
 import glpbench.runners.experiment as experiment_runner
 import glpbench.runners.benchmark as benchmark_runner
 import glpbench.runners.search as search_runner
@@ -52,6 +53,7 @@ from glpbench.logging.csv_store import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
+from glpbench.configuration.loading import load_config as canonical_load_config
 
 
 class TestLoggingPublicExports(unittest.TestCase):
@@ -67,6 +69,12 @@ class TestLoggingPublicExports(unittest.TestCase):
             make_configuration_id,
             glp_logging.make_configuration_id,
         )
+
+
+class TestConfigurationPublicExports(unittest.TestCase):
+    def test_public_exports_share_implementations(self):
+        self.assertIs(canonical_load_config, glp_configuration.load_config)
+        self.assertTrue(callable(glp_configuration.resolve_experiment_specs))
 
 
 class TestDatasetPublicExports(unittest.TestCase):

@@ -20,3 +20,21 @@ test_inductive = splits.tests["semi-inductive"]
 See the {doc}`api` reference for the currently exported classes and functions.
 A broader API usage guide, including custom components and complete training
 examples, will be added as the public interfaces stabilize.
+
+## Strict configuration parsing
+
+Canonical configuration documents use a `schema_version` and `kind` field.
+They can be validated independently of command execution:
+
+```python
+from glpbench.configuration import load_config, resolve_experiment_specs
+
+config = load_config("canonical_benchmark.yaml")
+specifications = resolve_experiment_specs(config)
+```
+
+The parser returns frozen configuration dataclasses, rejects unknown fields at
+every nesting level, and includes full field paths in validation errors.
+Existing `version`-based CLI files are routed through behavior-preserving
+compatibility parsers by the same general loader. See the
+{doc}`configuration` guide for the supported format matrix.
