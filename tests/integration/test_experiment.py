@@ -42,6 +42,7 @@ import glpbench.runners.benchmark as benchmark_runner
 import glpbench.runners.search as search_runner
 import glpbench.runners.audit as audit_runner
 import glpbench.evaluation.pipeline as experiment_pipeline
+from glpbench.contracts import DatasetMetadata, LoadedDataset
 from glpbench.logging.csv_store import (
     CSVEpochHistoryLogger,
     CSVResultLogger,
@@ -52,6 +53,21 @@ from glpbench.logging.csv_store import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
+
+
+def _loaded_dataset(graph):
+    return LoadedDataset(
+        graph,
+        DatasetMetadata(
+            name="Toy",
+            family="Test",
+            num_nodes=graph.num_nodes,
+            num_edges=graph.num_edges,
+            directed=False,
+            has_node_features=graph.x is not None,
+            num_node_features=graph.num_features,
+        ),
+    )
 
 
 class TestMainPipeline(unittest.TestCase):
@@ -102,7 +118,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_multi_seed_run_preserves_pairing_and_configuration_ids(
         self, mock_load
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -164,7 +180,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_completed_results_skip_model_evaluation_and_duplicate_rows(
         self, mock_load
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -191,7 +207,7 @@ class TestMainPipeline(unittest.TestCase):
             }
 
             with (
-                patch("glpbench.runners.experiment._train_with_checkpoint_selection") as mock_train,
+                patch("glpbench.runners.experiment.train_with_validation_selection") as mock_train,
                 patch("glpbench.runners.experiment.calculate_metrics") as mock_metrics,
             ):
                 main.run_experiment(
@@ -210,7 +226,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_checkpoint_selection_restores_best_epoch_before_testing(
         self, mock_load
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         evaluation_calls = []
         epoch_records = []
 
@@ -334,18 +350,20 @@ class TestMainPipeline(unittest.TestCase):
                 ],
             ) as mock_metrics,
         ):
-            summary = main._train_with_checkpoint_selection(
+            summary = main.train_with_validation_selection(
                 predictor,
                 train_data,
                 validation_data,
-                epochs=5,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=5,
+                    selection_metric="roc_auc",
+                    early_stopping_patience=2,
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
-                early_stopping_patience=2,
             )
 
-        self.assertEqual(summary.epochs_trained, 4)
+        self.assertEqual(summary.epochs_executed, 4)
         self.assertEqual(summary.best_epoch, 2)
         self.assertEqual(summary.best_validation_score, 0.70)
         self.assertTrue(summary.stopped_early)
@@ -381,19 +399,21 @@ class TestMainPipeline(unittest.TestCase):
                 side_effect=[{"roc_auc": 0.50}, {"roc_auc": 0.55}],
             ),
         ):
-            summary = main._train_with_checkpoint_selection(
+            summary = main.train_with_validation_selection(
                 predictor,
                 Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
                 Data(edge_label=torch.tensor([1.0, 0.0])),
-                epochs=5,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=5,
+                    selection_metric="roc_auc",
+                    early_stopping_patience=1,
+                    early_stopping_min_delta=0.10,
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
-                early_stopping_patience=1,
-                early_stopping_min_delta=0.10,
             )
 
-        self.assertEqual(summary.epochs_trained, 2)
+        self.assertEqual(summary.epochs_executed, 2)
         self.assertEqual(summary.best_epoch, 2)
         self.assertEqual(summary.best_validation_score, 0.55)
         self.assertEqual(predictor.model.weight.item(), 2.0)
@@ -435,17 +455,19 @@ class TestMainPipeline(unittest.TestCase):
                 predictor,
                 Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
                 Data(edge_label=torch.tensor([1.0, 0.0])),
-                epochs=3,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=3,
+                    selection_metric="roc_auc",
+                    checkpoint_strategy="final",
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
-                checkpoint_strategy="final",
             )
 
         self.assertEqual(summary.best_epoch, 1)
         self.assertEqual(summary.selected_epoch, 3)
         self.assertEqual(summary.checkpoint_strategy, "final")
-        self.assertEqual(summary.selected_loss.item(), 3.0)
+        self.assertEqual(summary.selected_loss, 3.0)
         self.assertEqual(predictor.model.weight.item(), 3.0)
 
     def test_early_stopping_patience_starts_after_minimum_epochs(self):
@@ -483,18 +505,19 @@ class TestMainPipeline(unittest.TestCase):
                 predictor,
                 Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
                 Data(edge_label=torch.tensor([1.0, 0.0])),
-                epochs=8,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=8,
+                    selection_metric="roc_auc",
+                    early_stopping_patience=2,
+                    early_stopping_minimum_epochs=4,
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
-                early_stopping_patience=2,
-                early_stopping_minimum_epochs=4,
             )
 
-        self.assertEqual(summary.epochs_trained, 6)
+        self.assertEqual(summary.epochs_executed, 6)
         self.assertEqual(summary.best_epoch, 1)
         self.assertEqual(summary.selected_epoch, 1)
-        self.assertEqual(summary.early_stopping_minimum_epochs, 4)
         self.assertTrue(summary.stopped_early)
         self.assertEqual(predictor.model.weight.item(), 1.0)
 
@@ -504,20 +527,17 @@ class TestMainPipeline(unittest.TestCase):
             "predictor": predictor,
             "train_data": Data(),
             "validation_data": Data(),
-            "epochs": 5,
+            "training_policy": main.TrainingPolicy(max_epochs=5),
             "seed": 1,
-            "selection_metric": "roc_auc",
             "device": "cpu",
         }
-        with self.assertRaisesRegex(ValueError, "checkpoint strategy"):
-            main.train_with_validation_selection(
-                **common, checkpoint_strategy="unknown"
-            )
+        with self.assertRaisesRegex(ValueError, "checkpoint_strategy"):
+            main.TrainingPolicy(max_epochs=5, checkpoint_strategy="")
         for minimum_epochs in (-1, 6, 1.5, True):
             with self.subTest(minimum_epochs=minimum_epochs):
                 with self.assertRaisesRegex(ValueError, "minimum_epochs"):
-                    main.train_with_validation_selection(
-                        **common,
+                    main.TrainingPolicy(
+                        max_epochs=5,
                         early_stopping_minimum_epochs=minimum_epochs,
                     )
         with self.assertRaisesRegex(ValueError, "epoch_callback"):
@@ -554,9 +574,11 @@ class TestMainPipeline(unittest.TestCase):
                 FakePredictor(),
                 Data(edge_index=torch.empty((2, 0), dtype=torch.long)),
                 Data(edge_label=torch.tensor([1.0, 0.0])),
-                epochs=2,
+                training_policy=main.TrainingPolicy(
+                    max_epochs=2,
+                    selection_metric="roc_auc",
+                ),
                 seed=4,
-                selection_metric="roc_auc",
                 device="cpu",
                 epoch_callback=records.append,
             )
@@ -586,7 +608,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_unspecified_model_type_runs_both_models_on_both_splits(
         self, mock_load, mock_negative_sampling
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -733,7 +755,7 @@ class TestMainPipeline(unittest.TestCase):
     @patch("glpbench.runners.experiment.load_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
         graph = self._graph()
-        mock_load.return_value = graph
+        mock_load.return_value = _loaded_dataset(graph)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -790,7 +812,7 @@ class TestMainPipeline(unittest.TestCase):
 
     @patch("glpbench.runners.experiment.load_dataset")
     def test_gatv2_kwargs_are_passed_to_model_and_logged(self, mock_load):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -831,7 +853,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_weight_decay_is_applied_to_non_asymmetric_trainable_models(
         self, mock_load
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results.csv"
             args = SimpleNamespace(
@@ -860,7 +882,7 @@ class TestMainPipeline(unittest.TestCase):
 
     @patch("glpbench.runners.experiment.load_dataset")
     def test_compact_progress_emits_model_seed_events(self, mock_load):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(
                 dataset="toy",
@@ -910,7 +932,7 @@ class TestMainPipeline(unittest.TestCase):
     def test_asymmetric_run_expands_requested_regularizers(
         self, mock_load, mock_negative_sampling
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "regularization.csv"
             args = SimpleNamespace(

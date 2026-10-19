@@ -47,27 +47,27 @@ class GLPBenchError(Exception):
         super().__init__(rendered)
 
 
-class ConfigurationError(GLPBenchError):
+class ConfigurationError(GLPBenchError, ValueError):
     """Raised when an experiment configuration is invalid."""
 
 
-class DatasetError(GLPBenchError):
+class DatasetError(GLPBenchError, ValueError):
     """Raised when dataset loading or validation fails."""
 
 
-class ProtocolError(GLPBenchError):
+class ProtocolError(GLPBenchError, ValueError):
     """Raised when split construction or protocol auditing fails."""
 
 
-class CompatibilityError(GLPBenchError):
+class CompatibilityError(GLPBenchError, ValueError):
     """Raised when selected components cannot be used together."""
 
 
-class TrainingError(GLPBenchError):
+class TrainingError(GLPBenchError, RuntimeError):
     """Raised when model optimization or checkpoint selection fails."""
 
 
-class PersistenceError(GLPBenchError):
+class PersistenceError(GLPBenchError, ValueError):
     """Raised when reading or writing evaluation artifacts fails."""
 
 

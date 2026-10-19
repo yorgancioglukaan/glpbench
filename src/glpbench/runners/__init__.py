@@ -1,7 +1,6 @@
 """Experiment, benchmark, search, and audit runners."""
 
 from glpbench.runners.experiment import (
-    TrainingSummary,
     calculate_metrics,
     parse_args,
     run_experiment,
@@ -18,7 +17,6 @@ from glpbench.runners.benchmark import (
 )
 
 __all__ = [
-    "TrainingSummary",
     "BenchmarkConfig",
     "BenchmarkSummary",
     "ExperimentJob",

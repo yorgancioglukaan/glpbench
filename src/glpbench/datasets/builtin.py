@@ -15,6 +15,9 @@ from torch_geometric.datasets import (
 from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.utils import is_undirected, remove_self_loops
 
+from glpbench.contracts import DatasetMetadata, LoadedDataset
+from glpbench.exceptions import DatasetError
+
 
 _PLANETOID_NAMES = {
     "cora": "Cora",
@@ -111,9 +114,8 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
 
     Returns
     -------
-    torch_geometric.data.Data
-        Undirected graph without self-loops. ``dataset_name`` and
-        ``dataset_family`` metadata are attached to the returned object.
+    glpbench.contracts.LoadedDataset
+        Standardized PyG graph and its dataset metadata.
 
     Notes
     -----
@@ -125,7 +127,11 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     normalized_name = _normalize_dataset_name(name)
     if normalized_name is None:
         choices = ", ".join(available_datasets())
-        raise ValueError(f"Unknown dataset '{name}'. Available datasets: {choices}.")
+        raise DatasetError(
+            f"Unknown dataset '{name}'. Available datasets: {choices}.",
+            component="dataset-loader",
+            dataset=name,
+        )
     if not isinstance(root, (str, Path)):
         raise TypeError("root must be a string or pathlib.Path")
     if not isinstance(normalize_features, bool):
@@ -143,11 +149,23 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     if not isinstance(data, Data):
         raise TypeError("dataset loader must return torch_geometric.data.Data")
     if data.x is None:
-        raise ValueError("loaded dataset does not contain node features")
+        raise DatasetError(
+            "loaded dataset does not contain node features",
+            component="dataset-loader",
+            dataset=normalized_name,
+        )
     if data.edge_index is None:
-        raise ValueError("loaded dataset does not contain edge_index")
+        raise DatasetError(
+            "loaded dataset does not contain edge_index",
+            component="dataset-loader",
+            dataset=normalized_name,
+        )
     if data.num_nodes is None:
-        raise ValueError("loaded dataset does not define num_nodes")
+        raise DatasetError(
+            "loaded dataset does not define num_nodes",
+            component="dataset-loader",
+            dataset=normalized_name,
+        )
 
     edge_attr = getattr(data, "edge_attr", None)
     data.edge_index, edge_attr = remove_self_loops(data.edge_index, edge_attr)
@@ -155,11 +173,26 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
         data.edge_attr = edge_attr
 
     if not is_undirected(data.edge_index):
-        raise ValueError("loaded dataset must be undirected")
+        raise DatasetError(
+            "loaded dataset must be undirected",
+            component="dataset-loader",
+            dataset=normalized_name,
+        )
 
     if normalize_features:
         data = NormalizeFeatures()(data)
     data = data.to(target_device)
-    data.dataset_name = canonical_name
-    data.dataset_family = family
-    return data
+    preprocessing = ["remove-self-loops"]
+    if normalize_features:
+        preprocessing.append("normalize-features")
+    metadata = DatasetMetadata(
+        name=canonical_name,
+        family=family,
+        num_nodes=data.num_nodes,
+        num_edges=data.num_edges,
+        directed=False,
+        has_node_features=True,
+        num_node_features=data.num_features,
+        loader_preprocessing=preprocessing,
+    )
+    return LoadedDataset(data=data, metadata=metadata)

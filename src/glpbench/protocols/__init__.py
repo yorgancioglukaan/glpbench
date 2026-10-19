@@ -1,10 +1,7 @@
 """Transductive and semi-inductive evaluation protocols."""
 
 from glpbench.protocols.splitting import (
-    ComparableSplits,
-    InductiveSplits,
     QueryNodeSets,
-    ValidationSplits,
     audit_comparable_splits,
     calculate_reduced_features,
     generate_comparable_splits,
@@ -14,12 +11,11 @@ from glpbench.protocols.splitting import (
     select_query_nodes,
     update_reduced_features,
 )
+from glpbench.contracts import SplitBundle
 
 __all__ = [
-    "ComparableSplits",
-    "InductiveSplits",
     "QueryNodeSets",
-    "ValidationSplits",
+    "SplitBundle",
     "audit_comparable_splits",
     "calculate_reduced_features",
     "generate_comparable_splits",

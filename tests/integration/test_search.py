@@ -42,6 +42,7 @@ import glpbench.runners.benchmark as benchmark_runner
 import glpbench.runners.search as search_runner
 import glpbench.runners.audit as audit_runner
 import glpbench.evaluation.pipeline as experiment_pipeline
+from glpbench.contracts import DatasetMetadata, LoadedDataset
 from glpbench.logging.csv_store import (
     CSVEpochHistoryLogger,
     CSVResultLogger,
@@ -52,6 +53,21 @@ from glpbench.logging.csv_store import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
+
+
+def _loaded_dataset(graph):
+    return LoadedDataset(
+        graph,
+        DatasetMetadata(
+            name="Toy",
+            family="Test",
+            num_nodes=graph.num_nodes,
+            num_edges=graph.num_edges,
+            directed=False,
+            has_node_features=graph.x is not None,
+            num_node_features=graph.num_features,
+        ),
+    )
 
 
 class TestSearchRunner(unittest.TestCase):
@@ -163,15 +179,18 @@ class TestSearchRunner(unittest.TestCase):
                 random_state=4,
             )
 
-        self.assertFalse(hasattr(prepared, "test_transductive"))
-        self.assertFalse(hasattr(prepared, "test_inductive"))
+        self.assertEqual(prepared.splits.tests, {})
         self.assertTrue(torch.equal(source.x, original_features))
-        self.assertTrue(torch.equal(prepared.train.edge_index, splits.train.edge_index))
+        self.assertTrue(torch.equal(
+            prepared.splits.train.edge_index, splits.train.edge_index
+        ))
         self.assertTrue(torch.equal(
             reducer.call_args.kwargs["fit_nodes"], splits.train.visible_node_mask
         ))
-        self.assertEqual(prepared.train.x_reduced.shape, (source.num_nodes, 2))
-        self.assertIsNotNone(prepared.reducer_fit_time_seconds)
+        self.assertEqual(
+            prepared.splits.train.x_reduced.shape, (source.num_nodes, 2)
+        )
+        self.assertIsNotNone(prepared.preprocessing_time_seconds)
 
     def test_validation_only_foundation_bypasses_full_candidate_preparation(self):
         source = self._graph()
@@ -194,10 +213,9 @@ class TestSearchRunner(unittest.TestCase):
             )
 
         full_preparation.assert_not_called()
-        self.assertFalse(hasattr(prepared, "test_transductive"))
-        self.assertFalse(hasattr(prepared, "test_inductive"))
+        self.assertEqual(prepared.splits.tests, {})
         self.assertTrue(torch.equal(
-            prepared.train.edge_index, splits.train.edge_index
+            prepared.splits.train.edge_index, splits.train.edge_index
         ))
 
     def test_selection_uses_tolerance_then_ap_then_parameter_count(self):
@@ -247,7 +265,7 @@ class TestSearchRunner(unittest.TestCase):
 
     @patch("glpbench.runners.search.load_dataset")
     def test_toy_search_logs_selects_and_resumes(self, mock_load):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         raw = copy.deepcopy(base.raw)
         raw["training"]["max_epochs"] = 1
@@ -296,7 +314,7 @@ class TestSearchRunner(unittest.TestCase):
     def test_shared_split_failure_is_cached_and_logged_once(
         self, mock_load, mock_split
     ):
-        mock_load.return_value = self._graph()
+        mock_load.return_value = _loaded_dataset(self._graph())
         mock_split.side_effect = ValueError("infeasible shared split")
         base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         with tempfile.TemporaryDirectory() as directory:

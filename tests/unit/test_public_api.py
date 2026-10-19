@@ -102,7 +102,7 @@ class TestProtocolPublicExports(unittest.TestCase):
             utils.select_query_node_sets,
             glp_protocols.select_query_node_sets,
         )
-        self.assertIs(utils.ComparableSplits, glp_protocols.ComparableSplits)
+        self.assertIs(glp_protocols.SplitBundle, utils.SplitBundle)
 
 
 class TestEvaluationPublicExports(unittest.TestCase):
