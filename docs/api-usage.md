@@ -34,6 +34,7 @@ specifications = resolve_experiment_specs(config)
 ```
 
 The parser returns frozen configuration dataclasses, rejects unknown fields at
-every nesting level, and includes full field paths in validation errors. The
-existing CLI configuration formats remain available through their current
-loaders until compatibility adapters are introduced.
+every nesting level, and includes full field paths in validation errors.
+Existing `version`-based CLI files are routed through behavior-preserving
+compatibility parsers by the same general loader. See the
+{doc}`configuration` guide for the supported format matrix.

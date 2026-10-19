@@ -20,9 +20,8 @@ _PARSERS = {
 }
 
 
-def load_config(path: str | Path) -> CanonicalConfig:
-    """Load, strictly parse, and semantically validate a canonical YAML file."""
-    document = load_yaml_mapping(path)
+def _parse_canonical_document(document) -> CanonicalConfig:
+    """Strictly parse and semantically validate a canonical document."""
     kind = document.get("kind")
     if not isinstance(kind, str) or kind not in _PARSERS:
         raise configuration_error(
@@ -31,8 +30,40 @@ def load_config(path: str | Path) -> CanonicalConfig:
     return validate_config(_PARSERS[kind](document))
 
 
+def load_config(path: str | Path):
+    """Load a canonical or supported legacy configuration file.
+
+    Canonical documents declare ``schema_version`` and return configuration
+    contracts from :mod:`glpbench.configuration`. Legacy documents declare
+    ``version`` and return their existing frozen runner contracts so expansion,
+    identifiers, defaults, and ordering remain unchanged.
+    """
+    document = load_yaml_mapping(path)
+    has_canonical_version = "schema_version" in document
+    has_legacy_version = "version" in document
+    if has_canonical_version and has_legacy_version:
+        raise configuration_error(
+            (), "cannot define both schema_version and legacy version"
+        )
+    if has_canonical_version:
+        return _parse_canonical_document(document)
+    if has_legacy_version:
+        from glpbench.configuration.compatibility import load_legacy_config
+
+        return load_legacy_config(path, document)
+    raise configuration_error(
+        (), "must define schema_version or legacy version"
+    )
+
+
 def _load_kind(path, expected_type, expected_kind):
-    config = load_config(path)
+    document = load_yaml_mapping(path)
+    if "version" in document:
+        raise configuration_error(
+            ("version",),
+            "uses a legacy format; call load_config for compatibility loading",
+        )
+    config = _parse_canonical_document(document)
     if not isinstance(config, expected_type):
         raise configuration_error(("kind",), f"must be {expected_kind!r}")
     return config

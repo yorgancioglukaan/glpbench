@@ -12,6 +12,7 @@ hyperparameter search, benchmark grids, and structured result logging.
 installation
 quickstart
 cli
+configuration
 api-usage
 protocols
 models
