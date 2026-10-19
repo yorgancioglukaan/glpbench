@@ -22,7 +22,7 @@ project had no external users relying on them.
 The README demonstrates package-native imports:
 
 ```python
-from glpbench.datasets import available_datasets, load_dataset
+from glpbench.datasets import load_dataset
 from glpbench.logging import CSVResultLogger, ExperimentResult
 from glpbench.models import LinkPrediction
 from glpbench.protocols import (
@@ -45,6 +45,8 @@ runners.benchmark  -> datasets, logging, preprocessing, models,
                       training, runners.experiment
 runners.experiment -> datasets, logging, evaluation, preprocessing,
                       models, training, protocols
+configuration      -> contracts, datasets, models, preprocessing, training;
+                      legacy compatibility dispatches to runners lazily
 evaluation         -> models, protocols
 logging            -> training
 protocols          -> preprocessing

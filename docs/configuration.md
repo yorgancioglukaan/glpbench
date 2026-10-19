@@ -4,6 +4,11 @@ GLPBench recognizes canonical and legacy YAML configuration formats. The
 canonical format uses `schema_version`; legacy files use `version`. A document
 must define exactly one of these fields.
 
+In `0.1.0a3`, canonical documents are supported by the Python configuration
+API. The command-line benchmark, search, and audit runners continue to consume
+the legacy formats described below; canonical files are not yet direct CLI
+inputs.
+
 ## Canonical documents
 
 Canonical documents are strictly parsed into frozen dataclasses. Every
@@ -43,8 +48,8 @@ semantics remain unchanged.
 | Validation-convergence audit | `version: 1` |
 | Selected-hyperparameter artifact | `version: 1` |
 
-The `benchmark`, `search`, and `audit` CLI commands continue to accept these
-legacy files. `glpbench.configuration.load_config()` can load either format.
+The `benchmark`, `search`, and `audit` CLI commands accept these legacy files.
+`glpbench.configuration.load_config()` can load either format.
 The command-specific canonical loaders intentionally reject legacy documents;
 use the general loader when format compatibility is required.
 
