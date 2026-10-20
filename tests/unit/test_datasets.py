@@ -217,6 +217,7 @@ class TestDatasetLoading(unittest.TestCase):
         ))
         self.assertTrue(torch.equal(original.edge_index, original_edges))
         self.assertTrue(torch.equal(original.edge_attr, original_edge_attr))
+        self.assertIn("remove-self-loops", loaded.metadata.loader_preprocessing)
 
     def test_loader_rejects_unknown_name_and_invalid_options(self):
         with self.assertRaisesRegex(ValueError, "Available datasets"):
