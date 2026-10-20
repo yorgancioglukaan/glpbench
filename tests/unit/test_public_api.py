@@ -84,6 +84,9 @@ class TestDatasetPublicExports(unittest.TestCase):
             datasets.available_datasets,
             glp_datasets.available_datasets,
         )
+        self.assertTrue(callable(glp_datasets.get_dataset_provider))
+        self.assertTrue(callable(glp_datasets.register_dataset_provider))
+        self.assertTrue(callable(glp_datasets.validate_graph_data))
 
 
 class TestModelPublicExports(unittest.TestCase):
