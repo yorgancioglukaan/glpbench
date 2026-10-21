@@ -57,6 +57,20 @@ Validation-only, standalone semi-inductive, and standalone transductive
 protocols provide equivalent protocol-specific audits. Audit failures raise
 `ProtocolError` rather than being reduced to warnings.
 
+## Split metadata
+
+Every built-in protocol returns a `SplitBundle` with schema-versioned
+`ProtocolMetadata`. Its `parameters` describe the resolved construction and
+query-selection modes, `requested_counts` records integer capacities requested
+by the protocol, and `realized_counts` records the contents of the completed
+PyG partitions. Query-node IDs and the visibility mask remain first-class
+fields on `SplitBundle` rather than being duplicated in metadata.
+
+Candidate positive and negative counts use the number of stored candidates.
+Message-passing counts use stored directed entries, so an undirected edge
+represented in both orientations contributes two entries. Protocol audits
+recompute these values from the partitions and reject inconsistent metadata.
+
 ## Feature preprocessing
 
 Reducers are fitted only on training-visible nodes. The fitted transformation
