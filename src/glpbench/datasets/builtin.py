@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -20,6 +20,7 @@ from torch_geometric.utils import remove_self_loops
 
 from glpbench.contracts import DatasetMetadata, LoadedDataset
 from glpbench.exceptions import DatasetError
+from glpbench.fingerprinting import fingerprint_dataset
 from glpbench.datasets.registry import (
     available_datasets,
     get_dataset_provider,
@@ -161,7 +162,18 @@ def _validated_provider_output(provider, loaded, target_device):
         )
     data = loaded.data.clone().to(target_device)
     validate_graph_data(data, dataset=provider.name)
-    return LoadedDataset(data=data, metadata=loaded.metadata)
+    fingerprint = fingerprint_dataset(data, loaded.metadata)
+    if (
+        loaded.metadata.fingerprint is not None
+        and loaded.metadata.fingerprint != fingerprint
+    ):
+        raise DatasetError(
+            "provider dataset fingerprint does not match graph contents",
+            component="dataset-provider",
+            dataset=provider.name,
+        )
+    metadata = replace(loaded.metadata, fingerprint=fingerprint)
+    return LoadedDataset(data=data, metadata=metadata)
 
 
 def load_dataset(name, root="data", normalize_features=True, device="cpu"):

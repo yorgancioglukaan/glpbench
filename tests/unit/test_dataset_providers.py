@@ -1,7 +1,7 @@
 """Tests for dataset validation and provider registration."""
 
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch_geometric.data import Data
@@ -134,6 +134,22 @@ class TestDatasetProviderRegistry(_IsolatedRegistryTest):
         self.assertIsNot(loaded.data, supplied.data)
         loaded.data.x[0, 0] = 99
         self.assertEqual(supplied.data.x[0, 0], 1)
+
+    def test_load_dataset_populates_and_validates_fingerprint(self):
+        supplied = _loaded()
+        register_dataset_provider(_Provider("toy-graph", supplied))
+
+        loaded = load_dataset("toy-graph", normalize_features=False)
+
+        self.assertTrue(loaded.metadata.fingerprint.startswith("sha256:"))
+
+        bad_metadata = replace(supplied.metadata, fingerprint="sha256:wrong")
+        register_dataset_provider(
+            _Provider("toy-graph", LoadedDataset(supplied.data, bad_metadata)),
+            replace=True,
+        )
+        with self.assertRaisesRegex(DatasetError, "fingerprint"):
+            load_dataset("toy-graph", normalize_features=False)
 
 
 class TestGraphDataValidation(unittest.TestCase):

@@ -635,6 +635,7 @@ def run_experiment(
             validation_query=query_nodes.validation,
             train_ratio=args.train_ratio,
             seed=seed,
+            dataset_fingerprint=dataset_metadata.fingerprint,
         )
         if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
             report(f"Calculating reduced node features for seed {seed}...")

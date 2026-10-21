@@ -321,8 +321,9 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                         root=config.benchmark_config.data_root,
                         normalize_features=False,
                         device="cpu",
-                    ).data
-                source = source_cache[job.dataset]
+                    )
+                loaded = source_cache[job.dataset]
+                source = loaded.data
                 split_key = (job.dataset, seed)
                 if split_key not in split_cache:
                     split_cache[split_key] = generate_validation_splits(
@@ -333,6 +334,7 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                         ),
                         train_ratio=job.parameters["train_ratio"],
                         seed=seed,
+                        dataset_fingerprint=loaded.metadata.fingerprint,
                     )
                 prepared = prepare_validation_data(
                     source,

@@ -37,7 +37,13 @@ class SplitProtocol(Protocol):
 
     name: str
 
-    def split(self, data: GraphData, seed: int) -> SplitBundle:
+    def split(
+        self,
+        data: GraphData,
+        seed: int,
+        *,
+        dataset_fingerprint: str | None = None,
+    ) -> SplitBundle:
         """Create training, validation, and test partitions."""
         ...
 
