@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -16,7 +16,6 @@ from torch_geometric.datasets import (
     Planetoid,
     WikiCS,
 )
-from torch_geometric.transforms import NormalizeFeatures
 from torch_geometric.utils import remove_self_loops
 
 from glpbench.contracts import DatasetMetadata, LoadedDataset
@@ -28,6 +27,7 @@ from glpbench.datasets.registry import (
     register_dataset_provider,
 )
 from glpbench.datasets.validation import validate_graph_data
+from glpbench.preprocessing import normalize_graph_features
 
 
 _PLANETOID_NAMES = {
@@ -182,6 +182,13 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     -------
     glpbench.contracts.LoadedDataset
         Validated PyG graph and dataset metadata.
+
+    Notes
+    -----
+    Dataset providers always return unnormalized features. The
+    ``normalize_features`` option is retained as a compatibility convenience
+    and delegates to :mod:`glpbench.preprocessing`. Evaluation runners load
+    raw features and apply their configured preprocessing separately.
     """
     if not isinstance(root, (str, Path)):
         raise TypeError("root must be a string or pathlib.Path")
@@ -200,16 +207,9 @@ def load_dataset(name, root="data", normalize_features=True, device="cpu"):
     if not normalize_features:
         return loaded
 
-    data = NormalizeFeatures()(loaded.data.clone())
+    data = normalize_graph_features(loaded.data)
     validate_graph_data(data, dataset=provider.name)
-    metadata = replace(
-        loaded.metadata,
-        loader_preprocessing=(
-            *loaded.metadata.loader_preprocessing,
-            "normalize-features",
-        ),
-    )
-    return LoadedDataset(data=data, metadata=metadata)
+    return LoadedDataset(data=data, metadata=loaded.metadata)
 
 
 __all__ = ["available_datasets", "load_dataset"]

@@ -180,6 +180,22 @@ class TestDatasetLoading(unittest.TestCase):
         self.assertTrue(torch.allclose(loaded.data.x.sum(dim=1), torch.ones(3)))
         self.assertTrue(torch.equal(original.x, self._graph().x))
         self.assertEqual(loaded.data.x.device.type, "cpu")
+        self.assertNotIn(
+            "normalize-features", loaded.metadata.loader_preprocessing
+        )
+
+    @patch("glpbench.datasets.builtin.normalize_graph_features")
+    @patch("glpbench.datasets.builtin.Planetoid")
+    def test_loader_compatibility_normalization_uses_preprocessing(
+        self, mock_planetoid, mock_normalize
+    ):
+        graph = self._graph()
+        mock_planetoid.return_value.__getitem__.return_value = graph
+        mock_normalize.side_effect = lambda data: data.clone()
+
+        datasets.load_dataset("cora")
+
+        mock_normalize.assert_called_once()
 
     @patch("glpbench.datasets.builtin.Planetoid")
     def test_loader_can_skip_feature_normalization(self, mock_planetoid):

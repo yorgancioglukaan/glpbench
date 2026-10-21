@@ -3,10 +3,10 @@
 import time
 
 import torch
-import torch_geometric.transforms as T
 from torch_geometric.data import Data
 
 from glpbench.models import get_model_registration
+from glpbench.preprocessing import normalize_graph_features
 from glpbench.protocols import (
     calculate_reduced_features,
 )
@@ -51,7 +51,7 @@ def prepare_candidate_data(
 
     feature_data = source_data.clone()
     if normalize_features:
-        feature_data = T.NormalizeFeatures()(feature_data)
+        feature_data = normalize_graph_features(feature_data)
 
     prepared_splits = [
         splits.train.clone(),
@@ -137,7 +137,7 @@ def prepare_validation_data(
     model_registration = get_model_registration(model_type)
     feature_data = source_data.clone()
     if normalize_features:
-        feature_data = T.NormalizeFeatures()(feature_data)
+        feature_data = normalize_graph_features(feature_data)
     if splits.validation is None:
         raise ValueError("validation preparation requires a validation split")
     train = splits.train.clone()
