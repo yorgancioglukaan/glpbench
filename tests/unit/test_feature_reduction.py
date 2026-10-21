@@ -68,6 +68,7 @@ class TestFeatureReduction(unittest.TestCase):
             feature_reduction._REDUCER_FACTORIES,
             preprocessing.reduction._REDUCER_FACTORIES,
         )
+        self.assertTrue(callable(preprocessing.normalize_graph_features))
 
     class SpyReducer:
         def __init__(self, n_components, random_state=None, **kwargs):

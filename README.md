@@ -263,7 +263,11 @@ format matrix and canonical API entry points.
 
 ### Dataset loading
 
-`glpbench.datasets.load_dataset()` loads a supported benchmark, optionally normalizes its features, moves it to a device, and attaches dataset metadata:
+`glpbench.datasets.load_dataset()` resolves a registered provider, validates
+the graph, moves it to a device, and attaches dataset metadata. Its
+`normalize_features` option remains available for direct API compatibility;
+command-line workflows load raw features and apply normalization in the shared
+preprocessing pipeline:
 
 ```python
 from glpbench.datasets import load_dataset
