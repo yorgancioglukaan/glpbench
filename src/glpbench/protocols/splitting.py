@@ -21,6 +21,25 @@ class QueryNodeSets(NamedTuple):
     test: tuple[int, ...]
 
 
+def _require_successful_audit(report, *, protocol_name, seed):
+    """Reject malformed or unsuccessful protocol-audit results."""
+    if not isinstance(report, AuditReport):
+        raise ProtocolError(
+            "protocol audit must return an AuditReport",
+            component=protocol_name,
+            seed=seed,
+        )
+    if not report.passed:
+        failed = ", ".join(
+            name for name, passed in report.checks.items() if not passed
+        )
+        message = "protocol audit failed"
+        if failed:
+            message += f": {failed}"
+        raise ProtocolError(message, component=protocol_name, seed=seed)
+    return report
+
+
 def _query_selection_metadata(explicit, size, fraction, *, default_mode=None):
     """Describe one query-selection request without storing node IDs."""
     if explicit is not None:
@@ -1449,7 +1468,11 @@ def generate_transductive_splits(
         ),
         visible_node_mask=visible_mask,
     )
-    audit_transductive_splits(data, splits)
+    _require_successful_audit(
+        audit_transductive_splits(data, splits),
+        protocol_name="transductive",
+        seed=seed,
+    )
     return splits
 
 
@@ -1609,7 +1632,11 @@ def generate_comparable_splits(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
-    audit_comparable_splits(data, splits)
+    _require_successful_audit(
+        audit_comparable_splits(data, splits),
+        protocol_name="matched-semi-inductive",
+        seed=seed,
+    )
     return splits
 
 
@@ -1757,6 +1784,11 @@ def generate_validation_splits(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
+    _require_successful_audit(
+        audit_validation_splits(data, splits),
+        protocol_name="matched-semi-inductive-validation-only",
+        seed=seed,
+    )
     return splits
 
 
@@ -1865,7 +1897,7 @@ def inductive_split(
         data.edge_index.device,
     )
 
-    return SplitBundle(
+    splits = SplitBundle(
         train=train,
         validation=validation,
         tests={"semi-inductive": test},
@@ -1902,6 +1934,12 @@ def inductive_split(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
+    _require_successful_audit(
+        audit_semi_inductive_splits(data, splits),
+        protocol_name="semi-inductive",
+        seed=seed,
+    )
+    return splits
 
 def calculate_reduced_features(
     data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,
