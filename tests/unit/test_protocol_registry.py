@@ -229,5 +229,123 @@ class TestProtocolAdapters(unittest.TestCase):
             )
 
 
+class TestProtocolMetadata(unittest.TestCase):
+    def test_matched_metadata_records_explicit_requests_and_realized_counts(self):
+        splits = generate_comparable_splits(
+            _graph(), query=[7], validation_query=[6],
+            train_ratio=0.75, seed=21,
+        )
+        metadata = splits.metadata
+
+        self.assertEqual(metadata.schema_version, 2)
+        self.assertEqual(dict(metadata.requested_counts), {
+            "validation_queries": 1,
+            "test_queries": 1,
+        })
+        self.assertEqual(
+            dict(metadata.parameters["test_query_selection"]),
+            {"mode": "explicit", "requested_count": 1},
+        )
+        self.assertEqual(
+            dict(metadata.parameters["validation_query_selection"]),
+            {"mode": "explicit", "requested_count": 1},
+        )
+        counts = metadata.realized_counts
+        self.assertEqual(counts["visible_nodes"], 6)
+        self.assertEqual(
+            counts["training_message_passing_edges"],
+            splits.train.edge_index.size(1),
+        )
+        self.assertEqual(
+            counts["semi_inductive_test_positives"],
+            int((splits.tests["semi-inductive"].edge_label == 1).sum()),
+        )
+        self.assertEqual(
+            counts["transductive_test_negatives"],
+            int((splits.tests["transductive"].edge_label == 0).sum()),
+        )
+
+    def test_default_validation_selection_is_recorded_as_matched(self):
+        splits = generate_comparable_splits(
+            _graph(), query_size=1, train_ratio=0.75, seed=22
+        )
+
+        self.assertEqual(
+            dict(splits.metadata.parameters["validation_query_selection"]),
+            {"mode": "match-test"},
+        )
+
+    def test_validation_only_metadata_records_reserved_capacity(self):
+        data = _graph()
+        splits = generate_validation_splits(
+            data,
+            query_size=1,
+            validation_query_size=1,
+            train_ratio=0.75,
+            seed=23,
+        )
+        expected_reserved = sum(
+            1 for source, target in data.edge_index.t().tolist()
+            if source in set(splits.visible_node_mask.nonzero().view(-1).tolist())
+            and target in set(splits.test_query_nodes)
+        )
+
+        self.assertEqual(
+            splits.metadata.requested_counts["reserved_test_positives"],
+            expected_reserved,
+        )
+        self.assertEqual(
+            splits.metadata.realized_counts["reserved_test_positives"],
+            expected_reserved,
+        )
+        self.assertTrue(splits.metadata.parameters["reserve_test_capacity"])
+
+    def test_fraction_and_transductive_requests_are_recorded(self):
+        semi = inductive_split(
+            _graph(),
+            query_fraction=0.125,
+            validation_query_fraction=0.125,
+            train_ratio=0.75,
+            seed=24,
+        )
+        transductive = generate_transductive_splits(
+            _graph(), validation_ratio=0.2, test_ratio=0.2, seed=24
+        )
+
+        self.assertEqual(
+            dict(semi.metadata.parameters["test_query_selection"]),
+            {"mode": "fraction", "value": 0.125},
+        )
+        self.assertEqual(dict(transductive.metadata.requested_counts), {
+            "validation_positives": 2,
+            "test_positives": 2,
+        })
+        self.assertEqual(
+            transductive.metadata.realized_counts[
+                "transductive_test_message_passing_edges"
+            ],
+            transductive.tests["transductive"].edge_index.size(1),
+        )
+
+    def test_audit_rejects_tampered_realized_counts(self):
+        data = _graph()
+        protocol = create_split_protocol(
+            "matched-semi-inductive",
+            query=[7],
+            validation_query=[6],
+            train_ratio=0.75,
+        )
+        splits = protocol.split(data, seed=25)
+        counts = dict(splits.metadata.realized_counts)
+        counts["training_positives"] += 1
+        corrupted = replace(
+            splits,
+            metadata=replace(splits.metadata, realized_counts=counts),
+        )
+
+        with self.assertRaisesRegex(ProtocolError, "realized counts"):
+            protocol.audit(data, corrupted)
+
+
 if __name__ == "__main__":
     unittest.main()

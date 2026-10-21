@@ -21,6 +21,130 @@ class QueryNodeSets(NamedTuple):
     test: tuple[int, ...]
 
 
+def _query_selection_metadata(explicit, size, fraction, *, default_mode=None):
+    """Describe one query-selection request without storing node IDs."""
+    if explicit is not None:
+        requested_count = (
+            1 if isinstance(explicit, numbers.Integral)
+            else int(torch.as_tensor(explicit).numel())
+        )
+        return {"mode": "explicit", "requested_count": requested_count}
+    if size is not None:
+        return {"mode": "size", "value": size}
+    if fraction is not None:
+        return {"mode": "fraction", "value": fraction}
+    if default_mode is not None:
+        return {"mode": default_mode}
+    return {"mode": "unspecified"}
+
+
+def _labeled_counts(split):
+    """Return positive and negative candidate counts for one partition."""
+    return (
+        int((split.edge_label == 1).sum()),
+        int((split.edge_label == 0).sum()),
+    )
+
+
+def _realized_split_counts(
+    train,
+    validation,
+    tests,
+    visible_node_mask,
+    *,
+    validation_queries=None,
+    test_queries=None,
+    reserved_test_queries=None,
+    reserved_test_positives=None,
+):
+    """Derive the common realized-count vocabulary from PyG partitions."""
+    counts = {
+        "visible_nodes": int(visible_node_mask.sum()),
+        "training_message_passing_edges": int(train.edge_index.size(1)),
+    }
+    train_positive, train_negative = _labeled_counts(train)
+    counts.update({
+        "training_positives": train_positive,
+        "training_negatives": train_negative,
+    })
+    if validation is not None:
+        positive, negative = _labeled_counts(validation)
+        counts.update({
+            "validation_message_passing_edges": int(
+                validation.edge_index.size(1)
+            ),
+            "validation_positives": positive,
+            "validation_negatives": negative,
+        })
+    for name, split in tests.items():
+        prefix = name.replace("-", "_") + "_test"
+        positive, negative = _labeled_counts(split)
+        counts.update({
+            f"{prefix}_message_passing_edges": int(split.edge_index.size(1)),
+            f"{prefix}_positives": positive,
+            f"{prefix}_negatives": negative,
+        })
+    optional_counts = {
+        "validation_queries": validation_queries,
+        "test_queries": test_queries,
+        "reserved_test_queries": reserved_test_queries,
+        "reserved_test_positives": reserved_test_positives,
+    }
+    counts.update({
+        name: int(value) for name, value in optional_counts.items()
+        if value is not None
+    })
+    return counts
+
+
+def _protocol_metadata(
+    name,
+    seed,
+    parameters,
+    requested_counts,
+    train,
+    validation,
+    tests,
+    visible_node_mask,
+    **count_context,
+):
+    """Build schema-versioned metadata from completed split partitions."""
+    return ProtocolMetadata(
+        name=name,
+        schema_version=2,
+        seed=seed,
+        parameters=parameters,
+        requested_counts=requested_counts,
+        realized_counts=_realized_split_counts(
+            train,
+            validation,
+            tests,
+            visible_node_mask,
+            **count_context,
+        ),
+    )
+
+
+def _audit_protocol_metadata(
+    splits,
+    *,
+    expected_name,
+    expected_requested_counts,
+    expected_realized_counts,
+    required_parameters,
+):
+    """Require protocol metadata to agree with its realized partitions."""
+    metadata = splits.metadata
+    if metadata.name != expected_name or metadata.schema_version != 2:
+        raise ValueError("Protocol metadata name or schema version is invalid.")
+    if set(required_parameters).difference(metadata.parameters):
+        raise ValueError("Protocol metadata is missing required parameters.")
+    if dict(metadata.requested_counts) != dict(expected_requested_counts):
+        raise ValueError("Protocol requested counts disagree with the split.")
+    if dict(metadata.realized_counts) != dict(expected_realized_counts):
+        raise ValueError("Protocol realized counts disagree with the split.")
+
+
 def _canonical_edge_pairs(edge_index):
     """Return undirected edge pairs as a Python set."""
     return {
@@ -912,6 +1036,27 @@ def _audit_comparable_splits(data, splits):
     if query_query_pairs & represented_pairs:
         raise ValueError("Query-to-query edges must be excluded from all splits.")
 
+    _audit_protocol_metadata(
+        splits,
+        expected_name="matched-semi-inductive",
+        expected_requested_counts={
+            "validation_queries": len(splits.validation_query_nodes),
+            "test_queries": len(splits.test_query_nodes),
+        },
+        expected_realized_counts=_realized_split_counts(
+            splits.train,
+            splits.validation,
+            splits.tests,
+            visible_mask,
+            validation_queries=len(splits.validation_query_nodes),
+            test_queries=len(splits.test_query_nodes),
+        ),
+        required_parameters={
+            "train_ratio", "negative_sampling_ratio",
+            "test_query_selection", "validation_query_selection",
+        },
+    )
+
     return AuditReport(passed=True, checks={"all-invariants": True})
 
 
@@ -1046,6 +1191,53 @@ def _audit_semi_inductive_bundle(data, splits, *, test_key=None):
     }
     if query_query_pairs & represented_pairs:
         raise ValueError("Query-to-query edges must be excluded from all splits.")
+
+    if test_key is None:
+        reserved_test_positives = _query_positive_edges(
+            data, splits.test_query_nodes, visible_mask
+        ).size(1)
+        expected_name = "matched-semi-inductive-validation-only"
+        expected_requested = {
+            "validation_queries": len(splits.validation_query_nodes),
+            "reserved_test_queries": len(splits.test_query_nodes),
+            "reserved_test_positives": reserved_test_positives,
+        }
+        count_context = {
+            "validation_queries": len(splits.validation_query_nodes),
+            "reserved_test_queries": len(splits.test_query_nodes),
+            "reserved_test_positives": reserved_test_positives,
+        }
+        required_parameters = {
+            "train_ratio", "negative_sampling_ratio", "reserve_test_capacity",
+            "test_query_selection", "validation_query_selection",
+        }
+    else:
+        expected_name = "semi-inductive"
+        expected_requested = {
+            "validation_queries": len(splits.validation_query_nodes),
+            "test_queries": len(splits.test_query_nodes),
+        }
+        count_context = {
+            "validation_queries": len(splits.validation_query_nodes),
+            "test_queries": len(splits.test_query_nodes),
+        }
+        required_parameters = {
+            "train_ratio", "negative_sampling_ratio",
+            "test_query_selection", "validation_query_selection",
+        }
+    _audit_protocol_metadata(
+        splits,
+        expected_name=expected_name,
+        expected_requested_counts=expected_requested,
+        expected_realized_counts=_realized_split_counts(
+            splits.train,
+            splits.validation,
+            splits.tests,
+            visible_mask,
+            **count_context,
+        ),
+        required_parameters=required_parameters,
+    )
     return AuditReport(passed=True, checks={"all-invariants": True})
 
 
@@ -1141,6 +1333,29 @@ def _audit_transductive_splits(data, splits):
         for right in names[index + 1:]:
             if positive_pairs[left] & positive_pairs[right]:
                 raise ValueError(f"Positive edges overlap between {left} and {right}")
+    _audit_protocol_metadata(
+        splits,
+        expected_name="transductive",
+        expected_requested_counts={
+            "validation_positives": int(
+                splits.metadata.parameters["validation_ratio"]
+                * (data.edge_index[0] < data.edge_index[1]).sum()
+            ),
+            "test_positives": int(
+                splits.metadata.parameters["test_ratio"]
+                * (data.edge_index[0] < data.edge_index[1]).sum()
+            ),
+        },
+        expected_realized_counts=_realized_split_counts(
+            splits.train,
+            splits.validation,
+            splits.tests,
+            visible_mask,
+        ),
+        required_parameters={
+            "validation_ratio", "test_ratio", "negative_sampling_ratio",
+        },
+    )
     return AuditReport(passed=True, checks={"all-invariants": True})
 
 
@@ -1211,20 +1426,26 @@ def generate_transductive_splits(
         train=train,
         validation=validation,
         tests={"transductive": test},
-        metadata=ProtocolMetadata(
-            name="transductive",
-            schema_version=1,
-            seed=seed,
+        metadata=_protocol_metadata(
+            "transductive",
+            seed,
             parameters={
                 "validation_ratio": validation_ratio,
                 "test_ratio": test_ratio,
+                "negative_sampling_ratio": 1.0,
             },
-            realized_counts={
+            requested_counts={
                 "validation_positives": int(
-                    (validation.edge_label == 1).sum()
+                    validation_ratio * (data.edge_index[0] < data.edge_index[1]).sum()
                 ),
-                "test_positives": int((test.edge_label == 1).sum()),
+                "test_positives": int(
+                    test_ratio * (data.edge_index[0] < data.edge_index[1]).sum()
+                ),
             },
+            train=train,
+            validation=validation,
+            tests={"transductive": test},
+            visible_node_mask=visible_mask,
         ),
         visible_node_mask=visible_mask,
     )
@@ -1352,15 +1573,37 @@ def generate_comparable_splits(
             "transductive": test_transductive,
             "semi-inductive": test_inductive,
         },
-        metadata=ProtocolMetadata(
-            name="matched-semi-inductive",
-            schema_version=1,
-            seed=seed,
-            parameters={"train_ratio": train_ratio},
-            realized_counts={
+        metadata=_protocol_metadata(
+            "matched-semi-inductive",
+            seed,
+            parameters={
+                "train_ratio": train_ratio,
+                "negative_sampling_ratio": 1.0,
+                "test_query_selection": _query_selection_metadata(
+                    query,
+                    query_size,
+                    query_fraction if query_fraction is not None else test_ratio,
+                ),
+                "validation_query_selection": _query_selection_metadata(
+                    validation_query,
+                    validation_query_size,
+                    validation_query_fraction,
+                    default_mode="match-test",
+                ),
+            },
+            requested_counts={
                 "validation_queries": len(query_nodes.validation),
                 "test_queries": len(query_nodes.test),
             },
+            train=train,
+            validation=validation,
+            tests={
+                "transductive": test_transductive,
+                "semi-inductive": test_inductive,
+            },
+            visible_node_mask=visible_node_mask,
+            validation_queries=len(query_nodes.validation),
+            test_queries=len(query_nodes.test),
         ),
         validation_query_nodes=query_nodes.validation,
         test_query_nodes=query_nodes.test,
@@ -1476,24 +1719,45 @@ def generate_validation_splits(
         data.num_nodes,
         data.edge_index.device,
     )
-    return SplitBundle(
+    splits = SplitBundle(
         train=train,
         validation=validation,
         tests={},
-        metadata=ProtocolMetadata(
-            name="matched-semi-inductive-validation-only",
-            schema_version=1,
-            seed=seed,
-            parameters={"train_ratio": train_ratio},
-            realized_counts={
+        metadata=_protocol_metadata(
+            "matched-semi-inductive-validation-only",
+            seed,
+            parameters={
+                "train_ratio": train_ratio,
+                "negative_sampling_ratio": 1.0,
+                "reserve_test_capacity": True,
+                "test_query_selection": _query_selection_metadata(
+                    None, query_size, query_fraction
+                ),
+                "validation_query_selection": _query_selection_metadata(
+                    None,
+                    validation_query_size,
+                    validation_query_fraction,
+                    default_mode="match-test",
+                ),
+            },
+            requested_counts={
                 "validation_queries": len(query_nodes.validation),
                 "reserved_test_queries": len(query_nodes.test),
+                "reserved_test_positives": reserved_test_edges,
             },
+            train=train,
+            validation=validation,
+            tests={},
+            visible_node_mask=visible_node_mask,
+            validation_queries=len(query_nodes.validation),
+            reserved_test_queries=len(query_nodes.test),
+            reserved_test_positives=reserved_test_edges,
         ),
         validation_query_nodes=query_nodes.validation,
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
+    return splits
 
 
 
@@ -1605,15 +1869,34 @@ def inductive_split(
         train=train,
         validation=validation,
         tests={"semi-inductive": test},
-        metadata=ProtocolMetadata(
-            name="semi-inductive",
-            schema_version=1,
-            seed=seed,
-            parameters={"train_ratio": train_ratio},
-            realized_counts={
+        metadata=_protocol_metadata(
+            "semi-inductive",
+            seed,
+            parameters={
+                "train_ratio": train_ratio,
+                "negative_sampling_ratio": 1.0,
+                "test_query_selection": _query_selection_metadata(
+                    query,
+                    query_size,
+                    query_fraction if query_fraction is not None else test_ratio,
+                ),
+                "validation_query_selection": _query_selection_metadata(
+                    validation_query,
+                    validation_query_size,
+                    validation_query_fraction,
+                    default_mode="match-test",
+                ),
+            },
+            requested_counts={
                 "validation_queries": len(query_nodes.validation),
                 "test_queries": len(query_nodes.test),
             },
+            train=train,
+            validation=validation,
+            tests={"semi-inductive": test},
+            visible_node_mask=visible_node_mask,
+            validation_queries=len(query_nodes.validation),
+            test_queries=len(query_nodes.test),
         ),
         validation_query_nodes=query_nodes.validation,
         test_query_nodes=query_nodes.test,
