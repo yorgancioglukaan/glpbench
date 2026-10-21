@@ -506,16 +506,17 @@ def _prepare_search_split(
                 root=config.raw["execution"]["data_root"],
                 normalize_features=False,
                 device="cpu",
-            ).data
+            )
         except Exception as error:
             source_cache[dataset] = _PreparationFailure(
                 "dataset-loading", error
             )
 
-    source_data = source_cache[dataset]
-    if isinstance(source_data, _PreparationFailure):
-        split_cache[split_key] = source_data
-        return source_data
+    loaded = source_cache[dataset]
+    if isinstance(loaded, _PreparationFailure):
+        split_cache[split_key] = loaded
+        return loaded
+    source_data = loaded.data
 
     split_config = config.raw["splits"]
     try:
@@ -527,6 +528,7 @@ def _prepare_search_split(
             ),
             train_ratio=split_config["train_ratio"],
             seed=seed,
+            dataset_fingerprint=loaded.metadata.fingerprint,
         )
     except Exception as error:
         prepared = _PreparationFailure("data-splitting", error)
@@ -736,7 +738,7 @@ def execute_search(
                 continue
 
             try:
-                source_data = source_cache[candidate.dataset]
+                source_data = source_cache[candidate.dataset].data
                 parameters = candidate.hyperparameters
                 validation_data = prepare_validation_data(
                     source_data,

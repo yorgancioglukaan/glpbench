@@ -72,10 +72,20 @@ by the protocol, and `realized_counts` records the contents of the completed
 PyG partitions. Query-node IDs and the visibility mask remain first-class
 fields on `SplitBundle` rather than being duplicated in metadata.
 
+Validated datasets and realized splits also receive deterministic SHA-256
+fingerprints. Dataset fingerprints cover canonical graph structure, raw node
+features, directedness, and the declared dataset version. Split fingerprints
+cover the dataset fingerprint, protocol configuration and seed, query roles,
+message-passing edges, and labeled evaluation candidates. They are independent
+of tensor device and storage order. Node IDs remain meaningful, so renumbering
+the graph changes its fingerprint. Epoch-resampled training negatives and
+experiment-specific feature preprocessing are intentionally excluded.
+
 Candidate positive and negative counts use the number of stored candidates.
 Message-passing counts use stored directed entries, so an undirected edge
 represented in both orientations contributes two entries. Protocol audits
-recompute these values from the partitions and reject inconsistent metadata.
+recompute these values and the split fingerprint from the partitions and
+reject inconsistent metadata.
 
 ## Feature preprocessing
 

@@ -2,6 +2,7 @@ import math
 import numbers
 import random
 import warnings
+from dataclasses import replace
 from typing import NamedTuple
 
 import torch
@@ -11,6 +12,7 @@ from torch_geometric.utils import is_undirected, negative_sampling
 
 from glpbench.contracts import AuditReport, ProtocolMetadata, SplitBundle
 from glpbench.exceptions import ProtocolError
+from glpbench.fingerprinting import fingerprint_dataset, fingerprint_split
 from glpbench.preprocessing import attach_reduced_features, fit_reducer
 
 
@@ -38,6 +40,28 @@ def _require_successful_audit(report, *, protocol_name, seed):
             message += f": {failed}"
         raise ProtocolError(message, component=protocol_name, seed=seed)
     return report
+
+
+def _finalize_split_bundle(data, splits, audit, dataset_fingerprint=None):
+    """Attach a deterministic fingerprint and require a successful audit."""
+    dataset_fingerprint = dataset_fingerprint or fingerprint_dataset(
+        data, directed=False
+    )
+    parameters = dict(splits.metadata.parameters)
+    parameters["dataset_fingerprint"] = dataset_fingerprint
+    metadata = replace(splits.metadata, parameters=parameters, fingerprint=None)
+    splits = replace(splits, metadata=metadata)
+    metadata = replace(
+        metadata,
+        fingerprint=fingerprint_split(splits, dataset_fingerprint),
+    )
+    splits = replace(splits, metadata=metadata)
+    _require_successful_audit(
+        audit(data, splits),
+        protocol_name=metadata.name,
+        seed=metadata.seed,
+    )
+    return splits
 
 
 def _query_selection_metadata(explicit, size, fraction, *, default_mode=None):
@@ -162,6 +186,12 @@ def _audit_protocol_metadata(
         raise ValueError("Protocol requested counts disagree with the split.")
     if dict(metadata.realized_counts) != dict(expected_realized_counts):
         raise ValueError("Protocol realized counts disagree with the split.")
+    dataset_fingerprint = metadata.parameters.get("dataset_fingerprint")
+    if not isinstance(dataset_fingerprint, str) or not dataset_fingerprint:
+        raise ValueError("Protocol metadata is missing the dataset fingerprint.")
+    expected_fingerprint = fingerprint_split(splits, dataset_fingerprint)
+    if metadata.fingerprint != expected_fingerprint:
+        raise ValueError("Protocol fingerprint disagrees with the split.")
 
 
 def _canonical_edge_pairs(edge_index):
@@ -1391,7 +1421,8 @@ def audit_transductive_splits(data, splits):
 
 
 def generate_transductive_splits(
-    data, *, validation_ratio=0.1, test_ratio=0.1, seed=None
+    data, *, validation_ratio=0.1, test_ratio=0.1, seed=None,
+    dataset_fingerprint=None,
 ):
     """Generate standalone random-edge transductive splits.
 
@@ -1468,18 +1499,18 @@ def generate_transductive_splits(
         ),
         visible_node_mask=visible_mask,
     )
-    _require_successful_audit(
-        audit_transductive_splits(data, splits),
-        protocol_name="transductive",
-        seed=seed,
+    return _finalize_split_bundle(
+        data,
+        splits,
+        audit_transductive_splits,
+        dataset_fingerprint,
     )
-    return splits
 
 
 def generate_comparable_splits(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
     query_fraction=None, validation_query=None, validation_query_size=None,
-    validation_query_fraction=None, seed=None, **kwargs
+    validation_query_fraction=None, seed=None, dataset_fingerprint=None, **kwargs
 ):
     """Generate training, semi-inductive validation, and paired test splits.
 
@@ -1632,18 +1663,18 @@ def generate_comparable_splits(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
-    _require_successful_audit(
-        audit_comparable_splits(data, splits),
-        protocol_name="matched-semi-inductive",
-        seed=seed,
+    return _finalize_split_bundle(
+        data,
+        splits,
+        audit_comparable_splits,
+        dataset_fingerprint,
     )
-    return splits
 
 
 def generate_validation_splits(
     data, *, query_size=None, query_fraction=None,
     validation_query_size=None, validation_query_fraction=None,
-    train_ratio=0.8, seed=None,
+    train_ratio=0.8, seed=None, dataset_fingerprint=None,
 ):
     """Generate training and semi-inductive validation splits.
 
@@ -1784,19 +1815,19 @@ def generate_validation_splits(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
-    _require_successful_audit(
-        audit_validation_splits(data, splits),
-        protocol_name="matched-semi-inductive-validation-only",
-        seed=seed,
+    return _finalize_split_bundle(
+        data,
+        splits,
+        audit_validation_splits,
+        dataset_fingerprint,
     )
-    return splits
 
 
 
 def inductive_split(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
     query_fraction=None, validation_query=None, validation_query_size=None,
-    validation_query_fraction=None, seed=None, **kwargs
+    validation_query_fraction=None, seed=None, dataset_fingerprint=None, **kwargs
 ):
     """Generate training and semi-inductive validation and test splits.
 
@@ -1934,12 +1965,12 @@ def inductive_split(
         test_query_nodes=query_nodes.test,
         visible_node_mask=visible_node_mask,
     )
-    _require_successful_audit(
-        audit_semi_inductive_splits(data, splits),
-        protocol_name="semi-inductive",
-        seed=seed,
+    return _finalize_split_bundle(
+        data,
+        splits,
+        audit_semi_inductive_splits,
+        dataset_fingerprint,
     )
-    return splits
 
 def calculate_reduced_features(
     data, dim=128, reduction_method="pca", fit_nodes=None, random_state=None,

@@ -31,7 +31,7 @@ class MatchedSemiInductiveProtocol:
     validation_query_size: int | None = None
     validation_query_fraction: float | None = None
 
-    def split(self, data, seed):
+    def split(self, data, seed, *, dataset_fingerprint=None):
         """Delegate matched split construction to the procedural API."""
         return generate_comparable_splits(
             data,
@@ -44,6 +44,7 @@ class MatchedSemiInductiveProtocol:
             validation_query_size=self.validation_query_size,
             validation_query_fraction=self.validation_query_fraction,
             seed=seed,
+            dataset_fingerprint=dataset_fingerprint,
         )
 
     def audit(self, data, splits):
@@ -62,7 +63,7 @@ class MatchedValidationProtocol:
     validation_query_fraction: float | None = None
     train_ratio: float = 0.8
 
-    def split(self, data, seed):
+    def split(self, data, seed, *, dataset_fingerprint=None):
         """Delegate validation-only construction to the procedural API."""
         return generate_validation_splits(
             data,
@@ -72,6 +73,7 @@ class MatchedValidationProtocol:
             validation_query_fraction=self.validation_query_fraction,
             train_ratio=self.train_ratio,
             seed=seed,
+            dataset_fingerprint=dataset_fingerprint,
         )
 
     def audit(self, data, splits):
@@ -93,7 +95,7 @@ class SemiInductiveProtocol:
     validation_query_size: int | None = None
     validation_query_fraction: float | None = None
 
-    def split(self, data, seed):
+    def split(self, data, seed, *, dataset_fingerprint=None):
         """Delegate semi-inductive construction to the procedural API."""
         return inductive_split(
             data,
@@ -106,6 +108,7 @@ class SemiInductiveProtocol:
             validation_query_size=self.validation_query_size,
             validation_query_fraction=self.validation_query_fraction,
             seed=seed,
+            dataset_fingerprint=dataset_fingerprint,
         )
 
     def audit(self, data, splits):
@@ -121,13 +124,14 @@ class TransductiveProtocol:
     validation_ratio: float = 0.1
     test_ratio: float = 0.1
 
-    def split(self, data, seed):
+    def split(self, data, seed, *, dataset_fingerprint=None):
         """Construct transductive train, validation, and test partitions."""
         return generate_transductive_splits(
             data,
             validation_ratio=self.validation_ratio,
             test_ratio=self.test_ratio,
             seed=seed,
+            dataset_fingerprint=dataset_fingerprint,
         )
 
     def audit(self, data, splits):
