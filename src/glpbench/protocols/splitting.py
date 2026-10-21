@@ -931,6 +931,307 @@ def audit_comparable_splits(data, splits):
         ) from error
 
 
+def _audit_semi_inductive_bundle(data, splits, *, test_key=None):
+    """Validate shared invariants for semi-inductive split bundles."""
+    if not isinstance(data, Data):
+        raise TypeError("data should be of type torch_geometric.data.Data")
+    if not isinstance(splits, SplitBundle):
+        raise TypeError("splits should be a SplitBundle")
+    _validate_simple_undirected_graph(data)
+    if splits.validation is None:
+        raise ValueError("semi-inductive protocols require validation data")
+    expected_tests = set() if test_key is None else {test_key}
+    if set(splits.tests) != expected_tests:
+        raise ValueError("split bundle contains unexpected test partitions")
+
+    split_items = [("train", splits.train), ("validation", splits.validation)]
+    if test_key is not None:
+        split_items.append(("test", splits.tests[test_key]))
+    required_masks = (
+        "validation_query_mask", "test_query_mask", "visible_node_mask",
+    )
+    for attribute in required_masks:
+        expected = getattr(splits.train, attribute, None)
+        if (
+            not isinstance(expected, torch.Tensor)
+            or expected.dtype != torch.bool
+            or expected.ndim != 1
+            or expected.numel() != data.num_nodes
+        ):
+            raise ValueError(f"Invalid or missing {attribute} metadata.")
+        for name, split in split_items[1:]:
+            if not torch.equal(getattr(split, attribute, None), expected):
+                raise ValueError(f"{name} has inconsistent {attribute} metadata.")
+
+    validation_mask = splits.train.validation_query_mask
+    test_mask = splits.train.test_query_mask
+    visible_mask = splits.train.visible_node_mask
+    if bool((validation_mask & test_mask).any()):
+        raise ValueError("Validation and test query sets overlap.")
+    if not torch.equal(visible_mask, ~(validation_mask | test_mask)):
+        raise ValueError("Visible-node metadata is inconsistent with query sets.")
+    if set(validation_mask.nonzero().view(-1).tolist()) != set(
+        splits.validation_query_nodes
+    ):
+        raise ValueError("Validation-query mask disagrees with SplitBundle metadata.")
+    if set(test_mask.nonzero().view(-1).tolist()) != set(
+        splits.test_query_nodes
+    ):
+        raise ValueError("Test-query mask disagrees with SplitBundle metadata.")
+
+    original_pairs = _canonical_edge_pairs(data.edge_index)
+    positive_pairs = {}
+    represented_pairs = set()
+    for name, split in split_items:
+        if split.num_nodes != data.num_nodes:
+            raise ValueError(f"{name} has a different number of nodes.")
+        if split.edge_index.numel() and not bool(visible_mask[split.edge_index].all()):
+            raise ValueError(f"{name} message-passing edges contain a query node.")
+        if not is_undirected(split.edge_index):
+            raise ValueError(f"{name} message-passing graph is not undirected.")
+        message_pairs = _canonical_edge_pairs(split.edge_index)
+        if not message_pairs.issubset(original_pairs):
+            raise ValueError(f"{name} message-passing graph contains a non-edge.")
+        represented_pairs.update(message_pairs)
+        if split.edge_label_index.ndim != 2 or split.edge_label_index.size(0) != 2:
+            raise ValueError(f"{name} edge_label_index must have shape [2, E].")
+        if split.edge_label.numel() != split.edge_label_index.size(1):
+            raise ValueError(f"{name} edge labels and labeled edges differ in size.")
+        if not bool(((split.edge_label == 0) | (split.edge_label == 1)).all()):
+            raise ValueError(f"{name} edge labels must be binary.")
+        positives = split.edge_label_index[:, split.edge_label == 1]
+        negatives = split.edge_label_index[:, split.edge_label == 0]
+        positive_pairs[name] = _canonical_edge_pairs(positives)
+        negative_pairs = _canonical_edge_pairs(negatives)
+        if len(positive_pairs[name]) != positives.size(1):
+            raise ValueError(f"{name} contains duplicate positive pairs.")
+        if len(negative_pairs) != negatives.size(1):
+            raise ValueError(f"{name} contains duplicate negative pairs.")
+        if not positive_pairs[name].issubset(original_pairs):
+            raise ValueError(f"{name} contains a positive edge absent from the graph.")
+        if negative_pairs & original_pairs:
+            raise ValueError(f"{name} contains a negative edge that is positive.")
+        represented_pairs.update(positive_pairs[name])
+        represented_pairs.update(negative_pairs)
+        if name != "train" and positive_pairs[name] & message_pairs:
+            raise ValueError(f"{name} positives overlap its message-passing graph.")
+        if name != "train" and positives.size(1) != negatives.size(1):
+            raise ValueError(f"{name} does not have a 1:1 negative ratio.")
+
+    if not torch.equal(splits.validation.edge_index, splits.train.edge_index):
+        raise ValueError("Training and validation message-passing graphs differ.")
+    positive_names = tuple(positive_pairs)
+    for index, left in enumerate(positive_names):
+        for right in positive_names[index + 1:]:
+            if positive_pairs[left] & positive_pairs[right]:
+                raise ValueError(f"Positive edges overlap between {left} and {right}.")
+
+    roles = [("validation", splits.validation, validation_mask)]
+    if test_key is not None:
+        roles.append(("test", splits.tests[test_key], test_mask))
+    for name, split, target_mask in roles:
+        sources, targets = split.edge_label_index
+        if split.edge_label_index.numel() and (
+            not bool(visible_mask[sources].all())
+            or not bool(target_mask[targets].all())
+        ):
+            raise ValueError(
+                f"{name} edges must be oriented from visible sources to queries."
+            )
+
+    query_mask = validation_mask | test_mask
+    query_query_pairs = {
+        pair for pair in original_pairs
+        if bool(query_mask[pair[0]]) and bool(query_mask[pair[1]])
+    }
+    if query_query_pairs & represented_pairs:
+        raise ValueError("Query-to-query edges must be excluded from all splits.")
+    return AuditReport(passed=True, checks={"all-invariants": True})
+
+
+def audit_validation_splits(data, splits):
+    """Audit a validation-only semi-inductive split bundle."""
+    try:
+        return _audit_semi_inductive_bundle(data, splits)
+    except ValueError as error:
+        raise ProtocolError(
+            str(error),
+            component="matched-semi-inductive-validation-only",
+            seed=splits.metadata.seed if isinstance(splits, SplitBundle) else None,
+        ) from error
+
+
+def audit_semi_inductive_splits(data, splits):
+    """Audit a standalone semi-inductive split bundle."""
+    try:
+        return _audit_semi_inductive_bundle(
+            data, splits, test_key="semi-inductive"
+        )
+    except ValueError as error:
+        raise ProtocolError(
+            str(error),
+            component="semi-inductive",
+            seed=splits.metadata.seed if isinstance(splits, SplitBundle) else None,
+        ) from error
+
+
+def _audit_transductive_splits(data, splits):
+    """Validate standalone transductive split invariants."""
+    if not isinstance(data, Data):
+        raise TypeError("data should be of type torch_geometric.data.Data")
+    if not isinstance(splits, SplitBundle):
+        raise TypeError("splits should be a SplitBundle")
+    _validate_simple_undirected_graph(data)
+    if splits.validation is None or set(splits.tests) != {"transductive"}:
+        raise ValueError("transductive protocol requires validation and test data")
+    if splits.validation_query_nodes or splits.test_query_nodes:
+        raise ValueError("transductive protocols cannot contain query nodes")
+    visible_mask = splits.visible_node_mask
+    if (
+        not isinstance(visible_mask, torch.Tensor)
+        or visible_mask.dtype != torch.bool
+        or visible_mask.numel() != data.num_nodes
+        or not bool(visible_mask.all())
+    ):
+        raise ValueError("transductive protocol must mark every node visible")
+
+    original_pairs = _canonical_edge_pairs(data.edge_index)
+    split_items = (
+        ("train", splits.train),
+        ("validation", splits.validation),
+        ("test", splits.tests["transductive"]),
+    )
+    positive_pairs = {}
+    for name, split in split_items:
+        for attribute in (
+            "validation_query_mask", "test_query_mask", "visible_node_mask",
+        ):
+            mask = getattr(split, attribute, None)
+            if not isinstance(mask, torch.Tensor) or not torch.equal(
+                mask, getattr(splits.train, attribute)
+            ):
+                raise ValueError(f"{name} has inconsistent {attribute} metadata")
+        if split.num_nodes != data.num_nodes or not is_undirected(split.edge_index):
+            raise ValueError(f"{name} has an invalid message-passing graph")
+        message_pairs = _canonical_edge_pairs(split.edge_index)
+        if not message_pairs.issubset(original_pairs):
+            raise ValueError(f"{name} message-passing graph contains a non-edge")
+        if split.edge_label_index.ndim != 2 or split.edge_label_index.size(0) != 2:
+            raise ValueError(f"{name} edge_label_index must have shape [2, E]")
+        if split.edge_label.numel() != split.edge_label_index.size(1):
+            raise ValueError(f"{name} edge labels and labeled edges differ in size")
+        positives = split.edge_label_index[:, split.edge_label == 1]
+        negatives = split.edge_label_index[:, split.edge_label == 0]
+        positive_pairs[name] = _canonical_edge_pairs(positives)
+        negative_pairs = _canonical_edge_pairs(negatives)
+        if len(positive_pairs[name]) != positives.size(1):
+            raise ValueError(f"{name} contains duplicate positive pairs")
+        if len(negative_pairs) != negatives.size(1):
+            raise ValueError(f"{name} contains duplicate negative pairs")
+        if not positive_pairs[name].issubset(original_pairs):
+            raise ValueError(f"{name} contains a positive edge absent from the graph")
+        if negative_pairs & original_pairs:
+            raise ValueError(f"{name} contains a negative edge that is positive")
+        if name != "train" and positive_pairs[name] & message_pairs:
+            raise ValueError(f"{name} positives overlap its message-passing graph")
+        if name != "train" and positives.size(1) != negatives.size(1):
+            raise ValueError(f"{name} does not have a 1:1 negative ratio")
+    names = tuple(positive_pairs)
+    for index, left in enumerate(names):
+        for right in names[index + 1:]:
+            if positive_pairs[left] & positive_pairs[right]:
+                raise ValueError(f"Positive edges overlap between {left} and {right}")
+    return AuditReport(passed=True, checks={"all-invariants": True})
+
+
+def audit_transductive_splits(data, splits):
+    """Audit a standalone transductive split bundle."""
+    try:
+        return _audit_transductive_splits(data, splits)
+    except ValueError as error:
+        raise ProtocolError(
+            str(error),
+            component="transductive",
+            seed=splits.metadata.seed if isinstance(splits, SplitBundle) else None,
+        ) from error
+
+
+def generate_transductive_splits(
+    data, *, validation_ratio=0.1, test_ratio=0.1, seed=None
+):
+    """Generate standalone random-edge transductive splits.
+
+    Validation and test positives are withheld by PyG's ``RandomLinkSplit``.
+    Evaluation negatives are then sampled at a 1:1 ratio from non-edges in the
+    original graph. Training negatives remain the responsibility of the
+    training loop.
+    """
+    if not isinstance(data, Data):
+        raise TypeError("data should be of type torch_geometric.data.Data")
+    _validate_simple_undirected_graph(data)
+    for value, name in (
+        (validation_ratio, "validation_ratio"),
+        (test_ratio, "test_ratio"),
+    ):
+        if (
+            not isinstance(value, numbers.Real)
+            or isinstance(value, bool)
+            or not 0 <= value < 1
+        ):
+            raise ValueError(f"{name} must be between zero and one")
+    if validation_ratio + test_ratio >= 1:
+        raise ValueError("validation_ratio and test_ratio must sum to less than one")
+
+    train, validation, test = _apply_random_link_split(
+        data.clone(), validation_ratio, test_ratio, seed
+    )
+    visible_mask = torch.ones(
+        data.num_nodes, dtype=torch.bool, device=data.edge_index.device
+    )
+    for offset, split in enumerate((validation, test), start=1):
+        negative_edges = _sample_seen_negative_edges(
+            data,
+            visible_mask,
+            int(split.edge_label_index.size(1)),
+            seed=None if seed is None else seed + offset,
+        )
+        _set_negative_edges(split, negative_edges)
+    query_nodes = QueryNodeSets(validation=(), test=())
+    _attach_split_metadata(
+        (
+            ("train", "train", "transductive", train),
+            ("validation", "validation", "transductive", validation),
+            ("transductive", "test", "transductive", test),
+        ),
+        query_nodes,
+        data.num_nodes,
+        data.edge_index.device,
+    )
+    splits = SplitBundle(
+        train=train,
+        validation=validation,
+        tests={"transductive": test},
+        metadata=ProtocolMetadata(
+            name="transductive",
+            schema_version=1,
+            seed=seed,
+            parameters={
+                "validation_ratio": validation_ratio,
+                "test_ratio": test_ratio,
+            },
+            realized_counts={
+                "validation_positives": int(
+                    (validation.edge_label == 1).sum()
+                ),
+                "test_positives": int((test.edge_label == 1).sum()),
+            },
+        ),
+        visible_node_mask=visible_mask,
+    )
+    audit_transductive_splits(data, splits)
+    return splits
+
+
 def generate_comparable_splits(
     data, query=None, test_ratio=None, train_ratio=0.8, *, query_size=None,
     query_fraction=None, validation_query=None, validation_query_size=None,

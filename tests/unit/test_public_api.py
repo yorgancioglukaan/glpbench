@@ -114,6 +114,9 @@ class TestProtocolPublicExports(unittest.TestCase):
             glp_protocols.select_query_node_sets,
         )
         self.assertIs(glp_protocols.SplitBundle, utils.SplitBundle)
+        self.assertTrue(callable(glp_protocols.create_split_protocol))
+        self.assertTrue(callable(glp_protocols.register_split_protocol))
+        self.assertTrue(callable(glp_protocols.generate_transductive_splits))
 
 
 class TestEvaluationPublicExports(unittest.TestCase):
