@@ -17,6 +17,9 @@ python -m pip install glpbench
 Run `glpbench --help` to list the available experiment, benchmark, search, and
 audit commands.
 
+Full documentation is available at
+[glpbench.readthedocs.io](https://glpbench.readthedocs.io/).
+
 ## Contents
 
 - [Key features](#key-features)

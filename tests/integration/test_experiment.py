@@ -775,8 +775,8 @@ class TestMainPipeline(unittest.TestCase):
             )
 
             with patch(
-                "glpbench.evaluation.pipeline.calculate_reduced_features",
-                wraps=utils.calculate_reduced_features,
+                "glpbench.preprocessing.adapters.fit_reducer",
+                wraps=utils.fit_reducer,
             ) as mock_reduction:
                 main.run_experiment(args)
 
@@ -791,8 +791,10 @@ class TestMainPipeline(unittest.TestCase):
         fit_mask[list(query_nodes.validation)] = False
         fit_mask[list(query_nodes.test)] = False
         expected_mean = graph.x[fit_mask].mean(dim=0).numpy()
-        reduced_graph = mock_reduction.call_args.args[0]
-        self.assertTrue((reduced_graph.feature_reducer.mean_ == expected_mean).all())
+        fitted_features = mock_reduction.call_args.args[0]
+        fitted_mask = mock_reduction.call_args.kwargs["fit_nodes"]
+        actual_mean = fitted_features[fitted_mask].mean(dim=0).numpy()
+        self.assertTrue((actual_mean == expected_mean).all())
         for row in rows:
             extra_fields = json.loads(row["extra_fields"])
             self.assertEqual(
