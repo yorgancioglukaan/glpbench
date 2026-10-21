@@ -57,6 +57,12 @@ Validation-only, standalone semi-inductive, and standalone transductive
 protocols provide equivalent protocol-specific audits. Audit failures raise
 `ProtocolError` rather than being reduced to warnings.
 
+Every built-in procedural constructor completes its audit before returning a
+`SplitBundle`; registered built-in adapters inherit the same guarantee. An
+invalid split therefore cannot proceed to feature preprocessing or model
+construction through the standard execution paths. The explicit `audit()`
+methods remain available for checking retained or externally modified bundles.
+
 ## Split metadata
 
 Every built-in protocol returns a `SplitBundle` with schema-versioned

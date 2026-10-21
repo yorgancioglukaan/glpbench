@@ -4,6 +4,7 @@ import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,7 @@ from glpbench.protocols import (
     register_split_protocol,
 )
 import glpbench.protocols.registry as registry
+import glpbench.protocols.splitting as splitting
 
 
 def _graph():
@@ -165,6 +167,23 @@ class TestProtocolAdapters(unittest.TestCase):
         _assert_bundle_equal(self, expected, actual)
         self.assertTrue(protocol.audit(data, actual).passed)
 
+    def test_validation_constructor_requires_its_audit(self):
+        data = _graph()
+        with patch.object(
+            splitting,
+            "audit_validation_splits",
+            wraps=splitting.audit_validation_splits,
+        ) as audit:
+            generate_validation_splits(
+                data,
+                query_size=1,
+                validation_query_size=1,
+                train_ratio=0.75,
+                seed=12,
+            )
+
+        audit.assert_called_once()
+
     def test_semi_inductive_adapter_matches_procedural_api(self):
         data = _graph()
         parameters = {
@@ -179,6 +198,56 @@ class TestProtocolAdapters(unittest.TestCase):
 
         _assert_bundle_equal(self, expected, actual)
         self.assertTrue(protocol.audit(data, actual).passed)
+
+    def test_semi_inductive_constructor_requires_its_audit(self):
+        data = _graph()
+        with patch.object(
+            splitting,
+            "audit_semi_inductive_splits",
+            wraps=splitting.audit_semi_inductive_splits,
+        ) as audit:
+            inductive_split(
+                data,
+                query=[7],
+                validation_query=[6],
+                train_ratio=0.75,
+                seed=13,
+            )
+
+        audit.assert_called_once()
+
+    def test_constructor_rejects_unsuccessful_audit_report(self):
+        failed = AuditReport(
+            passed=False,
+            checks={"candidate-exclusion": False},
+            details={"candidate-exclusion": "corrupted test fixture"},
+        )
+        with patch.object(
+            splitting, "audit_validation_splits", return_value=failed
+        ):
+            with self.assertRaisesRegex(
+                ProtocolError, "candidate-exclusion"
+            ):
+                generate_validation_splits(
+                    _graph(),
+                    query_size=1,
+                    validation_query_size=1,
+                    train_ratio=0.75,
+                    seed=12,
+                )
+
+    def test_constructor_rejects_malformed_audit_report(self):
+        with patch.object(
+            splitting, "audit_validation_splits", return_value=True
+        ):
+            with self.assertRaisesRegex(ProtocolError, "AuditReport"):
+                generate_validation_splits(
+                    _graph(),
+                    query_size=1,
+                    validation_query_size=1,
+                    train_ratio=0.75,
+                    seed=12,
+                )
 
     def test_validation_audit_rejects_query_leakage(self):
         data = _graph()
