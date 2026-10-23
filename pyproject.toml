@@ -1,21 +1,21 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "glpbench"
-version = "0.1.0a3"
+dynamic = ["version"]
 description = "Evaluation pipelines for transductive and semi-inductive graph link prediction"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     {name = "Kaan Yorgancioglu"},
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -41,6 +41,9 @@ glpbench = "glpbench.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "glpbench.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

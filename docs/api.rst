@@ -17,8 +17,12 @@ objects retain their normal mutable behavior.
 Component interfaces
 --------------------
 
-These runtime-checkable protocols define extension boundaries without
-requiring user components to inherit from GLPBench base classes.
+These runtime-checkable protocols describe the intended extension boundaries
+without requiring user components to inherit from GLPBench base classes. The
+model-adapter protocol is provisional in this alpha release: bundled models do
+not yet implement its ``fit`` and ``score_edges`` interface. Use the
+``glpbench.models.LinkPrediction`` interface shown in the models guide until
+the adapter migration is complete.
 
 .. automodule:: glpbench.interfaces
    :members:

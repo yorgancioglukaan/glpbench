@@ -254,7 +254,14 @@ class GAE_Model(LinkPredictionModel):
         ``gatv2_kwargs`` or as keyword arguments.
     """
 
-    def __init__(self, in_channels, hidden_channels, out_channels, conv_layer_type = GCNConv, **kwargs):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        conv_layer_type="GCNConv",
+        **kwargs,
+    ):
         super().__init__()
 
         #create convolution layers
@@ -325,7 +332,7 @@ class MLP_GAE_Model(GAE_Model):
         in_channels,
         hidden_channels,
         out_channels,
-        conv_layer_type=GCNConv,
+        conv_layer_type="GCNConv",
         decoder_hidden_channels=None,
         decoder_dropout=0.0,
         **kwargs,
@@ -371,7 +378,7 @@ class MLP_AGAE_Model(AGAE_Model):
         in_channels,
         hidden_channels,
         out_channels,
-        conv_layer_type=GCNConv,
+        conv_layer_type="GCNConv",
         decoder_hidden_channels=None,
         decoder_dropout=0.0,
         **kwargs,
@@ -423,7 +430,7 @@ class VGAE_Model(LinkPredictionModel):
         in_channels,
         hidden_channels,
         out_channels,
-        conv_layer_type=GCNConv,
+        conv_layer_type="GCNConv",
         kl_weight=1.0,
         **kwargs,
     ):
