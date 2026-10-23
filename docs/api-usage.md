@@ -24,7 +24,7 @@ examples, will be added as the public interfaces stabilize.
 ## Strict configuration parsing
 
 Canonical configuration documents use a `schema_version` and `kind` field.
-They can be validated independently of command execution. In `0.1.0a3`, this
+They can be validated independently of command execution. As of `0.1.0a4`, this
 canonical format is a Python API feature and is not yet a direct CLI input:
 
 ```python

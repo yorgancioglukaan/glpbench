@@ -266,7 +266,7 @@ glpbench audit configs/example_audit.yaml --resume --verbose
 The benchmark, search, and audit CLI commands continue to accept the documented
 `version`-based YAML formats. GLPBench also provides a strict canonical
 configuration API using `schema_version`, frozen dataclasses, unknown-field
-rejection, and path-aware validation errors. In `0.1.0a3`, canonical
+rejection, and path-aware validation errors. As of `0.1.0a4`, canonical
 configurations are loaded and inspected through the Python API; they are not
 yet accepted directly by the CLI runners.
 
