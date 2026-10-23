@@ -1,5 +1,4 @@
 import torch
-from glpbench.datasets import load_dataset
 import argparse
 import copy
 import json
@@ -27,7 +26,7 @@ from glpbench.contracts import (
     TrainingResult,
 )
 from glpbench.exceptions import TrainingError
-from glpbench.preprocessing import available_reduction_methods
+from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.training import (
     available_lr_schedulers,
     build_lr_scheduler,
@@ -35,7 +34,11 @@ from glpbench.training import (
     step_lr_scheduler,
     validate_scheduler_config,
 )
-from glpbench.evaluation import prepare_candidate_data
+from glpbench.evaluation import (
+    load_registered_dataset,
+    prepare_candidate_data,
+    realize_registered_split,
+)
 from glpbench.models import (
     LinkPrediction,
     available_agae_regularizers,
@@ -43,10 +46,6 @@ from glpbench.models import (
     count_trainable_parameters,
     get_model_registration,
     sample_training_negative_edges,
-)
-from glpbench.protocols import (
-    generate_comparable_splits,
-    select_query_node_sets,
 )
 
 
@@ -359,7 +358,7 @@ def parse_args():
     parser.add_argument("--out-channels", type=int, default=64)
     parser.add_argument(
         "--reduction-method",
-        choices=available_reduction_methods(),
+        choices=available_reduction_preprocessors(),
         default="pca",
         help="node-feature reduction method used by asymmetric models",
     )
@@ -539,7 +538,7 @@ def run_experiment(
     # Load once, then clone before seed-specific preprocessing.
     emit("stage", dataset=args.dataset, stage="loading")
     report(f"Loading {args.dataset}...")
-    loaded_dataset = load_dataset(
+    loaded_dataset = load_registered_dataset(
         args.dataset,
         root=args.data_root,
         normalize_features=False,
@@ -608,35 +607,27 @@ def run_experiment(
         random.seed(seed)
         torch.manual_seed(seed)
         data = source_data.clone()
-        query_nodes = select_query_node_sets(
+        report(f"Generating comparable graph splits for seed {seed}...")
+        splits = realize_registered_split(
+            "matched-semi-inductive",
             data,
-            query_size=query_size,
-            query_fraction=query_fraction,
-            validation_query_size=validation_query_size,
-            validation_query_fraction=validation_query_fraction,
             seed=seed,
+            dataset_fingerprint=dataset_metadata.fingerprint,
+            parameters={
+                "query_size": query_size,
+                "query_fraction": query_fraction,
+                "validation_query_size": validation_query_size,
+                "validation_query_fraction": validation_query_fraction,
+                "train_ratio": args.train_ratio,
+            },
         )
-
         if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
-            fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
-            fit_mask[list(query_nodes.validation)] = False
-            fit_mask[list(query_nodes.test)] = False
-            num_fit_nodes = int(fit_mask.sum())
+            num_fit_nodes = int(splits.visible_node_mask.sum())
             if args.out_channels > min(num_fit_nodes, data.num_features):
                 raise ValueError(
                     "out_channels cannot exceed the smaller of the number of "
                     "non-query nodes and num_features"
                 )
-
-        report(f"Generating comparable graph splits for seed {seed}...")
-        splits = generate_comparable_splits(
-            data,
-            query=query_nodes.test,
-            validation_query=query_nodes.validation,
-            train_ratio=args.train_ratio,
-            seed=seed,
-            dataset_fingerprint=dataset_metadata.fingerprint,
-        )
         if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
             report(f"Calculating reduced node features for seed {seed}...")
             preparation_model_type = "asymmetric"
@@ -709,7 +700,7 @@ def run_experiment(
             )
             extra_fields = {
                 "reduction_method": reduction_method,
-                "validation_query_size": len(query_nodes.validation),
+                "validation_query_size": len(splits.validation_query_nodes),
                 "learning_rate": learning_rate,
                 "device": str(device),
                 "query_selection": {
@@ -719,7 +710,7 @@ def run_experiment(
                     "value": (
                         query_fraction if query_fraction is not None else query_size
                     ),
-                    "resolved_size": len(query_nodes.test),
+                    "resolved_size": len(splits.test_query_nodes),
                 },
                 "validation_query_selection": {
                     "mode": (
@@ -734,7 +725,7 @@ def run_experiment(
                         if validation_query_fraction is not None
                         else validation_query_size
                     ),
-                    "resolved_size": len(query_nodes.validation),
+                    "resolved_size": len(splits.validation_query_nodes),
                 },
             }
             if (
@@ -780,8 +771,8 @@ def run_experiment(
                     "normalize_features": args.normalize_features,
                 },
                 protocol_parameters={
-                    "query_size": len(query_nodes.test),
-                    "validation_query_size": len(query_nodes.validation),
+                    "query_size": len(splits.test_query_nodes),
+                    "validation_query_size": len(splits.validation_query_nodes),
                     "train_ratio": args.train_ratio,
                     "training_policy": training_policy,
                 },
@@ -820,8 +811,8 @@ def run_experiment(
                     "conv_layer_type": effective_conv_layer,
                     "hidden_channels": args.hidden_channels,
                     "out_channels": args.out_channels,
-                    "query_size": len(query_nodes.test),
-                    "validation_query_size": len(query_nodes.validation),
+                    "query_size": len(splits.test_query_nodes),
+                    "validation_query_size": len(splits.validation_query_nodes),
                     "train_ratio": args.train_ratio,
                     "epochs": args.epochs,
                     "normalize_features": args.normalize_features,

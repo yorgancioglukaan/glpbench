@@ -11,7 +11,7 @@ from glpbench.configuration.parsing import configuration_error
 from glpbench.configuration.search import SearchConfig
 from glpbench.datasets import available_datasets
 from glpbench.models import available_model_types, get_model_registration
-from glpbench.preprocessing import available_reduction_methods
+from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.training import validate_scheduler_config
 
 
@@ -98,7 +98,7 @@ def _validate_model(
             path + ("conv_layer_types",),
             f"is not supported by {model.architecture!r}",
         )
-    reducers = set(available_reduction_methods())
+    reducers = set(available_reduction_preprocessors())
     for index, name in enumerate(reduction_methods):
         if name not in reducers:
             raise configuration_error(
@@ -132,7 +132,7 @@ def _validate_model(
                 f"is not supported by {model.architecture!r}",
             )
     if search and "reduction_method" in parameters:
-        reducers = set(available_reduction_methods())
+        reducers = set(available_reduction_preprocessors())
         for index, name in enumerate(parameters["reduction_method"].values):
             if name not in reducers:
                 raise configuration_error(

@@ -18,6 +18,7 @@ from glpbench.preprocessing import (
     PreprocessingPipeline,
     PreprocessingStep,
     available_preprocessors,
+    available_reduction_preprocessors,
     create_preprocessor,
     fit_reducer,
     normalize_graph_features,
@@ -52,12 +53,15 @@ class TestPreprocessorRegistry(unittest.TestCase):
     def setUp(self):
         self._factories = dict(registry._PREPROCESSOR_FACTORIES)
         self._lookup = dict(registry._NAME_LOOKUP)
+        self._outputs = dict(registry._OUTPUTS)
 
     def tearDown(self):
         registry._PREPROCESSOR_FACTORIES.clear()
         registry._PREPROCESSOR_FACTORIES.update(self._factories)
         registry._NAME_LOOKUP.clear()
         registry._NAME_LOOKUP.update(self._lookup)
+        registry._OUTPUTS.clear()
+        registry._OUTPUTS.update(self._outputs)
 
     def test_builtin_names_and_conformance(self):
         self.assertEqual(available_preprocessors(), (
@@ -66,6 +70,9 @@ class TestPreprocessorRegistry(unittest.TestCase):
             "pca",
             "sparse-random-projection",
             "truncated-svd",
+        ))
+        self.assertEqual(available_reduction_preprocessors(), (
+            "pca", "sparse-random-projection", "truncated-svd",
         ))
         for name in available_preprocessors():
             parameters = {} if name in {"identity", "normalize-features"} else {
@@ -104,12 +111,15 @@ class TestPreprocessingPipeline(unittest.TestCase):
     def setUp(self):
         self._factories = dict(registry._PREPROCESSOR_FACTORIES)
         self._lookup = dict(registry._NAME_LOOKUP)
+        self._outputs = dict(registry._OUTPUTS)
 
     def tearDown(self):
         registry._PREPROCESSOR_FACTORIES.clear()
         registry._PREPROCESSOR_FACTORIES.update(self._factories)
         registry._NAME_LOOKUP.clear()
         registry._NAME_LOOKUP.update(self._lookup)
+        registry._OUTPUTS.clear()
+        registry._OUTPUTS.update(self._outputs)
 
     @staticmethod
     def _features():

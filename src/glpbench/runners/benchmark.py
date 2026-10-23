@@ -21,7 +21,7 @@ from glpbench.logging import (
     EpochHistoryRecord,
     make_configuration_id,
 )
-from glpbench.preprocessing import available_reduction_methods
+from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
@@ -237,7 +237,7 @@ def _validate_defaults(defaults):
         )
     if resolved["conv_layer_type"] not in _CONV_LAYER_TYPES:
         raise ValueError("Unknown default convolution layer")
-    if resolved["reduction_method"] not in available_reduction_methods():
+    if resolved["reduction_method"] not in available_reduction_preprocessors():
         raise ValueError("Unknown default reduction method")
     if resolved["selection_metric"] not in {"roc_auc", "average_precision"}:
         raise ValueError("Unknown selection metric")
@@ -318,7 +318,10 @@ def _parse_model_grid(raw, defaults, index):
         [defaults["reduction_method"]] if raw_reducers is None
         else _require_unique_sequence(raw_reducers, "reduction_methods")
     )
-    if any(method not in available_reduction_methods() for method in raw_reducers):
+    if any(
+        method not in available_reduction_preprocessors()
+        for method in raw_reducers
+    ):
         raise ValueError("Unknown reduction method")
 
     parameters = _require_mapping(raw.get("parameters", {}), "parameters")
@@ -800,7 +803,7 @@ def _selected_experiment_job(config, dataset, model, selections):
         "reduction_method", config.defaults["reduction_method"]
     )
     if model_registration.capabilities.requires_reduced_features:
-        if reducer not in available_reduction_methods():
+        if reducer not in available_reduction_preprocessors():
             raise ValueError("Unknown selected reduction method")
     elif "reduction_method" in hyperparameters:
         raise ValueError(

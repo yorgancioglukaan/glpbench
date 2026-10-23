@@ -218,6 +218,28 @@ class TestSearchRunner(unittest.TestCase):
             prepared.splits.train.edge_index, splits.train.edge_index
         ))
 
+    @patch("glpbench.runners.search.load_registered_dataset")
+    def test_search_resolves_validation_only_protocol(self, mock_load):
+        mock_load.return_value = _loaded_dataset(self._graph())
+        config = search.load_search_config("tests/fixtures/pilot_search.yaml")
+        source_cache = {}
+        split_cache = {}
+
+        first = search._prepare_search_split(
+            config, "cora", 4, source_cache, split_cache
+        )
+        second = search._prepare_search_split(
+            config, "cora", 4, source_cache, split_cache
+        )
+
+        self.assertIs(first, second)
+        self.assertEqual(
+            first.metadata.name,
+            "matched-semi-inductive-validation-only",
+        )
+        self.assertEqual(first.tests, {})
+        mock_load.assert_called_once()
+
     def test_selection_uses_tolerance_then_ap_then_parameter_count(self):
         base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         candidates = [
@@ -263,7 +285,7 @@ class TestSearchRunner(unittest.TestCase):
             candidates[1].candidate_id,
         )
 
-    @patch("glpbench.runners.search.load_dataset")
+    @patch("glpbench.runners.search.load_registered_dataset")
     def test_toy_search_logs_selects_and_resumes(self, mock_load):
         mock_load.return_value = _loaded_dataset(self._graph())
         base = search.load_search_config("tests/fixtures/pilot_search.yaml")
@@ -309,8 +331,8 @@ class TestSearchRunner(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["candidate_id"], "toy-candidate")
 
-    @patch("glpbench.runners.search.generate_comparable_splits")
-    @patch("glpbench.runners.search.load_dataset")
+    @patch("glpbench.runners.search.realize_registered_split")
+    @patch("glpbench.runners.search.load_registered_dataset")
     def test_shared_split_failure_is_cached_and_logged_once(
         self, mock_load, mock_split
     ):

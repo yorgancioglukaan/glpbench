@@ -16,9 +16,12 @@ import yaml
 import glpbench.runners.benchmark as benchmark
 from glpbench.contracts import TrainingPolicy
 from glpbench.exceptions import ConfigurationError
-from glpbench.datasets import load_dataset
 from glpbench.logging import CSVEpochHistoryLogger, EpochHistoryRecord
-from glpbench.evaluation import prepare_validation_data
+from glpbench.evaluation import (
+    load_registered_dataset,
+    prepare_validation_data,
+    realize_registered_split,
+)
 from glpbench.models import (
     LinkPrediction,
     count_trainable_parameters,
@@ -28,7 +31,6 @@ from glpbench.runners.experiment import (
     calculate_metrics,
     train_with_validation_selection,
 )
-from glpbench.protocols import generate_validation_splits
 
 
 AUDIT_FIELDNAMES = [
@@ -316,7 +318,7 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                 continue
             try:
                 if job.dataset not in source_cache:
-                    source_cache[job.dataset] = load_dataset(
+                    source_cache[job.dataset] = load_registered_dataset(
                         job.dataset,
                         root=config.benchmark_config.data_root,
                         normalize_features=False,
@@ -324,17 +326,26 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     )
                 loaded = source_cache[job.dataset]
                 source = loaded.data
-                split_key = (job.dataset, seed)
+                protocol_parameters = {
+                    "query_fraction": job.parameters["query_fraction"],
+                    "validation_query_fraction": (
+                        job.parameters["validation_query_fraction"]
+                    ),
+                    "train_ratio": job.parameters["train_ratio"],
+                }
+                split_key = (
+                    job.dataset,
+                    seed,
+                    "matched-semi-inductive-validation-only",
+                    tuple(sorted(protocol_parameters.items())),
+                )
                 if split_key not in split_cache:
-                    split_cache[split_key] = generate_validation_splits(
+                    split_cache[split_key] = realize_registered_split(
+                        "matched-semi-inductive-validation-only",
                         source,
-                        query_fraction=job.parameters["query_fraction"],
-                        validation_query_fraction=(
-                            job.parameters["validation_query_fraction"]
-                        ),
-                        train_ratio=job.parameters["train_ratio"],
                         seed=seed,
                         dataset_fingerprint=loaded.metadata.fingerprint,
+                        parameters=protocol_parameters,
                     )
                 prepared = prepare_validation_data(
                     source,
