@@ -7,7 +7,7 @@
     srcset="https://raw.githubusercontent.com/yorgancioglukaan/glpbench/main/assets/glpbench_banner_light.png">
   <img
     alt="GLPBench: reproducible graph link prediction"
-    src="https://raw.githubusercontent.com/yorgancioglukaan/glpbench/main/assets/glpbench_banner_light.png">
+    src="https://raw.githubusercontent.com/yorgancioglukaan/glpbench/main/assets/glpbench_banner.png">
 </picture>
 
 # GLPBench
