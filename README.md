@@ -176,7 +176,11 @@ glpbench experiment cora \
   --model-type variational
 ```
 
-Supported datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers, Coauthor CS, DBLP, WikiCS, and Deezer Europe. Supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`. Run `glpbench experiment --help` for the complete option list. Newly registered architectures will automatically become available to the CLI.
+Bundled datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers,
+Coauthor CS, DBLP, WikiCS, and Deezer Europe. Deezer Europe depends on PyG's
+externally hosted download and may be unavailable when that upstream host is
+offline. Supported convolution layers are `GCNConv`, `GraphConv`, `SAGEConv`,
+and `GATv2Conv`. Run `glpbench experiment --help` for the complete option list.
 
 For example, run the Amazon Photo benchmark with:
 
@@ -303,17 +307,24 @@ import torch
 from glpbench.protocols import (
     calculate_reduced_features,
     generate_comparable_splits,
-    select_query_nodes,
+    select_query_node_sets,
 )
 
-query = select_query_nodes(data, query_size=3, seed=42)
+queries = select_query_node_sets(
+    data,
+    query_size=3,
+    validation_query_size=3,
+    seed=42,
+)
 fit_mask = torch.ones(data.num_nodes, dtype=torch.bool)
-fit_mask[query] = False
+fit_mask[list(queries.validation) + list(queries.test)] = False
 calculate_reduced_features(data, dim=64, fit_nodes=fit_mask)
 splits = generate_comparable_splits(
     data,
-    query=query,
+    query=queries.test,
+    validation_query=queries.validation,
     train_ratio=0.8,
+    seed=42,
 )
 train = splits.train
 val = splits.validation
@@ -330,11 +341,12 @@ glpbench experiment coauthor-cs out/results.csv \
   --reduction-method truncated-svd
 ```
 
-`select_query_nodes()` performs deterministic automatic selection while ensuring
-that every query retains at least one visible neighbor. Both split functions can
-also select queries directly by accepting `query_size` or `query_fraction` with
-a `seed`. `generate_comparable_splits()` creates transductive and inductive test
-sets with matching message-passing graphs and equal numbers of labeled edges.
+`select_query_node_sets()` performs deterministic joint selection of disjoint
+validation and test queries while ensuring that every query retains at least
+one visible neighbor. Split constructors can also select queries directly by
+accepting `query_size` or `query_fraction` with a `seed`.
+`generate_comparable_splits()` creates transductive and inductive test sets
+with matching message-passing graphs and equal numbers of labeled edges.
 It automatically calls `audit_comparable_splits()` to enforce node-role,
 topology, positive/negative leakage, orientation, and paired-test invariants.
 The split protocol expects a simple undirected graph and rejects self-loops or
