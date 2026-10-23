@@ -99,3 +99,10 @@ pipeline. Built-ins are `identity`, `normalize-features`, `pca`,
 produces the encoder input `x`; an optional terminal reducer produces
 `x_reduced` from that same representation. The pipeline, rather than an
 individual reducer, supplies the training-visible fit mask.
+
+Experiment, benchmark, search, and convergence-audit execution resolve their
+datasets, split protocols, and preprocessing operations through the component
+registries. Existing CLI and YAML fields remain compatibility shorthands for
+those registered components. Search and convergence audits resolve the
+validation-only matched protocol, so their preparation boundary never receives
+test candidates.

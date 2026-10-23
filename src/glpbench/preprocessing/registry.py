@@ -14,6 +14,7 @@ from glpbench.preprocessing.adapters import (
 
 _PREPROCESSOR_FACTORIES = {}
 _NAME_LOOKUP = {}
+_OUTPUTS = {}
 
 
 def normalize_preprocessor_name(name):
@@ -29,7 +30,9 @@ def normalize_preprocessor_name(name):
     return normalized
 
 
-def register_preprocessor(name, factory, *, aliases=(), replace=False):
+def register_preprocessor(
+    name, factory, *, aliases=(), output="features", replace=False
+):
     """Register a preprocessor factory under a stable name."""
     canonical_name = name.strip().lower() if isinstance(name, str) else name
     canonical_key = normalize_preprocessor_name(name)
@@ -37,6 +40,8 @@ def register_preprocessor(name, factory, *, aliases=(), replace=False):
         raise TypeError("preprocessor factory must be callable")
     if not isinstance(replace, bool):
         raise TypeError("replace must be a bool")
+    if output not in {"features", "reduced_features"}:
+        raise ValueError("output must be 'features' or 'reduced_features'")
     if isinstance(aliases, (str, bytes)) or not isinstance(aliases, Iterable):
         raise TypeError("aliases must be an iterable of strings")
     lookup_keys = {canonical_key, *(
@@ -51,16 +56,20 @@ def register_preprocessor(name, factory, *, aliases=(), replace=False):
                 f"preprocessor alias collides with registered preprocessor '{owner}'"
             )
     factories = dict(_PREPROCESSOR_FACTORIES)
+    outputs = dict(_OUTPUTS)
     lookup = {
         key: owner for key, owner in _NAME_LOOKUP.items()
         if owner != canonical_name
     }
     factories[canonical_name] = factory
+    outputs[canonical_name] = output
     lookup.update({key: canonical_name for key in lookup_keys})
     _PREPROCESSOR_FACTORIES.clear()
     _PREPROCESSOR_FACTORIES.update(factories)
     _NAME_LOOKUP.clear()
     _NAME_LOOKUP.update(lookup)
+    _OUTPUTS.clear()
+    _OUTPUTS.update(outputs)
     return factory
 
 
@@ -75,12 +84,26 @@ def create_preprocessor(name, **parameters):
     preprocessor = _PREPROCESSOR_FACTORIES[canonical_name](**parameters)
     if not isinstance(preprocessor, FeaturePreprocessor):
         raise TypeError("preprocessor factory must return a FeaturePreprocessor")
+    if getattr(preprocessor, "output", "features") != _OUTPUTS[canonical_name]:
+        raise ValueError(
+            "preprocessor output does not match its registry declaration"
+        )
     return preprocessor
 
 
-def available_preprocessors():
+def available_preprocessors(*, output=None):
     """Return registered preprocessor names in stable order."""
-    return tuple(sorted(_PREPROCESSOR_FACTORIES))
+    if output is not None and output not in {"features", "reduced_features"}:
+        raise ValueError("output must be 'features' or 'reduced_features'")
+    return tuple(sorted(
+        name for name in _PREPROCESSOR_FACTORIES
+        if output is None or _OUTPUTS[name] == output
+    ))
+
+
+def available_reduction_preprocessors():
+    """Return preprocessors that produce ``x_reduced``."""
+    return available_preprocessors(output="reduced_features")
 
 
 def _reducer_factory(method):
@@ -100,7 +123,12 @@ def _register_builtins():
         replace=True,
     )
     for method in ("pca", "truncated-svd", "sparse-random-projection"):
-        register_preprocessor(method, _reducer_factory(method), replace=True)
+        register_preprocessor(
+            method,
+            _reducer_factory(method),
+            output="reduced_features",
+            replace=True,
+        )
 
 
 _register_builtins()
@@ -108,6 +136,7 @@ _register_builtins()
 
 __all__ = [
     "available_preprocessors",
+    "available_reduction_preprocessors",
     "create_preprocessor",
     "normalize_preprocessor_name",
     "register_preprocessor",

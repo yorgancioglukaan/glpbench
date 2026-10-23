@@ -15,11 +15,15 @@ import torch
 from tqdm.auto import tqdm
 import yaml
 
-from glpbench.datasets import available_datasets, load_dataset
+from glpbench.datasets import available_datasets
 from glpbench.contracts import TrainingPolicy
 from glpbench.exceptions import ConfigurationError
-from glpbench.evaluation import prepare_validation_data
-from glpbench.preprocessing import available_reduction_methods
+from glpbench.evaluation import (
+    load_registered_dataset,
+    prepare_validation_data,
+    realize_registered_split,
+)
+from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.models import (
     LinkPrediction,
     available_model_types,
@@ -31,7 +35,6 @@ from glpbench.runners.experiment import (
     calculate_metrics,
     train_with_validation_selection,
 )
-from glpbench.protocols import generate_comparable_splits
 
 
 _TRAINABLE_MODELS = tuple(
@@ -284,8 +287,13 @@ def _validate_model_spaces(models, num_candidates):
     for model_type in ("asymmetric", "asymmetric-mlp"):
         model = _mapping(models[model_type], model_type)
         reducers = _values(model.get("reduction_method"), "reduction_method")
-        if set(reducers) != set(available_reduction_methods()):
-            raise ValueError("asymmetric reducer space is incomplete")
+        unknown_reducers = set(reducers).difference(
+            available_reduction_preprocessors()
+        )
+        if unknown_reducers:
+            raise ValueError(
+                f"unknown asymmetric reducer: {sorted(unknown_reducers)[0]}"
+            )
         regularization = _mapping(model.get("regularization"), "regularization")
         if regularization.get("type") != "cosine-alignment":
             raise ValueError("asymmetric regularization must use cosine alignment")
@@ -495,13 +503,26 @@ def _prepare_search_split(
     config, dataset, seed, source_cache, split_cache
 ):
     """Load a dataset and cache either its split or a shared failure."""
-    split_key = (dataset, seed)
+    split_config = config.raw["splits"]
+    protocol_parameters = {
+        "query_fraction": split_config["test_queries"]["fraction"],
+        "validation_query_fraction": (
+            split_config["validation_queries"]["fraction"]
+        ),
+        "train_ratio": split_config["train_ratio"],
+    }
+    split_key = (
+        dataset,
+        seed,
+        "matched-semi-inductive-validation-only",
+        tuple(sorted(protocol_parameters.items())),
+    )
     if split_key in split_cache:
         return split_cache[split_key]
 
     if dataset not in source_cache:
         try:
-            source_cache[dataset] = load_dataset(
+            source_cache[dataset] = load_registered_dataset(
                 dataset,
                 root=config.raw["execution"]["data_root"],
                 normalize_features=False,
@@ -518,17 +539,13 @@ def _prepare_search_split(
         return loaded
     source_data = loaded.data
 
-    split_config = config.raw["splits"]
     try:
-        prepared = generate_comparable_splits(
+        prepared = realize_registered_split(
+            "matched-semi-inductive-validation-only",
             source_data,
-            query_fraction=split_config["test_queries"]["fraction"],
-            validation_query_fraction=(
-                split_config["validation_queries"]["fraction"]
-            ),
-            train_ratio=split_config["train_ratio"],
             seed=seed,
             dataset_fingerprint=loaded.metadata.fingerprint,
+            parameters=protocol_parameters,
         )
     except Exception as error:
         prepared = _PreparationFailure("data-splitting", error)

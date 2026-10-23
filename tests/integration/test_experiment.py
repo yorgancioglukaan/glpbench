@@ -114,7 +114,7 @@ class TestMainPipeline(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             main._json_object("[1, 2]")
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_multi_seed_run_preserves_pairing_and_configuration_ids(
         self, mock_load
     ):
@@ -138,8 +138,8 @@ class TestMainPipeline(unittest.TestCase):
                 normalize_features=False,
             )
             with patch(
-                "glpbench.runners.experiment.generate_comparable_splits",
-                wraps=utils.generate_comparable_splits,
+                "glpbench.runners.experiment.realize_registered_split",
+                wraps=main.realize_registered_split,
             ) as mock_splits:
                 run_id = main.run_experiment(args)
 
@@ -152,11 +152,14 @@ class TestMainPipeline(unittest.TestCase):
             [call.kwargs["seed"] for call in mock_splits.call_args_list],
             [1, 2],
         )
-        query_partitions = [
-            (tuple(call.kwargs["validation_query"]), tuple(call.kwargs["query"]))
+        self.assertTrue(all(
+            call.args[0] == "matched-semi-inductive"
             for call in mock_splits.call_args_list
-        ]
-        self.assertNotEqual(query_partitions[0], query_partitions[1])
+        ))
+        self.assertTrue(all(
+            call.kwargs["parameters"]["query_size"] == 1
+            for call in mock_splits.call_args_list
+        ))
         self.assertEqual(len(rows), 8)
         self.assertEqual({row["run_id"] for row in rows}, {run_id})
         self.assertEqual({row["random_seed"] for row in rows}, {"1", "2"})
@@ -176,7 +179,7 @@ class TestMainPipeline(unittest.TestCase):
                 {row["random_seed"] for row in repetitions}, {"1", "2"}
             )
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_completed_results_skip_model_evaluation_and_duplicate_rows(
         self, mock_load
     ):
@@ -222,7 +225,7 @@ class TestMainPipeline(unittest.TestCase):
         mock_metrics.assert_not_called()
         self.assertEqual(resumed_rows, original_rows)
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_checkpoint_selection_restores_best_epoch_before_testing(
         self, mock_load
     ):
@@ -604,7 +607,7 @@ class TestMainPipeline(unittest.TestCase):
         "glpbench.runners.experiment.sample_training_negative_edges",
         wraps=link_prediction.sample_training_negative_edges,
     )
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_unspecified_model_type_runs_both_models_on_both_splits(
         self, mock_load, mock_negative_sampling
     ):
@@ -752,7 +755,7 @@ class TestMainPipeline(unittest.TestCase):
         self.assertEqual(deal_config["deal_theta_ss"], 1.0)
         self.assertEqual(deal_config["deal_lambda_sa"], 1.0)
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_explicit_model_type_list_runs_only_selected_models(self, mock_load):
         graph = self._graph()
         mock_load.return_value = _loaded_dataset(graph)
@@ -812,7 +815,7 @@ class TestMainPipeline(unittest.TestCase):
                 "mode": "match-test", "value": None, "resolved_size": 1,
             })
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_gatv2_kwargs_are_passed_to_model_and_logged(self, mock_load):
         mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
@@ -851,7 +854,7 @@ class TestMainPipeline(unittest.TestCase):
                 args.gatv2_kwargs,
             )
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_weight_decay_is_applied_to_non_asymmetric_trainable_models(
         self, mock_load
     ):
@@ -882,7 +885,7 @@ class TestMainPipeline(unittest.TestCase):
 
         self.assertEqual({float(row["weight_decay"]) for row in rows}, {0.001})
 
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_compact_progress_emits_model_seed_events(self, mock_load):
         mock_load.return_value = _loaded_dataset(self._graph())
         with tempfile.TemporaryDirectory() as directory:
@@ -930,7 +933,7 @@ class TestMainPipeline(unittest.TestCase):
         "glpbench.runners.experiment.sample_training_negative_edges",
         wraps=link_prediction.sample_training_negative_edges,
     )
-    @patch("glpbench.runners.experiment.load_dataset")
+    @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_asymmetric_run_expands_requested_regularizers(
         self, mock_load, mock_negative_sampling
     ):

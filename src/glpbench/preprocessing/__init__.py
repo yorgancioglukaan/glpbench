@@ -8,6 +8,7 @@ from glpbench.preprocessing.pipeline import (
 )
 from glpbench.preprocessing.registry import (
     available_preprocessors,
+    available_reduction_preprocessors,
     create_preprocessor,
     register_preprocessor,
 )
@@ -22,6 +23,7 @@ from glpbench.preprocessing.reduction import (
 __all__ = [
     "attach_reduced_features",
     "available_preprocessors",
+    "available_reduction_preprocessors",
     "available_reduction_methods",
     "create_preprocessor",
     "FeaturePreparation",
