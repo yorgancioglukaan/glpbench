@@ -1,5 +1,15 @@
 """Link-prediction models, adapters, and capabilities."""
 
+from glpbench.models.adapters import (
+    AGAEAdapter,
+    AGAEMLPAdapter,
+    DEALAdapter,
+    FeatureCosineAdapter,
+    FeatureMLPAdapter,
+    GAEAdapter,
+    GAEMLPAdapter,
+    VGAEAdapter,
+)
 from glpbench.models.link_prediction import (
     AGAE_Model,
     DEALModel,
@@ -20,17 +30,25 @@ from glpbench.models.link_prediction import (
 )
 
 __all__ = [
+    "AGAEAdapter",
     "AGAE_Model",
+    "AGAEMLPAdapter",
+    "DEALAdapter",
     "DEALModel",
+    "FeatureCosineAdapter",
     "FeatureCosineModel",
+    "FeatureMLPAdapter",
     "FeatureMLPModel",
+    "GAEAdapter",
     "GAE_Model",
+    "GAEMLPAdapter",
     "LinkPrediction",
     "LinkPredictionModel",
     "MLP_AGAE_Model",
     "MLP_GAE_Model",
     "ModelRegistration",
     "VGAE_Model",
+    "VGAEAdapter",
     "available_agae_regularizers",
     "available_model_types",
     "count_trainable_parameters",

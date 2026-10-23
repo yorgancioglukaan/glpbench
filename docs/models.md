@@ -41,7 +41,8 @@ Use `available_model_types()` to inspect the active model registry and
 `get_model_registration()` to inspect a model's constructor and declared
 capabilities.
 
-The runtime-checkable model-adapter protocol documented in the API reference
-is provisional in this alpha release. Bundled models will adopt that extension
-interface during the planned adapter migration; current integrations should
-use `LinkPrediction` rather than implementing the provisional protocol.
+Each bundled model also has a runtime-checkable adapter exported from
+`glpbench.models`. These adapters provide parameter validation, construction,
+loss, scoring, and result-metadata hooks. The current runners still use
+`LinkPrediction`; adapter-based registration and execution will follow in a
+later migration step.

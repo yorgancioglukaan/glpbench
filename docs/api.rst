@@ -19,10 +19,9 @@ Component interfaces
 
 These runtime-checkable protocols describe the intended extension boundaries
 without requiring user components to inherit from GLPBench base classes. The
-model-adapter protocol is provisional in this alpha release: bundled models do
-not yet implement its construction, loss, and scoring hooks. Use the
-``glpbench.models.LinkPrediction`` interface shown in the models guide until
-the adapter migration is complete.
+bundled models expose adapters implementing the model contract, although the
+current runners continue to use ``glpbench.models.LinkPrediction`` until the
+registry migration is complete.
 
 .. automodule:: glpbench.interfaces
    :members:
