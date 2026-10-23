@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 
 import torch
 
@@ -16,6 +17,7 @@ from glpbench.contracts import (  # noqa: E402
     EndpointMode,
     ModelCapabilities,
     ProtocolRequirements,
+    TrainingLoss,
 )
 from glpbench.exceptions import (  # noqa: E402
     CompatibilityError,
@@ -30,7 +32,7 @@ from glpbench.interfaces import (  # noqa: E402
     DatasetProvider,
     EvaluationMetric,
     FeaturePreprocessor,
-    LinkPredictionModel,
+    ModelAdapter,
     ResultStore,
     SplitProtocol,
 )
@@ -71,14 +73,27 @@ class _FeaturePreprocessor:
         return x
 
 
-class _LinkPredictionModel:
+class _ModelAdapter:
+    name = "toy-model"
     capabilities = ModelCapabilities()
 
-    def fit(self, train_data, validation_data, training_policy):
-        return None
+    def validate_parameters(self, parameters):
+        return MappingProxyType(dict(parameters))
 
-    def score_edges(self, data, edge_index):
+    def build(self, train_data, parameters):
+        return torch.nn.Linear(2, 2)
+
+    def compute_training_loss(
+        self, model, train_data, edge_label_index, edge_label, criterion
+    ):
+        loss = model.weight.sum()
+        return TrainingLoss(loss, {"reconstruction": loss})
+
+    def score_edges(self, model, data, edge_index):
         return torch.empty(edge_index.size(1))
+
+    def result_metadata(self, parameters):
+        return MappingProxyType(dict(parameters))
 
 
 class _Metric:
@@ -100,7 +115,7 @@ class TestComponentInterfaces(unittest.TestCase):
             (_DatasetProvider(), DatasetProvider),
             (_SplitProtocol(), SplitProtocol),
             (_FeaturePreprocessor(), FeaturePreprocessor),
-            (_LinkPredictionModel(), LinkPredictionModel),
+            (_ModelAdapter(), ModelAdapter),
             (_Metric(), EvaluationMetric),
             (_ResultStore(), ResultStore),
         )
@@ -116,6 +131,31 @@ class TestComponentInterfaces(unittest.TestCase):
                 return 0.0
 
         self.assertNotIsInstance(IncompleteMetric(), EvaluationMetric)
+
+        class IncompleteAdapter:
+            name = "incomplete"
+            capabilities = ModelCapabilities()
+
+        self.assertNotIsInstance(IncompleteAdapter(), ModelAdapter)
+
+    def test_trainable_and_non_trainable_adapters_satisfy_boundary(self):
+        self.assertIsInstance(_ModelAdapter(), ModelAdapter)
+
+        class NonTrainableAdapter(_ModelAdapter):
+            capabilities = ModelCapabilities(trainable=False)
+
+        self.assertIsInstance(NonTrainableAdapter(), ModelAdapter)
+
+    def test_adapter_parameter_and_scoring_contract(self):
+        adapter = _ModelAdapter()
+        parameters = adapter.validate_parameters({"hidden_channels": 8})
+        with self.assertRaises(TypeError):
+            parameters["hidden_channels"] = 16
+        model = adapter.build(None, parameters)
+        edge_index = torch.tensor([[0, 1], [1, 0]])
+        self.assertEqual(
+            adapter.score_edges(model, None, edge_index).shape, (2,)
+        )
 
     def test_csv_logger_implements_result_store_boundary(self):
         self.assertIsInstance(CSVResultLogger("unused.csv"), ResultStore)

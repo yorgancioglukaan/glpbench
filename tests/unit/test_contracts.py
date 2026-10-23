@@ -23,6 +23,7 @@ from glpbench.contracts import (  # noqa: E402
     ProtocolRequirements,
     ResolvedExperimentSpec,
     SplitBundle,
+    TrainingLoss,
     TrainingPolicy,
     TrainingResult,
 )
@@ -178,6 +179,32 @@ class TestModelAndTrainingContracts(unittest.TestCase):
                     EndpointMode.VISIBLE_VISIBLE,
                     EndpointMode.VISIBLE_VISIBLE,
                 )
+            )
+
+    def test_training_loss_freezes_valid_scalar_components(self):
+        total = torch.tensor(1.5, requires_grad=True)
+        reconstruction = torch.tensor(1.0)
+        loss = TrainingLoss(
+            total=total,
+            components={"reconstruction": reconstruction},
+        )
+        self.assertIs(loss.total, total)
+        self.assertIs(loss.components["reconstruction"], reconstruction)
+        with self.assertRaises(TypeError):
+            loss.components["regularization"] = torch.tensor(0.5)
+
+    def test_training_loss_rejects_malformed_values(self):
+        with self.assertRaisesRegex(TypeError, "torch.Tensor"):
+            TrainingLoss(total=1.0)
+        with self.assertRaisesRegex(ValueError, "scalar"):
+            TrainingLoss(total=torch.ones(2))
+        with self.assertRaisesRegex(ValueError, "component name"):
+            TrainingLoss(torch.tensor(1.0), {"": torch.tensor(1.0)})
+        with self.assertRaisesRegex(TypeError, "torch.Tensor"):
+            TrainingLoss(torch.tensor(1.0), {"reconstruction": 1.0})
+        with self.assertRaisesRegex(ValueError, "scalar"):
+            TrainingLoss(
+                torch.tensor(1.0), {"reconstruction": torch.ones(2)}
             )
 
     def test_training_policy_freezes_nested_parameters(self):
