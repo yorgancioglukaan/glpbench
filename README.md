@@ -4,7 +4,7 @@
 
 [![PyPI release](https://img.shields.io/pypi/v/glpbench.svg)](https://pypi.org/project/glpbench/)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/glpbench.svg)](https://pypi.org/project/glpbench/)
-[![Documentation status](https://readthedocs.org/projects/glpbench/badge/?version=latest)](https://glpbench.readthedocs.io/en/latest/?badge=latest)
+[![Documentation status](https://readthedocs.org/projects/glpbench/badge/)](https://glpbench.readthedocs.io/)
 
 [Installation](#installation) | [Experiment CLI](#experiment-cli) | [Benchmark grids](#benchmark-grids) | [Configuration](#configuration-formats) | [Python API](#python-api) | [Documentation](https://glpbench.readthedocs.io/)
 
