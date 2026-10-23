@@ -53,6 +53,7 @@ from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
 import glpbench.models.registry as model_registry
+from glpbench.contracts import ModelCapabilities, TrainingLoss
 
 
 class TestLinkPrediction(unittest.TestCase):
@@ -160,16 +161,15 @@ class TestLinkPrediction(unittest.TestCase):
             ),
         )
 
-    def test_model_registrations_describe_asymmetric_mlp_capabilities(self):
-        spec = link_prediction.get_model_registration("asymmetric-mlp")
+    def test_model_adapters_describe_asymmetric_mlp_capabilities(self):
+        adapter = glp_models.get_model_adapter("asymmetric-mlp")
 
-        self.assertIs(spec.constructor, link_prediction.MLP_AGAE_Model)
-        self.assertTrue(spec.capabilities.uses_conv_layer)
-        self.assertTrue(spec.capabilities.requires_reduced_features)
-        self.assertTrue(spec.capabilities.supports_agae_regularization)
-        self.assertTrue(spec.capabilities.uses_mlp_decoder)
+        self.assertTrue(adapter.capabilities.uses_conv_layer)
+        self.assertTrue(adapter.capabilities.requires_reduced_features)
+        self.assertTrue(adapter.capabilities.supports_agae_regularization)
+        self.assertTrue(adapter.capabilities.uses_mlp_decoder)
         with self.assertRaisesRegex(ValueError, "Unknown model"):
-            link_prediction.get_model_registration("unknown")
+            glp_models.get_model_adapter("unknown")
 
     def test_deal_has_structural_embeddings_only_for_seen_nodes(self):
         data = self._deal_training_data()
@@ -347,11 +347,10 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_feature_mlp_spec_and_configuration(self):
         data = self._training_data()
-        spec = link_prediction.get_model_registration("feature-mlp")
+        adapter = glp_models.get_model_adapter("feature-mlp")
 
-        self.assertIs(spec.constructor, link_prediction.FeatureMLPModel)
-        self.assertFalse(spec.capabilities.uses_conv_layer)
-        self.assertTrue(spec.capabilities.uses_mlp_decoder)
+        self.assertFalse(adapter.capabilities.uses_conv_layer)
+        self.assertTrue(adapter.capabilities.uses_mlp_decoder)
         with self.assertRaisesRegex(ValueError, "decoder_hidden_channels"):
             link_prediction.LinkPrediction(
                 data, model_type="feature-mlp", decoder_hidden_channels=0
@@ -879,28 +878,58 @@ class TestLinkPrediction(unittest.TestCase):
 
         data = self._training_data()
         negative_edges = torch.tensor([[0, 4], [3, 1]])
-        class ContextAdapter(glp_models.DEALAdapter):
+        class ContextAdapter:
             name = "context-test"
-            model_class = ContextModel
-            capabilities = link_prediction.ModelCapabilities(
+            capabilities = ModelCapabilities(
                 uses_message_passing=False,
                 uses_conv_layer=False,
                 requires_graph_context=True,
             )
 
+            def __init__(self):
+                self.received_parameters = None
+
+            def validate_parameters(self, parameters):
+                self.received_parameters = dict(parameters)
+                return dict(parameters)
+
+            def build(self, train_data, parameters):
+                return ContextModel(
+                    in_channels=train_data.num_features,
+                    train_data=train_data,
+                    **parameters,
+                )
+
+            def compute_training_loss(
+                self, model, train_data, edge_label_index, edge_label, criterion
+            ):
+                total, components = model.compute_training_loss(
+                    train_data, edge_label_index, edge_label, criterion
+                )
+                return TrainingLoss(total, components)
+
+            def score_edges(self, model, data, edge_index):
+                return torch.full((edge_index.size(1),), 0.25)
+
+            def result_metadata(self, parameters):
+                return {}
+
         adapters = dict(model_registry._MODEL_ADAPTERS)
         lookup = dict(model_registry._NAME_LOOKUP)
         try:
-            glp_models.register_model_adapter(ContextAdapter())
+            adapter = glp_models.register_model_adapter(ContextAdapter())
             predictor = link_prediction.LinkPrediction(
                 data,
                 model_type="context-test",
                 hidden_channels=4,
                 out_channels=2,
+                learning_rate=0.02,
+                weight_decay=0.03,
             )
             loss = predictor.train(
                 negative_edge_index=negative_edges
             )
+            scores = predictor.test(data)
         finally:
             model_registry._MODEL_ADAPTERS.clear()
             model_registry._MODEL_ADAPTERS.update(adapters)
@@ -908,6 +937,9 @@ class TestLinkPrediction(unittest.TestCase):
             model_registry._NAME_LOOKUP.update(lookup)
 
         self.assertIs(predictor.model.constructor_data, data)
+        self.assertNotIn("learning_rate", adapter.received_parameters)
+        self.assertNotIn("weight_decay", adapter.received_parameters)
+        self.assertTrue(torch.equal(scores, torch.full((2,), 0.25)))
         self.assertEqual(
             set(predictor.last_loss_components), {"custom_alignment"}
         )
@@ -920,6 +952,14 @@ class TestLinkPrediction(unittest.TestCase):
             torch.tensor([1.0, 1.0, 0.0, 0.0]),
         ))
         self.assertTrue(torch.isfinite(loss))
+
+    def test_unknown_model_parameters_are_rejected_by_adapter(self):
+        with self.assertRaisesRegex(ValueError, "unsupported model parameter"):
+            link_prediction.LinkPrediction(
+                self._training_data(),
+                model_type="symmetric",
+                unsupported_option=True,
+            )
 
     def test_symmetric_training_step_returns_finite_loss(self):
         data = self._training_data()

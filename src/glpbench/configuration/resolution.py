@@ -9,7 +9,7 @@ from glpbench.configuration.audit import AuditConfig
 from glpbench.configuration.benchmark import BenchmarkConfig
 from glpbench.configuration.validation import validate_config
 from glpbench.contracts import ResolvedExperimentSpec, TrainingPolicy
-from glpbench.models import get_model_registration
+from glpbench.models import get_model_adapter
 
 
 def _training_policy(training) -> TrainingPolicy:
@@ -32,7 +32,7 @@ def _training_policy(training) -> TrainingPolicy:
 
 
 def _model_dimensions(model):
-    capabilities = get_model_registration(model.architecture).capabilities
+    capabilities = get_model_adapter(model.architecture).capabilities
     conv_layers = (
         model.conv_layer_types or ("GCNConv",)
         if capabilities.uses_conv_layer else (None,)

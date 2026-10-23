@@ -1,13 +1,10 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
 import random
 
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import negative_sampling
-
-from glpbench.contracts import ModelCapabilities
-
 
 _GATV2_ARGUMENTS = {
     "heads",
@@ -741,37 +738,11 @@ class FeatureMLPModel(LinkPredictionModel):
         return self.edge_decoder(edge_features).squeeze(-1)
 
 
-@dataclass(frozen=True, slots=True)
-class ModelRegistration:
-    """Associate a model constructor with declarative capabilities."""
-
-    constructor: type[torch.nn.Module]
-    capabilities: ModelCapabilities
-
-
 def available_model_types():
     """Return the registered link-prediction architecture names."""
     from glpbench.models.registry import available_model_types as available
 
     return available()
-
-
-def get_model_registration(model_type):
-    """Return the legacy constructor view of a registered model adapter."""
-    from glpbench.exceptions import CompatibilityError
-    from glpbench.models.registry import get_model_adapter
-
-    adapter = get_model_adapter(model_type)
-    constructor = getattr(adapter, "model_class", None)
-    if not isinstance(constructor, type) or not issubclass(
-        constructor, torch.nn.Module
-    ):
-        raise CompatibilityError(
-            "model adapter is unavailable through the legacy constructor API",
-            component="model-registry",
-            model=adapter.name,
-        )
-    return ModelRegistration(constructor, adapter.capabilities)
 
 
 def count_trainable_parameters(model):
@@ -855,6 +826,25 @@ def _validate_negative_edge_index(edge_index, num_nodes, device):
         raise ValueError("negative_edge_index contains an invalid node ID")
 
 
+_LEGACY_MODEL_PARAMETERS = {
+    "decoder_hidden_channels",
+    "decoder_dropout",
+    "gatv2_kwargs",
+    "kl_weight",
+    "lambda_aa",
+    "lambda_sa",
+    "lambda_ss",
+    "regularization_strength",
+    "regularization_type",
+    "similarity_margin",
+    "similarity_scale",
+    "theta_aa",
+    "theta_sa",
+    "theta_ss",
+    *_GATV2_ARGUMENTS,
+}
+
+
 class LinkPrediction:
     """Train and evaluate graph-autoencoder link predictors.
 
@@ -900,13 +890,11 @@ class LinkPrediction:
             options described by :class:`LinkPrediction`.
         """
 
-        
         self.train_data = train_data
-        self.model_type = kwargs["model_type"] if "model_type" in kwargs.keys() else "symmetric"
-
-        hidden_channels = kwargs["hidden_channels"] if "hidden_channels" in kwargs.keys() else 128
-        out_channels = kwargs["out_channels"] if "out_channels" in kwargs.keys() else 64
-        conv_layer_type= kwargs["conv_layer_type"] if "conv_layer_type" in kwargs.keys() else "GCNConv"
+        self.model_type = kwargs.get("model_type", "symmetric")
+        hidden_channels = kwargs.get("hidden_channels", 128)
+        out_channels = kwargs.get("out_channels", 64)
+        conv_layer_type = kwargs.get("conv_layer_type", "GCNConv")
         learning_rate = kwargs.get("learning_rate", 0.01)
         weight_decay = kwargs.get("weight_decay", 0.0)
         if not isinstance(learning_rate, (int, float)) or learning_rate <= 0:
@@ -921,29 +909,53 @@ class LinkPrediction:
             }
         }
 
-        self.model_registration = get_model_registration(self.model_type)
-        capabilities = self.model_registration.capabilities
+        from glpbench.models.registry import get_model_adapter
+
+        self.model_adapter = get_model_adapter(self.model_type)
+        capabilities = self.model_adapter.capabilities
         self.trainable = capabilities.trainable
-        if (
-            capabilities.uses_conv_layer
-            or capabilities.requires_graph_context
-            or capabilities.uses_mlp_decoder
-        ):
-            constructor_kwargs = {
-                "in_channels": train_data.num_features,
+        adapter_defaults = getattr(self.model_adapter, "defaults", None)
+        if isinstance(adapter_defaults, Mapping):
+            if conv_layer_type == "GATv2Conv" and any(
+                name in model_kwargs for name in _GATV2_ARGUMENTS
+            ):
+                gatv2_kwargs = model_kwargs.get("gatv2_kwargs", {})
+                if isinstance(gatv2_kwargs, Mapping):
+                    gatv2_kwargs = dict(gatv2_kwargs)
+                    gatv2_kwargs.update({
+                        name: model_kwargs[name]
+                        for name in _GATV2_ARGUMENTS
+                        if name in model_kwargs
+                    })
+                    model_kwargs["gatv2_kwargs"] = gatv2_kwargs
+            candidate_parameters = {
                 "hidden_channels": hidden_channels,
                 "out_channels": out_channels,
+                "conv_layer_type": conv_layer_type,
                 **model_kwargs,
             }
-            if capabilities.uses_conv_layer:
-                constructor_kwargs["conv_layer_type"] = conv_layer_type
-            if capabilities.requires_graph_context:
-                constructor_kwargs["train_data"] = train_data
-            self.model = self.model_registration.constructor(
-                **constructor_kwargs,
-            )
+            model_parameters = {
+                name: value for name, value in candidate_parameters.items()
+                if name in adapter_defaults
+            }
+            unknown_parameters = {
+                name: value for name, value in model_kwargs.items()
+                if name not in _LEGACY_MODEL_PARAMETERS
+            }
+            model_parameters.update(unknown_parameters)
         else:
-            self.model = self.model_registration.constructor()
+            model_parameters = dict(model_kwargs)
+            for name, value in (
+                ("hidden_channels", hidden_channels),
+                ("out_channels", out_channels),
+                ("conv_layer_type", conv_layer_type),
+            ):
+                if name in kwargs:
+                    model_parameters[name] = value
+        self.model_parameters = self.model_adapter.validate_parameters(
+            model_parameters
+        )
+        self.model = self.model_adapter.build(train_data, self.model_parameters)
 
         self.optimizer = (
             torch.optim.Adam(
@@ -974,9 +986,8 @@ class LinkPrediction:
         if not self.trainable:
             raise RuntimeError(f"{self.model_type} is not trainable")
 
-        if train_data == None:
-             train_data = self.train_data
-
+        if train_data is None:
+            train_data = self.train_data
 
         self.model.train()
         self.optimizer.zero_grad()
@@ -998,11 +1009,15 @@ class LinkPrediction:
             train_data.edge_label.new_zeros(negative_edge_index.size(1))
         ], dim=0)
 
-        loss, components = self.model.compute_training_loss(
-            train_data, edge_label_index, edge_label, self.criterion
+        training_loss = self.model_adapter.compute_training_loss(
+            self.model,
+            train_data,
+            edge_label_index,
+            edge_label,
+            self.criterion,
         )
-        if not isinstance(components, dict):
-            raise TypeError("training loss components must be a dictionary")
+        loss = training_loss.total
+        components = dict(training_loss.components)
         self.last_loss_components = components
         zero = loss.new_zeros(())
         self.last_reconstruction_loss = components.get("reconstruction", loss)
@@ -1025,10 +1040,6 @@ class LinkPrediction:
         torch.Tensor
             Predicted edge probabilities.
         """
-        self.model.eval()
-        z = self.model.encode(data.x, data.edge_index)
-        out = self.model.decode_edges(z, data.edge_label_index, data)
-        out = out.view(-1)
-        if self.model_registration.capabilities.output_kind != "probabilities":
-            out = out.sigmoid()
-        return out
+        return self.model_adapter.score_edges(
+            self.model, data, data.edge_label_index
+        )

@@ -3,7 +3,7 @@
 import torch
 from torch_geometric.data import Data
 
-from glpbench.models import get_model_registration
+from glpbench.models import get_model_adapter
 from glpbench.preprocessing import (
     PreprocessingPipeline,
     PreprocessingStep,
@@ -70,13 +70,13 @@ def prepare_candidate_data(
         raise ValueError("candidate preparation requires paired test splits")
     if not isinstance(normalize_features, bool):
         raise TypeError("normalize_features must be boolean")
-    model_registration = get_model_registration(model_type)
+    model_adapter = get_model_adapter(model_type)
 
     feature_data = _prepare_features(
         source_data,
         splits.train.visible_node_mask,
         requires_reduced_features=(
-            model_registration.capabilities.requires_reduced_features
+            model_adapter.capabilities.requires_reduced_features
         ),
         normalize_features=normalize_features,
         out_channels=out_channels,
@@ -154,7 +154,7 @@ def prepare_validation_data(
     if not isinstance(normalize_features, bool):
         raise TypeError("normalize_features must be boolean")
 
-    model_registration = get_model_registration(model_type)
+    model_adapter = get_model_adapter(model_type)
     if splits.validation is None:
         raise ValueError("validation preparation requires a validation split")
     train = splits.train.clone()
@@ -163,7 +163,7 @@ def prepare_validation_data(
         source_data,
         train.visible_node_mask,
         requires_reduced_features=(
-            model_registration.capabilities.requires_reduced_features
+            model_adapter.capabilities.requires_reduced_features
         ),
         normalize_features=normalize_features,
         out_channels=out_channels,

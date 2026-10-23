@@ -187,11 +187,7 @@ class _GraphAdapter(_BaseAdapter):
                 model=self.name,
             )
         if not isinstance(parameters["gatv2_kwargs"], Mapping):
-            raise ConfigurationError(
-                "gatv2_kwargs must be a mapping",
-                component="model-adapter",
-                model=self.name,
-            )
+            raise TypeError("gatv2_kwargs must be a mapping")
 
     def _constructor_parameters(self, train_data, parameters):
         values = _mutable_mapping(parameters)
