@@ -166,8 +166,8 @@ class TestSearchRunner(unittest.TestCase):
             seed=4,
         )
         with patch(
-            "glpbench.evaluation.pipeline.calculate_reduced_features",
-            wraps=utils.calculate_reduced_features,
+            "glpbench.preprocessing.adapters.fit_reducer",
+            wraps=utils.fit_reducer,
         ) as reducer:
             prepared = experiment_pipeline.prepare_validation_data(
                 source,

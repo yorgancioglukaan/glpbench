@@ -92,3 +92,10 @@ reject inconsistent metadata.
 Reducers are fitted only on training-visible nodes. The fitted transformation
 is then applied to all nodes, including validation and test queries. Available
 reducers include PCA, truncated SVD, and sparse random projection.
+
+Preprocessing operations are registered by name and executed as an ordered
+pipeline. Built-ins are `identity`, `normalize-features`, `pca`,
+`truncated-svd`, and `sparse-random-projection`. Normalization or identity
+produces the encoder input `x`; an optional terminal reducer produces
+`x_reduced` from that same representation. The pipeline, rather than an
+individual reducer, supplies the training-visible fit mask.
