@@ -11,6 +11,7 @@ from glpbench.protocols.registry import (
     available_split_protocols,
     create_split_protocol,
     get_split_protocol_factory,
+    get_split_protocol_requirements,
     register_split_protocol,
 )
 from glpbench.protocols.splitting import (
@@ -64,6 +65,7 @@ __all__ = [
     "generate_transductive_splits",
     "generate_validation_splits",
     "get_split_protocol_factory",
+    "get_split_protocol_requirements",
     "inductive_split",
     "register_split_protocol",
     "select_query_node_sets",

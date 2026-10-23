@@ -140,7 +140,10 @@ class TestMainPipeline(unittest.TestCase):
             with patch(
                 "glpbench.runners.experiment.realize_registered_split",
                 wraps=main.realize_registered_split,
-            ) as mock_splits:
+            ) as mock_splits, patch(
+                "glpbench.runners.experiment.validate_registered_compatibility",
+                wraps=main.validate_registered_compatibility,
+            ) as mock_compatibility:
                 run_id = main.run_experiment(args)
 
             with output.open(newline="", encoding="utf-8") as csv_file:
@@ -148,6 +151,17 @@ class TestMainPipeline(unittest.TestCase):
 
         self.assertEqual(mock_load.call_count, 1)
         self.assertEqual(mock_splits.call_count, 2)
+        self.assertEqual(mock_compatibility.call_count, 2)
+        self.assertEqual(
+            {
+                (call.args[0], call.args[1])
+                for call in mock_compatibility.call_args_list
+            },
+            {
+                ("symmetric", "matched-semi-inductive"),
+                ("feature-cosine", "matched-semi-inductive"),
+            },
+        )
         self.assertEqual(
             [call.kwargs["seed"] for call in mock_splits.call_args_list],
             [1, 2],

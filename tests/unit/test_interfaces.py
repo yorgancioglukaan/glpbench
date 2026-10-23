@@ -10,7 +10,13 @@ _SOURCE_ROOT = _PROJECT_ROOT / "src"
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from glpbench.contracts import AuditReport, ModelCapabilities  # noqa: E402
+from glpbench.contracts import (  # noqa: E402
+    AuditReport,
+    CandidateOrientation,
+    EndpointMode,
+    ModelCapabilities,
+    ProtocolRequirements,
+)
 from glpbench.exceptions import (  # noqa: E402
     CompatibilityError,
     ConfigurationError,
@@ -40,6 +46,10 @@ class _DatasetProvider:
 
 class _SplitProtocol:
     name = "toy-split"
+    requirements = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_VISIBLE,),
+        candidate_orientations=(CandidateOrientation.UNDIRECTED,),
+    )
 
     def split(self, data, seed):
         return None

@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from glpbench.contracts import (
+    CandidateOrientation,
+    EndpointMode,
+    ProtocolRequirements,
+)
 from glpbench.protocols.splitting import (
     audit_comparable_splits,
     audit_semi_inductive_splits,
@@ -22,6 +27,16 @@ class MatchedSemiInductiveProtocol:
     """Configure matched transductive and semi-inductive evaluation."""
 
     name: ClassVar[str] = "matched-semi-inductive"
+    requirements: ClassVar[ProtocolRequirements] = ProtocolRequirements(
+        endpoint_modes=(
+            EndpointMode.VISIBLE_VISIBLE,
+            EndpointMode.VISIBLE_UNSEEN,
+        ),
+        candidate_orientations=(
+            CandidateOrientation.UNDIRECTED,
+            CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,
+        ),
+    )
     query: Any = None
     test_ratio: float | None = None
     train_ratio: float = 0.8
@@ -57,6 +72,12 @@ class MatchedValidationProtocol:
     """Configure validation-only matched semi-inductive evaluation."""
 
     name: ClassVar[str] = "matched-semi-inductive-validation-only"
+    requirements: ClassVar[ProtocolRequirements] = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_UNSEEN,),
+        candidate_orientations=(
+            CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,
+        ),
+    )
     query_size: int | None = None
     query_fraction: float | None = None
     validation_query_size: int | None = None
@@ -86,6 +107,12 @@ class SemiInductiveProtocol:
     """Configure standalone semi-inductive evaluation."""
 
     name: ClassVar[str] = "semi-inductive"
+    requirements: ClassVar[ProtocolRequirements] = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_UNSEEN,),
+        candidate_orientations=(
+            CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,
+        ),
+    )
     query: Any = None
     test_ratio: float | None = None
     train_ratio: float = 0.8
@@ -121,6 +148,10 @@ class TransductiveProtocol:
     """Configure standalone random-edge transductive evaluation."""
 
     name: ClassVar[str] = "transductive"
+    requirements: ClassVar[ProtocolRequirements] = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_VISIBLE,),
+        candidate_orientations=(CandidateOrientation.UNDIRECTED,),
+    )
     validation_ratio: float = 0.1
     test_ratio: float = 0.1
 

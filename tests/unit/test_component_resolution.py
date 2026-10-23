@@ -15,7 +15,12 @@ _SOURCE_ROOT = _PROJECT_ROOT / "src"
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from glpbench.contracts import AuditReport
+from glpbench.contracts import (
+    AuditReport,
+    CandidateOrientation,
+    EndpointMode,
+    ProtocolRequirements,
+)
 from glpbench.evaluation import realize_registered_split
 from glpbench.exceptions import ProtocolError
 from glpbench.protocols import generate_validation_splits, register_split_protocol
@@ -38,6 +43,12 @@ def _graph():
 @dataclass
 class _Protocol:
     name = "test-protocol"
+    requirements = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_UNSEEN,),
+        candidate_orientations=(
+            CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,
+        ),
+    )
     report: object
     calls: list
 
@@ -60,11 +71,14 @@ class _Protocol:
 class TestComponentResolution(unittest.TestCase):
     def setUp(self):
         self._factories = dict(registry._PROTOCOL_FACTORIES)
+        self._requirements = dict(registry._PROTOCOL_REQUIREMENTS)
         self._lookup = dict(registry._NAME_LOOKUP)
 
     def tearDown(self):
         registry._PROTOCOL_FACTORIES.clear()
         registry._PROTOCOL_FACTORIES.update(self._factories)
+        registry._PROTOCOL_REQUIREMENTS.clear()
+        registry._PROTOCOL_REQUIREMENTS.update(self._requirements)
         registry._NAME_LOOKUP.clear()
         registry._NAME_LOOKUP.update(self._lookup)
 
@@ -73,6 +87,7 @@ class TestComponentResolution(unittest.TestCase):
         register_split_protocol(
             "test-protocol",
             lambda: _Protocol(AuditReport(True, {"valid": True}), calls),
+            requirements=_Protocol.requirements,
         )
 
         splits = realize_registered_split(
@@ -95,6 +110,7 @@ class TestComponentResolution(unittest.TestCase):
                 register_split_protocol(
                     "test-protocol",
                     lambda report=report: _Protocol(report, []),
+                    requirements=_Protocol.requirements,
                     replace=True,
                 )
                 with self.assertRaisesRegex(ProtocolError, message):

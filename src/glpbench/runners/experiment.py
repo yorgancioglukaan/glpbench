@@ -38,6 +38,7 @@ from glpbench.evaluation import (
     load_registered_dataset,
     prepare_candidate_data,
     realize_registered_split,
+    validate_registered_compatibility,
 )
 from glpbench.models import (
     LinkPrediction,
@@ -546,6 +547,13 @@ def run_experiment(
     )
     source_data = loaded_dataset.data
     dataset_metadata = loaded_dataset.metadata
+    for model_type in model_types:
+        validate_registered_compatibility(
+            model_type,
+            "matched-semi-inductive",
+            dataset_metadata,
+            device=device,
+        )
     reduction_method = getattr(args, "reduction_method", "pca")
     gatv2_kwargs = getattr(args, "gatv2_kwargs", None) or {}
     if not isinstance(gatv2_kwargs, dict):

@@ -13,11 +13,14 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from glpbench.contracts import (  # noqa: E402
+    CandidateOrientation,
     DatasetMetadata,
+    EndpointMode,
     EvaluationResult,
     LoadedDataset,
     ModelCapabilities,
     ProtocolMetadata,
+    ProtocolRequirements,
     ResolvedExperimentSpec,
     SplitBundle,
     TrainingPolicy,
@@ -150,6 +153,33 @@ class TestModelAndTrainingContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicates"):
             ModelCapabilities(supported_devices=("cpu", "cpu"))
 
+    def test_compatibility_contracts_normalize_enum_values(self):
+        capabilities = ModelCapabilities(
+            supported_endpoint_modes=["visible-visible"],
+            supported_candidate_orientations=["undirected"],
+        )
+        self.assertEqual(
+            capabilities.supported_endpoint_modes,
+            (EndpointMode.VISIBLE_VISIBLE,),
+        )
+        requirements = ProtocolRequirements(
+            endpoint_modes=["visible-unseen"],
+            candidate_orientations=["visible-source-query-target"],
+        )
+        self.assertEqual(
+            requirements.candidate_orientations,
+            (CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,),
+        )
+
+    def test_compatibility_contracts_reject_duplicate_modes(self):
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            ModelCapabilities(
+                supported_endpoint_modes=(
+                    EndpointMode.VISIBLE_VISIBLE,
+                    EndpointMode.VISIBLE_VISIBLE,
+                )
+            )
+
     def test_training_policy_freezes_nested_parameters(self):
         policy = TrainingPolicy(
             max_epochs=100,
@@ -236,3 +266,4 @@ class TestExperimentAndEvaluationContracts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    EndpointMode,

@@ -13,6 +13,7 @@ from glpbench.contracts import (
     GraphData,
     LoadedDataset,
     ModelCapabilities,
+    ProtocolRequirements,
     ResolvedExperimentSpec,
     SplitBundle,
     TrainingPolicy,
@@ -36,6 +37,7 @@ class SplitProtocol(Protocol):
     """Construct and audit one reproducible graph-splitting protocol."""
 
     name: str
+    requirements: ProtocolRequirements
 
     def split(
         self,

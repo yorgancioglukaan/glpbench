@@ -22,6 +22,7 @@ from glpbench.evaluation import (
     load_registered_dataset,
     prepare_validation_data,
     realize_registered_split,
+    validate_registered_compatibility,
 )
 from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.models import (
@@ -755,8 +756,15 @@ def execute_search(
                 continue
 
             try:
-                source_data = source_cache[candidate.dataset].data
+                loaded_dataset = source_cache[candidate.dataset]
+                source_data = loaded_dataset.data
                 parameters = candidate.hyperparameters
+                validate_registered_compatibility(
+                    candidate.architecture,
+                    "matched-semi-inductive-validation-only",
+                    loaded_dataset.metadata,
+                    device=device,
+                )
                 validation_data = prepare_validation_data(
                     source_data,
                     prepared_split,
