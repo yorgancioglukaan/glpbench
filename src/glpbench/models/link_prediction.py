@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch_geometric.utils import negative_sampling
 
 from glpbench.contracts import ModelCapabilities
-from glpbench.exceptions import CompatibilityError
 
 
 _GATV2_ARGUMENTS = {
@@ -750,79 +749,29 @@ class ModelRegistration:
     capabilities: ModelCapabilities
 
 
-_MODEL_REGISTRY = {
-    "symmetric": ModelRegistration(
-        GAE_Model, ModelCapabilities(requires_labels=True)
-    ),
-    "asymmetric": ModelRegistration(
-        AGAE_Model,
-        ModelCapabilities(
-            requires_reduced_features=True,
-            requires_labels=True,
-            supports_agae_regularization=True,
-        ),
-    ),
-    "mlp": ModelRegistration(
-        MLP_GAE_Model,
-        ModelCapabilities(requires_labels=True, uses_mlp_decoder=True),
-    ),
-    "asymmetric-mlp": ModelRegistration(
-        MLP_AGAE_Model,
-        ModelCapabilities(
-            requires_reduced_features=True,
-            requires_labels=True,
-            supports_agae_regularization=True,
-            uses_mlp_decoder=True,
-        ),
-    ),
-    "variational": ModelRegistration(
-        VGAE_Model, ModelCapabilities(requires_labels=True)
-    ),
-    "deal": ModelRegistration(
-        DEALModel,
-        ModelCapabilities(
-            uses_message_passing=False,
-            uses_conv_layer=False,
-            requires_graph_context=True,
-            requires_labels=True,
-        ),
-    ),
-    "feature-cosine": ModelRegistration(
-        FeatureCosineModel,
-        ModelCapabilities(
-            trainable=False,
-            uses_message_passing=False,
-            uses_conv_layer=False,
-            output_kind="probabilities",
-        ),
-    ),
-    "feature-mlp": ModelRegistration(
-        FeatureMLPModel,
-        ModelCapabilities(
-            uses_message_passing=False,
-            uses_conv_layer=False,
-            requires_labels=True,
-            uses_mlp_decoder=True,
-        ),
-    ),
-}
-
-
 def available_model_types():
     """Return the registered link-prediction architecture names."""
-    return tuple(_MODEL_REGISTRY)
+    from glpbench.models.registry import available_model_types as available
+
+    return available()
 
 
 def get_model_registration(model_type):
-    """Return the constructor and capabilities for a registered model type."""
-    try:
-        return _MODEL_REGISTRY[model_type]
-    except KeyError as error:
+    """Return the legacy constructor view of a registered model adapter."""
+    from glpbench.exceptions import CompatibilityError
+    from glpbench.models.registry import get_model_adapter
+
+    adapter = get_model_adapter(model_type)
+    constructor = getattr(adapter, "model_class", None)
+    if not isinstance(constructor, type) or not issubclass(
+        constructor, torch.nn.Module
+    ):
         raise CompatibilityError(
-            f"Unexpected model type: {model_type}",
+            "model adapter is unavailable through the legacy constructor API",
             component="model-registry",
-            model=str(model_type),
-        ) from error
+            model=adapter.name,
+        )
+    return ModelRegistration(constructor, adapter.capabilities)
 
 
 def count_trainable_parameters(model):

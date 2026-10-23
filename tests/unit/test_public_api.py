@@ -97,10 +97,9 @@ class TestModelPublicExports(unittest.TestCase):
             link_prediction.sample_training_negative_edges,
             glp_models.sample_training_negative_edges,
         )
-        self.assertIs(
-            link_prediction._MODEL_REGISTRY,
-            glp_models.link_prediction._MODEL_REGISTRY,
-        )
+        self.assertTrue(callable(glp_models.get_model_adapter))
+        self.assertTrue(callable(glp_models.register_model_adapter))
+        self.assertTrue(callable(glp_models.normalize_model_name))
 
 
 class TestProtocolPublicExports(unittest.TestCase):

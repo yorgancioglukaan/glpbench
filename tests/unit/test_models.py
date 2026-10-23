@@ -52,6 +52,7 @@ from glpbench.logging.csv_store import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
+import glpbench.models.registry as model_registry
 
 
 class TestLinkPrediction(unittest.TestCase):
@@ -154,8 +155,8 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertEqual(
             link_prediction.available_model_types(),
             (
-                "symmetric", "asymmetric", "mlp", "asymmetric-mlp", "variational",
-                "deal", "feature-cosine", "feature-mlp",
+                "asymmetric", "asymmetric-mlp", "deal", "feature-cosine",
+                "feature-mlp", "mlp", "symmetric", "variational",
             ),
         )
 
@@ -167,7 +168,7 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertTrue(spec.capabilities.requires_reduced_features)
         self.assertTrue(spec.capabilities.supports_agae_regularization)
         self.assertTrue(spec.capabilities.uses_mlp_decoder)
-        with self.assertRaisesRegex(ValueError, "Unexpected model type"):
+        with self.assertRaisesRegex(ValueError, "Unknown model"):
             link_prediction.get_model_registration("unknown")
 
     def test_deal_has_structural_embeddings_only_for_seen_nodes(self):
@@ -878,17 +879,19 @@ class TestLinkPrediction(unittest.TestCase):
 
         data = self._training_data()
         negative_edges = torch.tensor([[0, 4], [3, 1]])
-        spec = link_prediction.ModelRegistration(
-            ContextModel,
-            link_prediction.ModelCapabilities(
+        class ContextAdapter(glp_models.DEALAdapter):
+            name = "context-test"
+            model_class = ContextModel
+            capabilities = link_prediction.ModelCapabilities(
                 uses_message_passing=False,
                 uses_conv_layer=False,
                 requires_graph_context=True,
-            ),
-        )
-        with patch.dict(
-            link_prediction._MODEL_REGISTRY, {"context-test": spec}
-        ):
+            )
+
+        adapters = dict(model_registry._MODEL_ADAPTERS)
+        lookup = dict(model_registry._NAME_LOOKUP)
+        try:
+            glp_models.register_model_adapter(ContextAdapter())
             predictor = link_prediction.LinkPrediction(
                 data,
                 model_type="context-test",
@@ -898,6 +901,11 @@ class TestLinkPrediction(unittest.TestCase):
             loss = predictor.train(
                 negative_edge_index=negative_edges
             )
+        finally:
+            model_registry._MODEL_ADAPTERS.clear()
+            model_registry._MODEL_ADAPTERS.update(adapters)
+            model_registry._NAME_LOOKUP.clear()
+            model_registry._NAME_LOOKUP.update(lookup)
 
         self.assertIs(predictor.model.constructor_data, data)
         self.assertEqual(

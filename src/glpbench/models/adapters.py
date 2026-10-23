@@ -20,7 +20,6 @@ from glpbench.models.link_prediction import (
     MLP_GAE_Model,
     VGAE_Model,
     available_agae_regularizers,
-    get_model_registration,
 )
 
 
@@ -260,7 +259,7 @@ class GAEAdapter(_GraphAdapter):
 
     name = "symmetric"
     model_class = GAE_Model
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(requires_labels=True)
 
 
 class GAEMLPAdapter(_MLPMixin, _GraphAdapter):
@@ -269,7 +268,7 @@ class GAEMLPAdapter(_MLPMixin, _GraphAdapter):
     name = "mlp"
     model_class = MLP_GAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, **_MLP_DEFAULTS})
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(requires_labels=True, uses_mlp_decoder=True)
 
 
 class AGAEAdapter(_AGAEMixin, _GraphAdapter):
@@ -278,7 +277,11 @@ class AGAEAdapter(_AGAEMixin, _GraphAdapter):
     name = "asymmetric"
     model_class = AGAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, **_AGAE_DEFAULTS})
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(
+        requires_reduced_features=True,
+        requires_labels=True,
+        supports_agae_regularization=True,
+    )
 
 
 class AGAEMLPAdapter(_AGAEMixin, _MLPMixin, _GraphAdapter):
@@ -291,7 +294,12 @@ class AGAEMLPAdapter(_AGAEMixin, _MLPMixin, _GraphAdapter):
         **_MLP_DEFAULTS,
         **_AGAE_DEFAULTS,
     })
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(
+        requires_reduced_features=True,
+        requires_labels=True,
+        supports_agae_regularization=True,
+        uses_mlp_decoder=True,
+    )
 
 
 class VGAEAdapter(_GraphAdapter):
@@ -300,7 +308,7 @@ class VGAEAdapter(_GraphAdapter):
     name = "variational"
     model_class = VGAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, "kl_weight": 1.0})
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(requires_labels=True)
 
     def _validate_values(self, parameters):
         super()._validate_values(parameters)
@@ -319,7 +327,12 @@ class DEALAdapter(_BaseAdapter):
     name = "deal"
     model_class = DEALModel
     defaults = MappingProxyType(_DEAL_DEFAULTS)
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(
+        uses_message_passing=False,
+        uses_conv_layer=False,
+        requires_graph_context=True,
+        requires_labels=True,
+    )
 
     def _validate_values(self, parameters):
         _positive_integer(parameters["hidden_channels"], "hidden_channels")
@@ -387,7 +400,12 @@ class FeatureCosineAdapter(_BaseAdapter):
 
     name = "feature-cosine"
     model_class = FeatureCosineModel
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(
+        trainable=False,
+        uses_message_passing=False,
+        uses_conv_layer=False,
+        output_kind="probabilities",
+    )
 
     def compute_training_loss(
         self, model, train_data, edge_label_index, edge_label, criterion
@@ -406,7 +424,12 @@ class FeatureMLPAdapter(_MLPMixin, _BaseAdapter):
     name = "feature-mlp"
     model_class = FeatureMLPModel
     defaults = MappingProxyType(_MLP_DEFAULTS)
-    capabilities = get_model_registration(name).capabilities
+    capabilities = ModelCapabilities(
+        uses_message_passing=False,
+        uses_conv_layer=False,
+        requires_labels=True,
+        uses_mlp_decoder=True,
+    )
 
     def _constructor_parameters(self, train_data, parameters):
         values = _mutable_mapping(parameters)

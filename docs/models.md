@@ -38,11 +38,23 @@ probabilities = predictor.test(test_data)
 ```
 
 Use `available_model_types()` to inspect the active model registry and
-`get_model_registration()` to inspect a model's constructor and declared
-capabilities.
+`get_model_adapter()` to retrieve an adapter by its case- and
+separator-insensitive name. Custom adapters can be added for the current
+Python process with `register_model_adapter()`; duplicate names are rejected
+unless replacement is explicitly requested.
 
 Each bundled model also has a runtime-checkable adapter exported from
 `glpbench.models`. These adapters provide parameter validation, construction,
 loss, scoring, and result-metadata hooks. The current runners still use
 `LinkPrediction`; adapter-based registration and execution will follow in a
 later migration step.
+
+```python
+from glpbench.models import get_model_adapter, register_model_adapter
+
+adapter = get_model_adapter("feature_mlp")
+register_model_adapter(MyModelAdapter())
+```
+
+`get_model_registration()` remains temporarily available as a compatibility
+view for code using the legacy constructor interface.
