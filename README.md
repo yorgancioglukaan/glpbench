@@ -1,4 +1,12 @@
+![GLPBench banner](https://raw.githubusercontent.com/yorgancioglukaan/glpbench/main/assets/glpbench_banner.png)
+
 # GLPBench
+
+[![PyPI release](https://img.shields.io/pypi/v/glpbench.svg)](https://pypi.org/project/glpbench/)
+[![Supported Python versions](https://img.shields.io/pypi/pyversions/glpbench.svg)](https://pypi.org/project/glpbench/)
+[![Documentation status](https://readthedocs.org/projects/glpbench/badge/?version=latest)](https://glpbench.readthedocs.io/en/latest/?badge=latest)
+
+[Installation](#installation) | [Experiment CLI](#experiment-cli) | [Benchmark grids](#benchmark-grids) | [Configuration](#configuration-formats) | [Python API](#python-api) | [Documentation](https://glpbench.readthedocs.io/)
 
 GLPBench is a Python library and command-line toolkit for reproducible graph
 link-prediction evaluation. It provides benchmark datasets, matched
@@ -7,6 +15,8 @@ hyperparameter search, benchmark grids, and structured result logging.
 
 This is an alpha release. Its public API and configuration schema may change
 before the first stable release.
+
+## Installation
 
 Install GLPBench from PyPI with:
 
@@ -22,6 +32,7 @@ Full documentation is available at
 
 ## Contents
 
+- [Installation](#installation)
 - [Key features](#key-features)
 - [Experiment CLI](#experiment-cli)
 - [Benchmark grids](#benchmark-grids)

@@ -38,6 +38,9 @@ htmlcov/
 
 # Downloaded data and generated experiment artifacts
 /assets/
+!/assets/
+/assets/*
+!/assets/glpbench_banner.png
 /data/
 /out/
 
