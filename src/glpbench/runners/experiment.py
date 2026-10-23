@@ -45,7 +45,7 @@ from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
     count_trainable_parameters,
-    get_model_registration,
+    get_model_adapter,
     sample_training_negative_edges,
 )
 
@@ -516,11 +516,11 @@ def run_experiment(
         raise ValueError(
             f"Unknown AGAE regularization: {sorted(unknown_regularizers)[0]}"
         )
-    model_registrations = {
-        model_type: get_model_registration(model_type) for model_type in model_types
+    model_adapters = {
+        model_type: get_model_adapter(model_type) for model_type in model_types
     }
     if (
-        not any(spec.capabilities.supports_agae_regularization for spec in model_registrations.values())
+        not any(spec.capabilities.supports_agae_regularization for spec in model_adapters.values())
         and selected_regularizers != ("none",)
     ):
         raise ValueError(
@@ -531,7 +531,7 @@ def run_experiment(
         for model_type in model_types
         for regularization_type in (
             selected_regularizers
-            if model_registrations[model_type].capabilities.supports_agae_regularization
+            if model_adapters[model_type].capabilities.supports_agae_regularization
             else ("none",)
         )
     ]
@@ -629,14 +629,14 @@ def run_experiment(
                 "train_ratio": args.train_ratio,
             },
         )
-        if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
+        if any(spec.capabilities.requires_reduced_features for spec in model_adapters.values()):
             num_fit_nodes = int(splits.visible_node_mask.sum())
             if args.out_channels > min(num_fit_nodes, data.num_features):
                 raise ValueError(
                     "out_channels cannot exceed the smaller of the number of "
                     "non-query nodes and num_features"
                 )
-        if any(spec.capabilities.requires_reduced_features for spec in model_registrations.values()):
+        if any(spec.capabilities.requires_reduced_features for spec in model_adapters.values()):
             report(f"Calculating reduced node features for seed {seed}...")
             preparation_model_type = "asymmetric"
         else:
@@ -666,9 +666,9 @@ def run_experiment(
             position=1 if len(seeds) > 1 else 0,
         )
         for model_type, regularization_type in model_progress:
-            model_registration = model_registrations[model_type]
+            model_adapter = model_adapters[model_type]
             progress_label = model_type
-            if model_registration.capabilities.supports_agae_regularization:
+            if model_adapter.capabilities.supports_agae_regularization:
                 progress_label += f"/{regularization_type}"
             model_progress.set_postfix_str(progress_label)
             emit(
@@ -680,7 +680,7 @@ def run_experiment(
             )
             torch.manual_seed(seed)
             effective_weight_decay = (
-                weight_decay if model_registration.capabilities.trainable else 0.0
+                weight_decay if model_adapter.capabilities.trainable else 0.0
             )
             predictor_kwargs = dict(
                 model_type=model_type,
@@ -695,7 +695,7 @@ def run_experiment(
                 gatv2_kwargs=gatv2_kwargs,
                 **deal_config,
             )
-            if model_registration.capabilities.supports_agae_regularization:
+            if model_adapter.capabilities.supports_agae_regularization:
                 predictor_kwargs.update({
                     "regularization_type": regularization_type,
                     "regularization_strength": regularization_strength,
@@ -704,7 +704,7 @@ def run_experiment(
             predictor.model = predictor.model.to(device)
             effective_conv_layer = (
                 args.conv_layer_type
-                if model_registration.capabilities.uses_conv_layer else "None"
+                if model_adapter.capabilities.uses_conv_layer else "None"
             )
             extra_fields = {
                 "reduction_method": reduction_method,
@@ -737,11 +737,11 @@ def run_experiment(
                 },
             }
             if (
-                model_registration.capabilities.uses_conv_layer
+                model_adapter.capabilities.uses_conv_layer
                 and args.conv_layer_type == "GATv2Conv"
             ):
                 extra_fields["gatv2_kwargs"] = gatv2_kwargs
-            if model_registration.capabilities.uses_mlp_decoder:
+            if model_adapter.capabilities.uses_mlp_decoder:
                 extra_fields.update({
                     "decoder_hidden_channels": decoder_hidden_channels,
                     "decoder_dropout": decoder_dropout,
@@ -786,13 +786,13 @@ def run_experiment(
                 },
                 preprocessing=(
                     reduction_method
-                    if model_registration.capabilities.requires_reduced_features
+                    if model_adapter.capabilities.requires_reduced_features
                     else None
                 ),
                 preprocessing_parameters={
                     "reducer_fit_time_seconds": (
                         reducer_fit_time_seconds
-                        if model_registration.capabilities.requires_reduced_features
+                        if model_adapter.capabilities.requires_reduced_features
                         else None
                     ),
                     "extra_fields": extra_fields,
@@ -804,7 +804,7 @@ def run_experiment(
                     "regularization_type": regularization_type,
                     "regularization_strength": (
                         regularization_strength
-                        if model_registration.capabilities.supports_agae_regularization
+                        if model_adapter.capabilities.supports_agae_regularization
                         else 0.0
                     ),
                     "weight_decay": effective_weight_decay,
@@ -827,7 +827,7 @@ def run_experiment(
                     "regularization_type": regularization_type,
                     "regularization_strength": (
                         regularization_strength
-                        if model_registration.capabilities.supports_agae_regularization else 0.0
+                        if model_adapter.capabilities.supports_agae_regularization else 0.0
                     ),
                     "weight_decay": effective_weight_decay,
                     "selection_metric": selection_metric,

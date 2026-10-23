@@ -26,7 +26,7 @@ from glpbench.models import (
     MLP_GAE_Model,
     VGAEAdapter,
     VGAE_Model,
-    get_model_registration,
+    get_model_adapter,
 )
 
 
@@ -142,7 +142,7 @@ class TestBundledModelAdapters(unittest.TestCase):
                 self.assertEqual(adapter.name, name)
                 self.assertEqual(
                     adapter.capabilities,
-                    get_model_registration(name).capabilities,
+                    get_model_adapter(name).capabilities,
                 )
 
     def test_parameter_validation_is_immutable_and_rejects_unknown_fields(self):

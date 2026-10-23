@@ -7,7 +7,7 @@ from glpbench.datasets import load_dataset
 from glpbench.exceptions import ProtocolError
 from glpbench.protocols import create_split_protocol
 from glpbench.protocols import get_split_protocol_requirements
-from glpbench.models import get_model_registration
+from glpbench.models import get_model_adapter
 from glpbench.evaluation.compatibility import (
     validate_model_protocol_compatibility,
 )
@@ -71,10 +71,10 @@ def validate_registered_compatibility(
     model_name, protocol_name, dataset_metadata, *, device
 ):
     """Validate one registered model, protocol, dataset, and device choice."""
-    registration = get_model_registration(model_name)
+    adapter = get_model_adapter(model_name)
     requirements = get_split_protocol_requirements(protocol_name)
     validate_model_protocol_compatibility(
-        registration.capabilities,
+        adapter.capabilities,
         requirements,
         dataset_metadata,
         device=device,

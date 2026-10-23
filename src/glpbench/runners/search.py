@@ -29,7 +29,7 @@ from glpbench.models import (
     LinkPrediction,
     available_model_types,
     count_trainable_parameters,
-    get_model_registration,
+    get_model_adapter,
 )
 from glpbench.training import validate_scheduler_config
 from glpbench.runners.experiment import (
@@ -40,7 +40,7 @@ from glpbench.runners.experiment import (
 
 _TRAINABLE_MODELS = tuple(
     model_type for model_type in available_model_types()
-    if get_model_registration(model_type).capabilities.trainable
+    if get_model_adapter(model_type).capabilities.trainable
 )
 _HISTORY_FIELDS = [
     "search_run_id", "candidate_id", "dataset", "architecture",

@@ -45,9 +45,8 @@ unless replacement is explicitly requested.
 
 Each bundled model also has a runtime-checkable adapter exported from
 `glpbench.models`. These adapters provide parameter validation, construction,
-loss, scoring, and result-metadata hooks. The current runners still use
-`LinkPrediction`; adapter-based registration and execution will follow in a
-later migration step.
+loss, scoring, and result-metadata hooks. `LinkPrediction` and the experiment
+runners resolve models through this adapter registry.
 
 ```python
 from glpbench.models import get_model_adapter, register_model_adapter
@@ -55,6 +54,3 @@ from glpbench.models import get_model_adapter, register_model_adapter
 adapter = get_model_adapter("feature_mlp")
 register_model_adapter(MyModelAdapter())
 ```
-
-`get_model_registration()` remains temporarily available as a compatibility
-view for code using the legacy constructor interface.

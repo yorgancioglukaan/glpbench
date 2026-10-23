@@ -10,7 +10,7 @@ from glpbench.configuration.benchmark import BenchmarkConfig
 from glpbench.configuration.parsing import configuration_error
 from glpbench.configuration.search import SearchConfig
 from glpbench.datasets import available_datasets
-from glpbench.models import available_model_types, get_model_registration
+from glpbench.models import available_model_types, get_model_adapter
 from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.training import validate_scheduler_config
 
@@ -84,7 +84,7 @@ def _validate_model(
             path + ("architecture",),
             f"references unknown model {model.architecture!r}",
         )
-    capabilities = get_model_registration(model.architecture).capabilities
+    capabilities = get_model_adapter(model.architecture).capabilities
     conv_layers = () if search else model.conv_layer_types
     reduction_methods = () if search else model.reduction_methods
     for index, name in enumerate(conv_layers):
@@ -163,7 +163,7 @@ def validate_config(config: CanonicalConfig) -> CanonicalConfig:
             model, ("models", index), search=isinstance(config, SearchConfig)
         )
         if isinstance(config, (SearchConfig, AuditConfig)) and not (
-            get_model_registration(model.architecture).capabilities.trainable
+            get_model_adapter(model.architecture).capabilities.trainable
         ):
             raise configuration_error(
                 ("models", index, "architecture"),

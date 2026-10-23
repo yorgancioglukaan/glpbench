@@ -26,7 +26,7 @@ from glpbench.evaluation import (
 from glpbench.models import (
     LinkPrediction,
     count_trainable_parameters,
-    get_model_registration,
+    get_model_adapter,
 )
 from glpbench.runners.experiment import (
     calculate_metrics,
@@ -136,7 +136,7 @@ def load_audit_config(path):
         for name in _unique_list(raw.get("datasets"), "datasets")
     )
     model_names = _unique_list(raw.get("models"), "models")
-    if any(not get_model_registration(name).capabilities.trainable for name in model_names):
+    if any(not get_model_adapter(name).capabilities.trainable for name in model_names):
         raise ValueError("convergence audits require trainable models")
 
     split = _mapping(raw.get("splits"), "splits")
@@ -232,7 +232,7 @@ def _predictor_kwargs(job):
         "similarity_scale": parameters["deal_similarity_scale"],
         "similarity_margin": parameters["deal_similarity_margin"],
     }
-    if get_model_registration(job.model_type).capabilities.supports_agae_regularization:
+    if get_model_adapter(job.model_type).capabilities.supports_agae_regularization:
         kwargs.update({
             "regularization_type": job.regularization.type,
             "regularization_strength": job.regularization.strength,

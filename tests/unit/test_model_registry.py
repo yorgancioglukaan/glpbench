@@ -10,7 +10,6 @@ from glpbench.interfaces import ModelAdapter
 from glpbench.models import (
     available_model_types,
     get_model_adapter,
-    get_model_registration,
     normalize_model_name,
     register_model_adapter,
 )
@@ -126,21 +125,6 @@ class TestModelRegistry(unittest.TestCase):
             CompatibilityError, "Available models:.*symmetric"
         ):
             get_model_adapter("missing")
-
-    def test_legacy_registration_view_is_derived_from_adapter(self):
-        adapter = get_model_adapter("asymmetric-mlp")
-        registration = get_model_registration("Asymmetric MLP")
-
-        self.assertIs(registration.constructor, adapter.model_class)
-        self.assertIs(registration.capabilities, adapter.capabilities)
-
-    def test_adapter_without_legacy_constructor_has_actionable_error(self):
-        register_model_adapter(_ToyAdapter())
-        with self.assertRaisesRegex(
-            CompatibilityError, "legacy constructor API"
-        ):
-            get_model_registration("toy-model")
-
 
 if __name__ == "__main__":
     unittest.main()
