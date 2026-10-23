@@ -404,6 +404,31 @@ class ModelCapabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class TrainingLoss:
+    """Contain one differentiable scalar loss and its named components."""
+
+    total: torch.Tensor
+    components: Mapping[str, torch.Tensor] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.total, torch.Tensor):
+            raise TypeError("total must be a torch.Tensor")
+        if self.total.ndim != 0:
+            raise ValueError("total must be a scalar tensor")
+        if not isinstance(self.components, Mapping):
+            raise TypeError("components must be a mapping")
+        normalized = {}
+        for name, value in self.components.items():
+            _require_non_empty_string(name, "component name")
+            if not isinstance(value, torch.Tensor):
+                raise TypeError("loss components must be torch.Tensor values")
+            if value.ndim != 0:
+                raise ValueError("loss components must be scalar tensors")
+            normalized[name] = value
+        object.__setattr__(self, "components", MappingProxyType(normalized))
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingPolicy:
     """Describe architecture-independent optimization and model selection."""
 
@@ -646,6 +671,7 @@ __all__ = [
     "ProtocolMetadata",
     "ResolvedExperimentSpec",
     "SplitBundle",
+    "TrainingLoss",
     "TrainingPolicy",
     "TrainingResult",
 ]

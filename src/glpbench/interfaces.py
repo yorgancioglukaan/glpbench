@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 import torch
 
@@ -16,7 +16,7 @@ from glpbench.contracts import (
     ProtocolRequirements,
     ResolvedExperimentSpec,
     SplitBundle,
-    TrainingPolicy,
+    TrainingLoss,
     TrainingResult,
 )
 
@@ -78,26 +78,52 @@ class FeaturePreprocessor(Protocol):
 
 
 @runtime_checkable
-class LinkPredictionModel(Protocol):
-    """Train a link predictor and score candidate edges."""
+class ModelAdapter(Protocol):
+    """Expose model-specific construction, loss, and scoring behavior."""
 
+    name: str
     capabilities: ModelCapabilities
 
-    def fit(
+    def validate_parameters(
+        self,
+        parameters: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        """Validate and normalize model-specific construction parameters."""
+        ...
+
+    def build(
         self,
         train_data: GraphData,
-        validation_data: GraphData | None,
-        training_policy: TrainingPolicy,
-    ) -> TrainingResult:
-        """Fit the model according to a resolved training policy."""
+        parameters: Mapping[str, object],
+    ) -> torch.nn.Module:
+        """Construct the wrapped model without running optimization."""
+        ...
+
+    def compute_training_loss(
+        self,
+        model: torch.nn.Module,
+        train_data: GraphData,
+        edge_label_index: torch.Tensor,
+        edge_label: torch.Tensor,
+        criterion: torch.nn.Module,
+    ) -> TrainingLoss:
+        """Compute one architecture-specific loss without stepping an optimizer."""
         ...
 
     def score_edges(
         self,
+        model: torch.nn.Module,
         data: GraphData,
         edge_index: torch.Tensor,
     ) -> torch.Tensor:
-        """Return one score for each candidate edge."""
+        """Return one existing-semantics score for each candidate edge."""
+        ...
+
+    def result_metadata(
+        self,
+        parameters: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        """Return model-specific fields retained with experiment results."""
         ...
 
 
@@ -131,7 +157,7 @@ __all__ = [
     "DatasetProvider",
     "EvaluationMetric",
     "FeaturePreprocessor",
-    "LinkPredictionModel",
+    "ModelAdapter",
     "ResultStore",
     "SplitProtocol",
 ]
