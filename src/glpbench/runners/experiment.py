@@ -46,6 +46,8 @@ from glpbench.models import (
     available_model_types,
     count_trainable_parameters,
     get_model_adapter,
+    get_model_adapter_source,
+    resolve_model_reference,
     sample_training_negative_edges,
 )
 
@@ -339,10 +341,12 @@ def parse_args():
     parser.add_argument("--data-root", default="data")
     parser.add_argument(
         "--model-type",
-        choices=available_model_types(),
         action="append",
         default=None,
-        help="architecture to run; repeat to select multiple, or omit to run all",
+        help=(
+            "registered architecture or single-adapter .py file; repeat to "
+            "select multiple, or omit to run all registered models"
+        ),
     )
     parser.add_argument(
         "--conv-layer-type",
@@ -496,9 +500,11 @@ def run_experiment(
     if args.model_type is None:
         model_types = available_model_types()
     elif isinstance(args.model_type, str):
-        model_types = (args.model_type,)
+        model_types = (resolve_model_reference(args.model_type),)
     else:
-        model_types = tuple(dict.fromkeys(args.model_type))
+        model_types = tuple(dict.fromkeys(
+            resolve_model_reference(reference) for reference in args.model_type
+        ))
 
     selected_regularizers = getattr(args, "agae_regularization", None)
     if selected_regularizers is None:
@@ -736,6 +742,13 @@ def run_experiment(
                     "resolved_size": len(splits.validation_query_nodes),
                 },
             }
+            model_source = get_model_adapter_source(model_type)
+            if model_source is not None:
+                extra_fields["model_source"] = {
+                    "reference": model_source.reference,
+                    "path": str(model_source.path),
+                    "sha256": model_source.sha256,
+                }
             if (
                 model_adapter.capabilities.uses_conv_layer
                 and args.conv_layer_type == "GATv2Conv"

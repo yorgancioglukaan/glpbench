@@ -22,6 +22,7 @@ from glpbench.configuration.loading import (  # noqa: E402
 from glpbench.configuration.validation import validate_config  # noqa: E402
 from glpbench.configuration.resolution import resolve_experiment_specs  # noqa: E402
 from glpbench.exceptions import ConfigurationError  # noqa: E402
+import glpbench.models.registry as model_registry  # noqa: E402
 
 
 def _common(kind):
@@ -135,6 +136,51 @@ class TestCanonicalConfigurationSchemas(unittest.TestCase):
             path.write_text(yaml.safe_dump(wrong), encoding="utf-8")
             with self.assertRaisesRegex(ConfigurationError, "kind must be 'benchmark'"):
                 load_benchmark_config(path)
+
+    def test_load_config_resolves_local_model_relative_to_config(self):
+        adapters = dict(model_registry._MODEL_ADAPTERS)
+        lookup = dict(model_registry._NAME_LOOKUP)
+        sources = dict(model_registry._MODEL_SOURCES)
+        loaded_files = dict(model_registry._LOADED_MODEL_FILES)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                models = root / "models"
+                models.mkdir()
+                adapter_path = models / "local_model.py"
+                adapter_path.write_text(
+                    "from glpbench.models import FeatureCosineAdapter\n"
+                    "class LocalAdapter(FeatureCosineAdapter):\n"
+                    "    name = 'local-config-model'\n"
+                    "MODEL_ADAPTER = LocalAdapter()\n",
+                    encoding="utf-8",
+                )
+                document = _common("benchmark")
+                document["models"] = [{"architecture": "models/local_model.py"}]
+                config_path = root / "benchmark.yaml"
+                config_path.write_text(
+                    yaml.safe_dump(document), encoding="utf-8"
+                )
+
+                config = load_config(config_path)
+
+                self.assertEqual(
+                    config.models[0].architecture, "local-config-model"
+                )
+                source = model_registry.get_model_adapter_source(
+                    "local-config-model"
+                )
+                self.assertEqual(source.path, adapter_path.resolve())
+                self.assertEqual(source.reference, "models/local_model.py")
+        finally:
+            model_registry._MODEL_ADAPTERS.clear()
+            model_registry._MODEL_ADAPTERS.update(adapters)
+            model_registry._NAME_LOOKUP.clear()
+            model_registry._NAME_LOOKUP.update(lookup)
+            model_registry._MODEL_SOURCES.clear()
+            model_registry._MODEL_SOURCES.update(sources)
+            model_registry._LOADED_MODEL_FILES.clear()
+            model_registry._LOADED_MODEL_FILES.update(loaded_files)
 
     def test_benchmark_resolves_to_runtime_experiment_contracts(self):
         document = _common("benchmark")

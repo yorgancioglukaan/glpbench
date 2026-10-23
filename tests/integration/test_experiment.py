@@ -53,6 +53,7 @@ from glpbench.logging.csv_store import (
 from torch_geometric.data import Data
 from torch_geometric.nn import GATv2Conv, GCNConv, GraphConv, SAGEConv
 import glpbench.models.link_prediction as link_prediction
+import glpbench.models.registry as model_registry
 
 
 def _loaded_dataset(graph):
@@ -113,6 +114,64 @@ class TestMainPipeline(unittest.TestCase):
             main._json_object("not-json")
         with self.assertRaises(argparse.ArgumentTypeError):
             main._json_object("[1, 2]")
+
+    @patch("glpbench.runners.experiment.load_registered_dataset")
+    def test_local_model_file_runs_and_logs_source_provenance(self, mock_load):
+        mock_load.return_value = _loaded_dataset(self._graph())
+        adapters = dict(model_registry._MODEL_ADAPTERS)
+        lookup = dict(model_registry._NAME_LOOKUP)
+        sources = dict(model_registry._MODEL_SOURCES)
+        loaded_files = dict(model_registry._LOADED_MODEL_FILES)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                model_path = root / "local_cosine.py"
+                model_path.write_text(
+                    "from glpbench.models import FeatureCosineAdapter\n"
+                    "class LocalAdapter(FeatureCosineAdapter):\n"
+                    "    name = 'local-cosine'\n"
+                    "MODEL_ADAPTER = LocalAdapter()\n",
+                    encoding="utf-8",
+                )
+                output = root / "results.csv"
+                args = SimpleNamespace(
+                    dataset="toy",
+                    out_filepath=str(output),
+                    data_root="unused",
+                    model_type=[str(model_path)],
+                    conv_layer_type="GCNConv",
+                    hidden_channels=4,
+                    out_channels=2,
+                    query_size=1,
+                    train_ratio=0.8,
+                    epochs=1,
+                    seed=[3],
+                    num_seeds=None,
+                    device="cpu",
+                    normalize_features=False,
+                )
+
+                main.run_experiment(args)
+                with output.open(newline="", encoding="utf-8") as stream:
+                    rows = list(csv.DictReader(stream))
+
+            self.assertEqual({row["model_type"] for row in rows}, {
+                "local-cosine"
+            })
+            extra = json.loads(rows[0]["extra_fields"])
+            self.assertEqual(
+                extra["model_source"]["path"], str(model_path.resolve())
+            )
+            self.assertEqual(len(extra["model_source"]["sha256"]), 64)
+        finally:
+            model_registry._MODEL_ADAPTERS.clear()
+            model_registry._MODEL_ADAPTERS.update(adapters)
+            model_registry._NAME_LOOKUP.clear()
+            model_registry._NAME_LOOKUP.update(lookup)
+            model_registry._MODEL_SOURCES.clear()
+            model_registry._MODEL_SOURCES.update(sources)
+            model_registry._LOADED_MODEL_FILES.clear()
+            model_registry._LOADED_MODEL_FILES.update(loaded_files)
 
     @patch("glpbench.runners.experiment.load_registered_dataset")
     def test_multi_seed_run_preserves_pairing_and_configuration_ids(

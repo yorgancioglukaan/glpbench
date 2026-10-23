@@ -54,3 +54,47 @@ from glpbench.models import get_model_adapter, register_model_adapter
 adapter = get_model_adapter("feature_mlp")
 register_model_adapter(MyModelAdapter())
 ```
+
+## Load a model from a local file
+
+For research code that does not need to be packaged, put one adapter in a
+Python file and export it as `MODEL_ADAPTER`. For example:
+
+```python
+# my_model.py
+from glpbench.models import FeatureCosineAdapter
+
+
+class MyModelAdapter(FeatureCosineAdapter):
+    name = "my-model"
+
+
+MODEL_ADAPTER = MyModelAdapter()
+```
+
+Pass the file itself wherever a model name is accepted:
+
+```bash
+glpbench experiment cora out/results.csv --model-type ./my_model.py
+```
+
+The loader imports only the explicitly named file and requires the
+conventional `MODEL_ADAPTER` export. It registers the adapter for the current
+process; it does not modify the installed package. Reusing the same file in a
+process is safe, while duplicate adapter names and files changed after loading
+are rejected. Result metadata records the original reference, resolved path,
+and SHA-256 digest of the file.
+
+In YAML model entries, use the `.py` path in place of the registered model
+name. Relative model paths are resolved from the directory containing the
+configuration file:
+
+```yaml
+models:
+  - type: models/my_model.py
+```
+
+The example subclasses a bundled adapter only to keep it short. A custom
+architecture can instead provide any object conforming to the public
+`ModelAdapter` protocol. Each file currently exports one adapter; multiple
+adapters per file and installed-package discovery are intentionally deferred.

@@ -26,6 +26,7 @@ from glpbench.models import (
     available_agae_regularizers,
     available_model_types,
     get_model_adapter,
+    resolve_model_reference,
 )
 from glpbench.training import validate_scheduler_config
 from glpbench.runners.experiment import run_experiment
@@ -667,6 +668,17 @@ def load_benchmark_config(path):
     with path.open("r", encoding="utf-8") as config_file:
         raw = yaml.safe_load(config_file)
     raw = _require_mapping(raw, "benchmark configuration")
+    raw_models = raw.get("models")
+    if isinstance(raw_models, list):
+        for index, model in enumerate(raw_models):
+            if isinstance(model, str):
+                raw_models[index] = resolve_model_reference(
+                    model, base_dir=path.parent
+                )
+            elif isinstance(model, dict) and isinstance(model.get("type"), str):
+                model["type"] = resolve_model_reference(
+                    model["type"], base_dir=path.parent
+                )
     if raw.get("kind") == "training-policy-ablation":
         return _load_training_policy_ablation(raw)
     unknown = set(raw).difference({

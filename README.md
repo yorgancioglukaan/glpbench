@@ -186,6 +186,20 @@ glpbench experiment cora \
   --model-type variational
 ```
 
+To evaluate an unpackaged research model, pass a local Python file exporting
+one adapter as `MODEL_ADAPTER`:
+
+```bash
+glpbench experiment cora out/results.csv --model-type ./models/my_model.py
+```
+
+The file is loaded only for the current process, and its resolved path and
+SHA-256 digest are recorded with the result. Relative model paths in benchmark
+and canonical configuration files are resolved from the configuration file's
+directory. See the
+[model guide](https://glpbench.readthedocs.io/en/default/models.html) for the
+adapter convention.
+
 Bundled datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers,
 Coauthor CS, DBLP, WikiCS, and Deezer Europe. Deezer Europe depends on PyG's
 externally hosted download and may be unavailable when that upstream host is

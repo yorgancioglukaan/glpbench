@@ -48,6 +48,17 @@ several values. When
 prepared split. Run `glpbench experiment --help` for model-specific options,
 feature reduction, early stopping, scheduling, and query selection.
 
+To run an unpackaged research model, pass a Python file that exports one
+adapter as `MODEL_ADAPTER`:
+
+```bash
+glpbench experiment cora out/local-model.csv \
+  --model-type ./models/my_model.py
+```
+
+The adapter is loaded only for the current process. See [Models](models.md)
+for the file convention and adapter contract.
+
 `experiment` is configured entirely with command-line arguments; it does not
 use a YAML configuration file. The output CSV contains one row per model,
 seed, and test split. Compare `roc_auc` or `average_precision` across rows with
@@ -101,6 +112,10 @@ models:
     conv_layer_types: [GCNConv, SAGEConv]
   - type: feature-cosine
 ```
+
+A model `type` may also be a local `.py` adapter file. Unlike other legacy
+configuration paths, a relative model-file path is resolved from the
+configuration file's directory, making the configuration portable as a unit.
 
 Model entries may add architecture-specific parameters, reduction methods, or
 regularization profiles. See

@@ -27,6 +27,7 @@ from glpbench.models import (
     LinkPrediction,
     count_trainable_parameters,
     get_model_adapter,
+    resolve_model_reference,
 )
 from glpbench.runners.experiment import (
     calculate_metrics,
@@ -88,7 +89,8 @@ def _unique_list(value, name):
 
 def load_audit_config(path):
     """Load and validate a convergence-audit YAML specification."""
-    with Path(path).open(encoding="utf-8") as stream:
+    path = Path(path)
+    with path.open(encoding="utf-8") as stream:
         raw = _mapping(yaml.safe_load(stream), "audit specification")
     if raw.get("version") != 1 or raw.get("kind") != (
         "validation-convergence-audit"
@@ -135,7 +137,10 @@ def load_audit_config(path):
         benchmark._resolve_dataset_name(name)
         for name in _unique_list(raw.get("datasets"), "datasets")
     )
-    model_names = _unique_list(raw.get("models"), "models")
+    model_names = [
+        resolve_model_reference(name, base_dir=path.parent)
+        for name in _unique_list(raw.get("models"), "models")
+    ]
     if any(not get_model_adapter(name).capabilities.trainable for name in model_names):
         raise ValueError("convergence audits require trainable models")
 
