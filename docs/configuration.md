@@ -4,7 +4,7 @@ GLPBench recognizes canonical and legacy YAML configuration formats. The
 canonical format uses `schema_version`; legacy files use `version`. A document
 must define exactly one of these fields.
 
-In `0.1.0a3`, canonical documents are supported by the Python configuration
+As of `0.1.0a4`, canonical documents are supported by the Python configuration
 API. The command-line benchmark, search, and audit runners continue to consume
 the legacy formats described below; canonical files are not yet direct CLI
 inputs.

@@ -113,6 +113,20 @@ class TestLinkPrediction(unittest.TestCase):
                     self.assertIsInstance(model.conv2, layer_class)
                     self.assertIsInstance(model, link_prediction.LinkPredictionModel)
 
+    def test_direct_model_constructors_default_to_gcn(self):
+        model_classes = (
+            link_prediction.GAE_Model,
+            link_prediction.AGAE_Model,
+            link_prediction.MLP_GAE_Model,
+            link_prediction.MLP_AGAE_Model,
+            link_prediction.VGAE_Model,
+        )
+
+        for model_class in model_classes:
+            with self.subTest(model=model_class.__name__):
+                model = model_class(3, 4, 2)
+                self.assertIsInstance(model.conv1, GCNConv)
+
     def test_models_share_data_aware_decoder_interface(self):
         data = self._training_data()
         symmetric = link_prediction.GAE_Model(3, 4, 2, conv_layer_type="GCNConv")

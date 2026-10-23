@@ -41,8 +41,9 @@ glpbench experiment cora out/results.csv \
   --verbose
 ```
 
-The dataset is the first positional argument and the result CSV is the second.
-Repeat `--model-type` or `--seed` to select several values. When
+The dataset is the first positional argument. The result CSV is optional and
+defaults to `out/results.csv`. Repeat `--model-type` or `--seed` to select
+several values. When
 `--model-type` is omitted, all registered models are evaluated on the same
 prepared split. Run `glpbench experiment --help` for model-specific options,
 feature reduction, early stopping, scheduling, and query selection.
