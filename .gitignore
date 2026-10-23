@@ -40,6 +40,7 @@ htmlcov/
 /assets/
 !/assets/
 /assets/*
+!/assets/glpbench_banner.png
 !/assets/glpbench_banner_dark.png
 !/assets/glpbench_banner_light.png
 /data/
