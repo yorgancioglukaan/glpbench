@@ -7,6 +7,7 @@ PyTorch tensors stored inside them remain mutable and are never copied.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -259,6 +260,78 @@ class SplitBundle:
                 raise ValueError("visible_node_mask length must match train.num_nodes")
 
 
+class EndpointMode(str, Enum):
+    """Describe training-time visibility of candidate-edge endpoints."""
+
+    VISIBLE_VISIBLE = "visible-visible"
+    VISIBLE_UNSEEN = "visible-unseen"
+    UNSEEN_VISIBLE = "unseen-visible"
+    UNSEEN_UNSEEN = "unseen-unseen"
+
+
+class CandidateOrientation(str, Enum):
+    """Describe the semantic ordering of candidate-edge endpoints."""
+
+    UNDIRECTED = "undirected"
+    VISIBLE_SOURCE_QUERY_TARGET = "visible-source-query-target"
+
+
+def _normalize_enum_tuple(values, enum_type, name):
+    """Return a non-empty, duplicate-free tuple of enum members."""
+    if isinstance(values, (str, bytes)):
+        values = (values,)
+    try:
+        normalized = tuple(enum_type(value) for value in values)
+    except (TypeError, ValueError) as error:
+        choices = ", ".join(member.value for member in enum_type)
+        raise ValueError(f"{name} must contain only: {choices}") from error
+    if not normalized:
+        raise ValueError(f"{name} must not be empty")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{name} must not contain duplicates")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolRequirements:
+    """Declare the model-facing inputs and semantics of a split protocol."""
+
+    endpoint_modes: tuple[EndpointMode, ...]
+    candidate_orientations: tuple[CandidateOrientation, ...]
+    provides_node_features: bool = True
+    provides_message_passing_graph: bool = True
+    provides_edge_labels: bool = True
+    provides_auxiliary_data: bool = False
+    requires_undirected_graph: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "endpoint_modes",
+            _normalize_enum_tuple(
+                self.endpoint_modes, EndpointMode, "endpoint_modes"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "candidate_orientations",
+            _normalize_enum_tuple(
+                self.candidate_orientations,
+                CandidateOrientation,
+                "candidate_orientations",
+            ),
+        )
+        for name in (
+            "provides_node_features",
+            "provides_message_passing_graph",
+            "provides_edge_labels",
+            "provides_auxiliary_data",
+            "requires_undirected_graph",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean")
+
+
 @dataclass(frozen=True, slots=True)
 class ModelCapabilities:
     """Declare the inputs and evaluation settings supported by a model."""
@@ -268,14 +341,21 @@ class ModelCapabilities:
     uses_conv_layer: bool = True
     requires_graph_context: bool = False
     requires_reduced_features: bool = False
-    supports_unseen_sources: bool = False
-    supports_unseen_targets: bool = False
     requires_labels: bool = False
     requires_auxiliary_data: bool = False
     supports_agae_regularization: bool = False
     uses_mlp_decoder: bool = False
+    requires_node_features: bool = True
+    supported_endpoint_modes: tuple[EndpointMode, ...] = (
+        EndpointMode.VISIBLE_VISIBLE,
+        EndpointMode.VISIBLE_UNSEEN,
+    )
+    supported_candidate_orientations: tuple[CandidateOrientation, ...] = (
+        CandidateOrientation.UNDIRECTED,
+        CandidateOrientation.VISIBLE_SOURCE_QUERY_TARGET,
+    )
     output_kind: str = "raw-scores"
-    supported_devices: tuple[str, ...] = ("cpu",)
+    supported_devices: tuple[str, ...] = ("cpu", "cuda", "mps")
 
     def __post_init__(self) -> None:
         boolean_fields = (
@@ -284,12 +364,11 @@ class ModelCapabilities:
             "uses_conv_layer",
             "requires_graph_context",
             "requires_reduced_features",
-            "supports_unseen_sources",
-            "supports_unseen_targets",
             "requires_labels",
             "requires_auxiliary_data",
             "supports_agae_regularization",
             "uses_mlp_decoder",
+            "requires_node_features",
         )
         for name in boolean_fields:
             if not isinstance(getattr(self, name), bool):
@@ -304,6 +383,24 @@ class ModelCapabilities:
         if len(set(devices)) != len(devices):
             raise ValueError("supported_devices must not contain duplicates")
         object.__setattr__(self, "supported_devices", devices)
+        object.__setattr__(
+            self,
+            "supported_endpoint_modes",
+            _normalize_enum_tuple(
+                self.supported_endpoint_modes,
+                EndpointMode,
+                "supported_endpoint_modes",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "supported_candidate_orientations",
+            _normalize_enum_tuple(
+                self.supported_candidate_orientations,
+                CandidateOrientation,
+                "supported_candidate_orientations",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,11 +635,14 @@ class ResolvedExperimentSpec:
 
 __all__ = [
     "AuditReport",
+    "CandidateOrientation",
     "DatasetMetadata",
+    "EndpointMode",
     "EvaluationResult",
     "LoadedDataset",
     "ModelCapabilities",
     "PreparationResult",
+    "ProtocolRequirements",
     "ProtocolMetadata",
     "ResolvedExperimentSpec",
     "SplitBundle",

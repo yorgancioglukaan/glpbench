@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from glpbench.contracts import ProtocolRequirements
 from glpbench.exceptions import ProtocolError
 from glpbench.interfaces import SplitProtocol
 
 
 _PROTOCOL_FACTORIES = {}
+_PROTOCOL_REQUIREMENTS = {}
 _NAME_LOOKUP = {}
 
 
@@ -25,7 +27,9 @@ def normalize_protocol_name(name):
     return normalized
 
 
-def register_split_protocol(name, factory, *, aliases=(), replace=False):
+def register_split_protocol(
+    name, factory, *, requirements=None, aliases=(), replace=False
+):
     """Register a configured-protocol factory under a stable name."""
     canonical_name = name.strip().lower() if isinstance(name, str) else name
     canonical_key = normalize_protocol_name(name)
@@ -33,6 +37,14 @@ def register_split_protocol(name, factory, *, aliases=(), replace=False):
         raise TypeError("protocol factory must be callable")
     if not isinstance(replace, bool):
         raise TypeError("replace must be a bool")
+    if requirements is None:
+        requirements = getattr(factory, "requirements", None)
+    if requirements is None and replace:
+        requirements = _PROTOCOL_REQUIREMENTS.get(canonical_name)
+    if not isinstance(requirements, ProtocolRequirements):
+        raise TypeError(
+            "protocol requirements must be a ProtocolRequirements instance"
+        )
     if isinstance(aliases, (str, bytes)) or not isinstance(aliases, Iterable):
         raise TypeError("aliases must be an iterable of strings")
     lookup_keys = {canonical_key}
@@ -60,6 +72,7 @@ def register_split_protocol(name, factory, *, aliases=(), replace=False):
     lookup.update({key: canonical_name for key in lookup_keys})
     _PROTOCOL_FACTORIES.clear()
     _PROTOCOL_FACTORIES.update(factories)
+    _PROTOCOL_REQUIREMENTS[canonical_name] = requirements
     _NAME_LOOKUP.clear()
     _NAME_LOOKUP.update(lookup)
     return factory
@@ -75,6 +88,18 @@ def get_split_protocol_factory(name):
             component="protocol-registry",
         )
     return _PROTOCOL_FACTORIES[canonical_name]
+
+
+def get_split_protocol_requirements(name):
+    """Return declarative requirements for a registered split protocol."""
+    canonical_name = _NAME_LOOKUP.get(normalize_protocol_name(name))
+    if canonical_name is None:
+        choices = ", ".join(available_split_protocols())
+        raise ProtocolError(
+            f"Unknown split protocol '{name}'. Available protocols: {choices}.",
+            component="protocol-registry",
+        )
+    return _PROTOCOL_REQUIREMENTS[canonical_name]
 
 
 def create_split_protocol(name, **parameters):
@@ -102,5 +127,6 @@ __all__ = [
     "available_split_protocols",
     "create_split_protocol",
     "get_split_protocol_factory",
+    "get_split_protocol_requirements",
     "register_split_protocol",
 ]

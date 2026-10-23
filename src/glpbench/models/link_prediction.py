@@ -751,33 +751,40 @@ class ModelRegistration:
 
 
 _MODEL_REGISTRY = {
-    "symmetric": ModelRegistration(GAE_Model, ModelCapabilities()),
+    "symmetric": ModelRegistration(
+        GAE_Model, ModelCapabilities(requires_labels=True)
+    ),
     "asymmetric": ModelRegistration(
         AGAE_Model,
         ModelCapabilities(
             requires_reduced_features=True,
+            requires_labels=True,
             supports_agae_regularization=True,
         ),
     ),
     "mlp": ModelRegistration(
         MLP_GAE_Model,
-        ModelCapabilities(uses_mlp_decoder=True),
+        ModelCapabilities(requires_labels=True, uses_mlp_decoder=True),
     ),
     "asymmetric-mlp": ModelRegistration(
         MLP_AGAE_Model,
         ModelCapabilities(
             requires_reduced_features=True,
+            requires_labels=True,
             supports_agae_regularization=True,
             uses_mlp_decoder=True,
         ),
     ),
-    "variational": ModelRegistration(VGAE_Model, ModelCapabilities()),
+    "variational": ModelRegistration(
+        VGAE_Model, ModelCapabilities(requires_labels=True)
+    ),
     "deal": ModelRegistration(
         DEALModel,
         ModelCapabilities(
             uses_message_passing=False,
             uses_conv_layer=False,
             requires_graph_context=True,
+            requires_labels=True,
         ),
     ),
     "feature-cosine": ModelRegistration(
@@ -794,6 +801,7 @@ _MODEL_REGISTRY = {
         ModelCapabilities(
             uses_message_passing=False,
             uses_conv_layer=False,
+            requires_labels=True,
             uses_mlp_decoder=True,
         ),
     ),

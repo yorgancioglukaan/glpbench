@@ -21,6 +21,7 @@ from glpbench.evaluation import (
     load_registered_dataset,
     prepare_validation_data,
     realize_registered_split,
+    validate_registered_compatibility,
 )
 from glpbench.models import (
     LinkPrediction,
@@ -326,6 +327,13 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     )
                 loaded = source_cache[job.dataset]
                 source = loaded.data
+                device = torch.device(job.parameters["device"])
+                validate_registered_compatibility(
+                    job.model_type,
+                    "matched-semi-inductive-validation-only",
+                    loaded.metadata,
+                    device=device,
+                )
                 protocol_parameters = {
                     "query_fraction": job.parameters["query_fraction"],
                     "validation_query_fraction": (
@@ -356,7 +364,6 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                     reduction_method=job.reduction_method,
                     random_state=seed,
                 )
-                device = torch.device(job.parameters["device"])
                 train = prepared.splits.train.to(device)
                 validation = prepared.splits.validation.to(device)
                 random.seed(seed)

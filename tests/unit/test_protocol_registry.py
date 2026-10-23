@@ -15,7 +15,13 @@ if str(_SOURCE_ROOT) not in sys.path:
 import torch
 from torch_geometric.data import Data
 
-from glpbench.contracts import AuditReport, SplitBundle
+from glpbench.contracts import (
+    AuditReport,
+    CandidateOrientation,
+    EndpointMode,
+    ProtocolRequirements,
+    SplitBundle,
+)
 from glpbench.exceptions import ProtocolError
 from glpbench.protocols import (
     available_split_protocols,
@@ -24,6 +30,7 @@ from glpbench.protocols import (
     generate_transductive_splits,
     generate_validation_splits,
     get_split_protocol_factory,
+    get_split_protocol_requirements,
     inductive_split,
     register_split_protocol,
 )
@@ -72,6 +79,10 @@ def _assert_bundle_equal(test_case, expected, actual):
 @dataclass(frozen=True)
 class _Protocol:
     name = "toy"
+    requirements = ProtocolRequirements(
+        endpoint_modes=(EndpointMode.VISIBLE_VISIBLE,),
+        candidate_orientations=(CandidateOrientation.UNDIRECTED,),
+    )
     value: int = 0
 
     def split(self, data, seed):
@@ -84,11 +95,14 @@ class _Protocol:
 class TestProtocolRegistry(unittest.TestCase):
     def setUp(self):
         self._factories = dict(registry._PROTOCOL_FACTORIES)
+        self._requirements = dict(registry._PROTOCOL_REQUIREMENTS)
         self._lookup = dict(registry._NAME_LOOKUP)
 
     def tearDown(self):
         registry._PROTOCOL_FACTORIES.clear()
         registry._PROTOCOL_FACTORIES.update(self._factories)
+        registry._PROTOCOL_REQUIREMENTS.clear()
+        registry._PROTOCOL_REQUIREMENTS.update(self._requirements)
         registry._NAME_LOOKUP.clear()
         registry._NAME_LOOKUP.update(self._lookup)
 
@@ -104,6 +118,10 @@ class TestProtocolRegistry(unittest.TestCase):
         register_split_protocol("toy", _Protocol, aliases=("Toy Protocol",))
 
         self.assertIs(get_split_protocol_factory("TOY-PROTOCOL"), _Protocol)
+        self.assertIs(
+            get_split_protocol_requirements("TOY-PROTOCOL"),
+            _Protocol.requirements,
+        )
         protocol = create_split_protocol("toy protocol", value=3)
         self.assertEqual(protocol.value, 3)
 
@@ -125,7 +143,9 @@ class TestProtocolRegistry(unittest.TestCase):
     def test_invalid_factories_and_unknown_names_are_rejected(self):
         with self.assertRaises(TypeError):
             register_split_protocol("invalid", object())
-        register_split_protocol("invalid", lambda: object())
+        register_split_protocol(
+            "invalid", lambda: object(), requirements=_Protocol.requirements
+        )
         with self.assertRaisesRegex(TypeError, "SplitProtocol"):
             create_split_protocol("invalid")
         with self.assertRaisesRegex(ProtocolError, "Available protocols"):

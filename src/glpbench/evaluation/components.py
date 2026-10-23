@@ -6,6 +6,11 @@ from glpbench.contracts import AuditReport, LoadedDataset, SplitBundle
 from glpbench.datasets import load_dataset
 from glpbench.exceptions import ProtocolError
 from glpbench.protocols import create_split_protocol
+from glpbench.protocols import get_split_protocol_requirements
+from glpbench.models import get_model_registration
+from glpbench.evaluation.compatibility import (
+    validate_model_protocol_compatibility,
+)
 
 
 def load_registered_dataset(
@@ -62,4 +67,24 @@ def realize_registered_split(
     return splits
 
 
-__all__ = ["load_registered_dataset", "realize_registered_split"]
+def validate_registered_compatibility(
+    model_name, protocol_name, dataset_metadata, *, device
+):
+    """Validate one registered model, protocol, dataset, and device choice."""
+    registration = get_model_registration(model_name)
+    requirements = get_split_protocol_requirements(protocol_name)
+    validate_model_protocol_compatibility(
+        registration.capabilities,
+        requirements,
+        dataset_metadata,
+        device=device,
+        model_name=model_name,
+        protocol_name=protocol_name,
+    )
+
+
+__all__ = [
+    "load_registered_dataset",
+    "realize_registered_split",
+    "validate_registered_compatibility",
+]
