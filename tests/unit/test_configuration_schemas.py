@@ -116,6 +116,43 @@ class TestCanonicalConfigurationSchemas(unittest.TestCase):
             validate_config(parse_benchmark_config(document))
 
         document = _common("benchmark")
+        document["models"] = [{
+            "architecture": "gae", "parameters": {"kl_weight": 0.1}
+        }]
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            r"models\[0\]\.parameters\.kl_weight is not declared",
+        ):
+            validate_config(parse_benchmark_config(document))
+
+    def test_search_values_are_validated_by_selected_adapter(self):
+        document = _common("hyperparameter-search")
+        document["models"] = [{
+            "architecture": "gae-mlp",
+            "spaces": {
+                "decoder_dropout": {"values": [0.2, 1.0]},
+            },
+        }]
+        document["search"] = {
+            "strategy": "seeded-random", "num_candidates": 2,
+            "candidate_seed": 9, "include_default": True,
+        }
+        document["selection"] = {
+            "metric": "roc_auc", "aggregation": "mean",
+            "validation_setting": "semi-inductive",
+        }
+        document["output"] = {
+            "history": "out/history.csv",
+            "selected_configurations": "out/selected.yaml",
+        }
+
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            r"models\[0\]\.spaces\.decoder_dropout\.values\[1\]",
+        ):
+            validate_config(parse_search_config(document))
+
+        document = _common("benchmark")
         document["models"] = [{"architecture": "feature-cosine", "conv_layer_types": ["GCNConv"]}]
         with self.assertRaisesRegex(
             ConfigurationError, r"models\[0\]\.conv_layer_types is not supported"
@@ -152,11 +189,15 @@ class TestCanonicalConfigurationSchemas(unittest.TestCase):
                     "from glpbench.models import FeatureCosineAdapter\n"
                     "class LocalAdapter(FeatureCosineAdapter):\n"
                     "    name = 'local-config-model'\n"
+                    "    defaults = {'temperature': 1.0}\n"
                     "MODEL_ADAPTER = LocalAdapter()\n",
                     encoding="utf-8",
                 )
                 document = _common("benchmark")
-                document["models"] = [{"architecture": "models/local_model.py"}]
+                document["models"] = [{
+                    "architecture": "models/local_model.py",
+                    "parameters": {"temperature": 0.5},
+                }]
                 config_path = root / "benchmark.yaml"
                 config_path.write_text(
                     yaml.safe_dump(document), encoding="utf-8"

@@ -10,23 +10,21 @@ from glpbench.interfaces import ModelAdapter
 def resolve_model_parameters(adapter, supplied):
     """Select, default, and validate parameters declared by an adapter.
 
-    Bundled adapters expose a ``defaults`` mapping that defines their accepted
-    construction parameters. Adapters without that optional declaration
-    receive the complete supplied mapping and remain responsible for rejecting
-    unsupported fields in ``validate_parameters``.
+    Adapters expose ``parameter_defaults`` to define their accepted
+    construction parameters. The selected values are still passed through the
+    adapter's authoritative value validation.
     """
     if not isinstance(adapter, ModelAdapter):
         raise TypeError("adapter must implement ModelAdapter")
     if not isinstance(supplied, Mapping):
         raise TypeError("supplied model parameters must be a mapping")
 
-    defaults = getattr(adapter, "defaults", None)
-    if isinstance(defaults, Mapping):
-        selected = {
-            name: supplied[name] for name in defaults if name in supplied
-        }
-    else:
-        selected = dict(supplied)
+    defaults = adapter.parameter_defaults
+    if not isinstance(defaults, Mapping):
+        raise TypeError("adapter parameter_defaults must be a mapping")
+    selected = {
+        name: supplied[name] for name in defaults if name in supplied
+    }
     return adapter.validate_parameters(selected)
 
 

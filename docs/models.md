@@ -81,7 +81,10 @@ unless replacement is explicitly requested.
 Each bundled model also has a runtime-checkable adapter exported from
 `glpbench.models`. These adapters provide parameter validation, construction,
 loss, scoring, and result-metadata hooks. `LinkPrediction` and the experiment
-runners resolve models through this adapter registry.
+runners resolve models through this adapter registry. An adapter's immutable
+`parameter_defaults` mapping declares the model parameters accepted by
+benchmark and search configurations; `validate_parameters()` validates their
+values and any cross-parameter constraints.
 
 ```python
 from glpbench.models import get_model_adapter, register_model_adapter

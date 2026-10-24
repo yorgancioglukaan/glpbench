@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
 import importlib.util
@@ -58,6 +58,8 @@ def register_model_adapter(adapter, *, aliases=(), replace=False, _source=None):
         raise TypeError("adapter must implement ModelAdapter")
     if not isinstance(adapter.capabilities, ModelCapabilities):
         raise TypeError("adapter capabilities must be a ModelCapabilities instance")
+    if not isinstance(adapter.parameter_defaults, Mapping):
+        raise TypeError("adapter parameter_defaults must be a mapping")
     if not isinstance(replace, bool):
         raise TypeError("replace must be a bool")
     if isinstance(aliases, (str, bytes)) or not isinstance(aliases, Iterable):

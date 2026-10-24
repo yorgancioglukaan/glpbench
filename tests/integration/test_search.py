@@ -36,6 +36,7 @@ import glpbench.datasets as glp_datasets
 import glpbench.evaluation as glp_evaluation
 import glpbench.logging as glp_logging
 import glpbench.models as glp_models
+import glpbench.models.registry as model_registry
 import glpbench.protocols as glp_protocols
 import glpbench.runners.experiment as experiment_runner
 import glpbench.runners.benchmark as benchmark_runner
@@ -137,6 +138,56 @@ class TestSearchRunner(unittest.TestCase):
                         group[0].hyperparameters["decoder_dropout"],
                         {0.0, 0.2, 0.5},
                     )
+
+    def test_local_adapter_declares_its_own_search_dimension(self):
+        document = yaml.safe_load(
+            Path("tests/fixtures/pilot_search.yaml").read_text(encoding="utf-8")
+        )
+        document["datasets"] = ["cora"]
+        document.pop("excluded_datasets", None)
+        document["models"] = {
+            "local_adapter.py": {
+                "temperature": {
+                    "values": [0.5, 1.0, 2.0],
+                    "sampling": "stratified",
+                }
+            }
+        }
+        adapters = dict(model_registry._MODEL_ADAPTERS)
+        lookup = dict(model_registry._NAME_LOOKUP)
+        sources = dict(model_registry._MODEL_SOURCES)
+        loaded_files = dict(model_registry._LOADED_MODEL_FILES)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "local_adapter.py").write_text(
+                    "from glpbench.models import GAEAdapter\n"
+                    "class LocalAdapter(GAEAdapter):\n"
+                    "    name = 'local-search-model'\n"
+                    "    defaults = {**GAEAdapter.defaults, 'temperature': 1.0}\n"
+                    "MODEL_ADAPTER = LocalAdapter()\n",
+                    encoding="utf-8",
+                )
+                config_path = root / "search.yaml"
+                config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+                config = search.load_search_config(config_path)
+                candidates = search.generate_candidates(config)
+
+            self.assertEqual(config.architectures, ("local-search-model",))
+            self.assertEqual(
+                {item.hyperparameters["temperature"] for item in candidates},
+                {0.5, 1.0, 2.0},
+            )
+        finally:
+            model_registry._MODEL_ADAPTERS.clear()
+            model_registry._MODEL_ADAPTERS.update(adapters)
+            model_registry._NAME_LOOKUP.clear()
+            model_registry._NAME_LOOKUP.update(lookup)
+            model_registry._MODEL_SOURCES.clear()
+            model_registry._MODEL_SOURCES.update(sources)
+            model_registry._LOADED_MODEL_FILES.clear()
+            model_registry._LOADED_MODEL_FILES.update(loaded_files)
 
     def test_search_accepts_a_fixed_scheduler_configuration(self):
         document = yaml.safe_load(

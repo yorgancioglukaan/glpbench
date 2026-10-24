@@ -919,7 +919,7 @@ class LinkPrediction:
         self.model_type = self.model_adapter.name
         capabilities = self.model_adapter.capabilities
         self.trainable = capabilities.trainable
-        adapter_defaults = getattr(self.model_adapter, "defaults", None)
+        adapter_defaults = self.model_adapter.parameter_defaults
         if explicit_model_parameters is not None:
             if not isinstance(explicit_model_parameters, Mapping):
                 raise TypeError("model_parameters must be a mapping")

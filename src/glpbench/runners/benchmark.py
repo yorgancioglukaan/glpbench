@@ -33,7 +33,6 @@ from glpbench.runners.experiment import run_experiment
 
 
 _CONV_LAYER_TYPES = ("GCNConv", "GraphConv", "SAGEConv", "GATv2Conv")
-_NON_CONV_MODELS = {"deal", "feature-cosine", "feature-mlp"}
 _DEFAULTS = {
     "query_size": 10,
     "query_fraction": None,
@@ -70,17 +69,6 @@ _DEFAULTS = {
     "deal_similarity_scale": 1.0,
     "deal_similarity_margin": 0.0,
 }
-_MODEL_PARAMETER_KEYS = set(_DEFAULTS).difference({
-    "query_size", "query_fraction", "validation_query_size",
-    "validation_query_fraction", "train_ratio", "epochs",
-    "selection_metric", "early_stopping_patience",
-    "early_stopping_min_delta", "early_stopping_minimum_epochs",
-    "checkpoint_strategy", "training_policy", "normalize_features", "device",
-    "lr_scheduler", "lr_scheduler_kwargs", "conv_layer_type",
-    "reduction_method",
-})
-
-
 @dataclass(frozen=True)
 class RegularizationConfig:
     """Describe one AGAE regularization setting."""
@@ -164,7 +152,7 @@ class ExperimentJob:
     def label(self):
         """Return a compact human-readable job label."""
         parts = [self.dataset, self.model_type]
-        if self.model_type not in _NON_CONV_MODELS:
+        if get_model_adapter(self.model_type).capabilities.uses_conv_layer:
             parts.append(self.conv_layer_type)
         if get_model_adapter(self.model_type).capabilities.requires_reduced_features:
             parts.extend((self.reduction_method, self.regularization.type))
@@ -299,7 +287,7 @@ def _parse_model_grid(raw, defaults, index):
     model_adapter = get_model_adapter(model_type)
 
     raw_conv = raw.get("conv_layer_types")
-    if model_type in _NON_CONV_MODELS:
+    if not model_adapter.capabilities.uses_conv_layer:
         if raw_conv is not None:
             raise ValueError(f"{model_type} does not accept conv_layer_types")
         conv_layers = (defaults["conv_layer_type"],)
@@ -326,23 +314,40 @@ def _parse_model_grid(raw, defaults, index):
         raise ValueError("Unknown reduction method")
 
     parameters = _require_mapping(raw.get("parameters", {}), "parameters")
-    unknown_parameters = set(parameters).difference(_MODEL_PARAMETER_KEYS)
+    aliases = {
+        "deal_theta_ss": "theta_ss",
+        "deal_theta_aa": "theta_aa",
+        "deal_theta_sa": "theta_sa",
+        "deal_lambda_ss": "lambda_ss",
+        "deal_lambda_aa": "lambda_aa",
+        "deal_lambda_sa": "lambda_sa",
+        "deal_similarity_scale": "similarity_scale",
+        "deal_similarity_margin": "similarity_margin",
+    }
+    declared = set(model_adapter.parameter_defaults)
+    training_parameters = {"learning_rate", "weight_decay"}
+    unknown_parameters = {
+        name for name in parameters
+        if aliases.get(name, name) not in declared
+        and name not in training_parameters
+    }
     if unknown_parameters:
         raise ValueError(
             f"Unknown model parameter: {sorted(unknown_parameters)[0]}"
         )
-    if not model_adapter.capabilities.uses_mlp_decoder and set(parameters).intersection({
-        "decoder_hidden_channels", "decoder_dropout"
-    }):
-        raise ValueError("decoder parameters are only supported by MLP models")
-    if model_type != "vgae" and "kl_weight" in parameters:
-        raise ValueError("kl_weight is only supported by vgae")
-    if model_type != "deal" and any(
-        name.startswith("deal_") for name in parameters
-    ):
-        raise ValueError("DEAL parameters are only supported by deal")
     if "gatv2_kwargs" in parameters and "GATv2Conv" not in conv_layers:
         raise ValueError("gatv2_kwargs require GATv2Conv")
+    declared_values = {
+        aliases.get(name, name): value
+        for name, value in parameters.items()
+        if aliases.get(name, name) in declared
+    }
+    try:
+        model_adapter.validate_parameters(declared_values)
+    except (ConfigurationError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"Invalid parameters for {model_adapter.name}: {error}"
+        ) from error
     return ModelGrid(
         type=model_type,
         conv_layer_types=conv_layers,
