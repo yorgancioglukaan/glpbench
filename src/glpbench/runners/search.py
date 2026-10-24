@@ -284,9 +284,9 @@ def load_search_config(path):
 
 
 def _validate_model_spaces(models, num_candidates):
-    if models["symmetric"] != {}:
-        raise ValueError("symmetric model space must be empty")
-    for model_type in ("asymmetric", "asymmetric-mlp"):
+    if models["gae"] != {}:
+        raise ValueError("GAE model space must be empty")
+    for model_type in ("agae", "agae-mlp"):
         model = _mapping(models[model_type], model_type)
         reducers = _values(model.get("reduction_method"), "reduction_method")
         unknown_reducers = set(reducers).difference(
@@ -304,13 +304,13 @@ def _validate_model_spaces(models, num_candidates):
             raise ValueError("unexpected cosine-alignment strengths")
         if len(reducers) != num_candidates or len(strengths) != num_candidates:
             raise ValueError("stratified spaces must match num_candidates")
-    for model_type in ("mlp", "feature-mlp", "asymmetric-mlp"):
+    for model_type in ("gae-mlp", "feature-mlp", "agae-mlp"):
         model = models[model_type]
         _values(model.get("decoder_hidden_channels"), "decoder_hidden_channels")
         dropouts = _values(model.get("decoder_dropout"), "decoder_dropout")
         if any(not 0 <= value < 1 for value in dropouts):
             raise ValueError("decoder dropout must be in [0, 1)")
-    kl_weights = _values(models["variational"].get("kl_weight"), "kl_weight")
+    kl_weights = _values(models["vgae"].get("kl_weight"), "kl_weight")
     if len(kl_weights) != num_candidates or any(value < 0 for value in kl_weights):
         raise ValueError("VGAE KL values must cover every candidate")
     deal = _mapping(models["deal"], "deal")
@@ -365,7 +365,7 @@ def generate_candidates(config):
             normalization = [True, False, rng.choice((True, False))]
             model_space = models[architecture]
             reducers = strengths = kl_values = profile_names = None
-            if architecture in {"asymmetric", "asymmetric-mlp"}:
+            if architecture in {"agae", "agae-mlp"}:
                 reducers = _stratified(
                     model_space["reduction_method"]["values"], "pca", rng,
                     config.num_candidates,
@@ -374,7 +374,7 @@ def generate_candidates(config):
                     model_space["regularization"]["strength"]["values"],
                     0.0, rng, config.num_candidates,
                 )
-            if architecture == "variational":
+            if architecture == "vgae":
                 kl_values = _stratified(
                     model_space["kl_weight"]["values"], 1.0, rng,
                     config.num_candidates,
@@ -395,13 +395,13 @@ def generate_candidates(config):
                 }
                 parameters["normalize_features"] = normalization[index]
                 parameters["conv_layer_type"] = "GCNConv"
-                if architecture in {"asymmetric", "asymmetric-mlp"}:
+                if architecture in {"agae", "agae-mlp"}:
                     parameters.update({
                         "reduction_method": reducers[index],
                         "regularization_type": "cosine-alignment",
                         "regularization_strength": strengths[index],
                     })
-                if architecture in {"mlp", "feature-mlp", "asymmetric-mlp"}:
+                if architecture in {"gae-mlp", "feature-mlp", "agae-mlp"}:
                     parameters.update({
                         "decoder_hidden_channels": (
                             64 if index == 0 else rng.choice(
@@ -414,7 +414,7 @@ def generate_candidates(config):
                             )
                         ),
                     })
-                if architecture == "variational":
+                if architecture == "vgae":
                     parameters["kl_weight"] = kl_values[index]
                 if architecture == "deal":
                     profile_name = profile_names[index]

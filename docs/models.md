@@ -5,14 +5,19 @@ link-prediction approaches:
 
 | Model type | Description |
 | --- | --- |
-| `symmetric` | Graph autoencoder with inner-product decoding |
-| `mlp` | Graph autoencoder with a learned symmetric MLP decoder |
-| `variational` | Variational graph autoencoder |
+| `gae` | Graph autoencoder with inner-product decoding |
+| `gae-mlp` | Graph autoencoder with a learned symmetric MLP decoder |
+| `vgae` | Variational graph autoencoder |
 | `deal` | Structural and attribute encoders for inductive prediction |
 | `feature-cosine` | Non-trainable feature-cosine baseline |
 | `feature-mlp` | Graph-independent MLP over feature pairs |
-| `asymmetric` | Graph latent-to-feature inner-product decoder |
-| `asymmetric-mlp` | MLP over graph-derived sources and feature-derived targets |
+| `agae` | Graph latent-to-feature inner-product decoder |
+| `agae-mlp` | MLP over graph-derived sources and feature-derived targets |
+
+The former names `symmetric`, `mlp`, `asymmetric`, `asymmetric-mlp`, and
+`variational` remain accepted as aliases for `gae`, `gae-mlp`, `agae`,
+`agae-mlp`, and `vgae`, respectively. New result and configuration artifacts
+use the canonical names.
 
 Graph encoders support `GCNConv`, `GraphConv`, `SAGEConv`, and `GATv2Conv`.
 Architecture-specific settings are available through the Python constructor
@@ -25,7 +30,7 @@ from glpbench.models import LinkPrediction
 
 predictor = LinkPrediction(
     train_data,
-    model_type="symmetric",
+    model_type="gae",
     conv_layer_type="GCNConv",
     hidden_channels=128,
     out_channels=64,
@@ -49,7 +54,7 @@ from glpbench.models import (
     resolve_model_parameters,
 )
 
-adapter = get_model_adapter("symmetric")
+adapter = get_model_adapter("gae")
 parameters = resolve_model_parameters(adapter, {
     "hidden_channels": 128,
     "out_channels": 64,

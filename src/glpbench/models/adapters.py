@@ -253,7 +253,7 @@ class _AGAEMixin:
 class GAEAdapter(_GraphAdapter):
     """Adapt the symmetric graph autoencoder."""
 
-    name = "symmetric"
+    name = "gae"
     model_class = GAE_Model
     capabilities = ModelCapabilities(requires_labels=True)
 
@@ -261,7 +261,7 @@ class GAEAdapter(_GraphAdapter):
 class GAEMLPAdapter(_MLPMixin, _GraphAdapter):
     """Adapt the symmetric graph autoencoder with an MLP decoder."""
 
-    name = "mlp"
+    name = "gae-mlp"
     model_class = MLP_GAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, **_MLP_DEFAULTS})
     capabilities = ModelCapabilities(requires_labels=True, uses_mlp_decoder=True)
@@ -270,7 +270,7 @@ class GAEMLPAdapter(_MLPMixin, _GraphAdapter):
 class AGAEAdapter(_AGAEMixin, _GraphAdapter):
     """Adapt the asymmetric graph autoencoder."""
 
-    name = "asymmetric"
+    name = "agae"
     model_class = AGAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, **_AGAE_DEFAULTS})
     capabilities = ModelCapabilities(
@@ -283,7 +283,7 @@ class AGAEAdapter(_AGAEMixin, _GraphAdapter):
 class AGAEMLPAdapter(_AGAEMixin, _MLPMixin, _GraphAdapter):
     """Adapt the asymmetric graph autoencoder with an MLP decoder."""
 
-    name = "asymmetric-mlp"
+    name = "agae-mlp"
     model_class = MLP_AGAE_Model
     defaults = MappingProxyType({
         **_GRAPH_DEFAULTS,
@@ -301,7 +301,7 @@ class AGAEMLPAdapter(_AGAEMixin, _MLPMixin, _GraphAdapter):
 class VGAEAdapter(_GraphAdapter):
     """Adapt the variational graph autoencoder."""
 
-    name = "variational"
+    name = "vgae"
     model_class = VGAE_Model
     defaults = MappingProxyType({**_GRAPH_DEFAULTS, "kl_weight": 1.0})
     capabilities = ModelCapabilities(requires_labels=True)

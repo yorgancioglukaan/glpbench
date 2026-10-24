@@ -855,7 +855,7 @@ class LinkPrediction:
         ``edge_label_index``, and ``edge_label``. Reduced-feature models also
         require ``x_reduced``.
     model_type : str, optional
-        Registered architecture name. Defaults to ``"symmetric"``.
+        Registered architecture name. Defaults to ``"gae"``.
     hidden_channels, out_channels : int, optional
         Encoder hidden and latent dimensions.
     conv_layer_type : str, optional
@@ -894,7 +894,7 @@ class LinkPrediction:
         """
 
         self.train_data = train_data
-        self.model_type = kwargs.get("model_type", "symmetric")
+        requested_model_type = kwargs.get("model_type", "gae")
         explicit_model_parameters = kwargs.get("model_parameters")
         hidden_channels = kwargs.get("hidden_channels", 128)
         out_channels = kwargs.get("out_channels", 64)
@@ -915,7 +915,8 @@ class LinkPrediction:
 
         from glpbench.models.registry import get_model_adapter
 
-        self.model_adapter = get_model_adapter(self.model_type)
+        self.model_adapter = get_model_adapter(requested_model_type)
+        self.model_type = self.model_adapter.name
         capabilities = self.model_adapter.capabilities
         self.trainable = capabilities.trainable
         adapter_defaults = getattr(self.model_adapter, "defaults", None)

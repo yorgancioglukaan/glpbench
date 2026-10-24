@@ -26,10 +26,10 @@ datasets:
   - WikiCS
 
 models:
-  - type: symmetric
+  - type: gae
     conv_layer_types: [GCNConv, SAGEConv]
 
-  - type: asymmetric
+  - type: agae
     conv_layer_types: [GCNConv, SAGEConv]
     reduction_methods: [pca, truncated-svd]
     regularization:
@@ -38,7 +38,7 @@ models:
       - type: cosine-alignment
         strength: 0.01
 
-  - type: asymmetric-mlp
+  - type: agae-mlp
     conv_layer_types: [GCNConv, SAGEConv]
     reduction_methods: [pca, truncated-svd]
     regularization:

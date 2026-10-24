@@ -173,8 +173,8 @@ invocation share a `run_id`; repetitions of the same model and hyperparameter
 configuration share a stable `configuration_id`. Data splits and evaluation
 negatives are generated once per seed and reused across architectures.
 
-Available model types are `symmetric`, `asymmetric`, `mlp`,
-`asymmetric-mlp`, `variational`, `deal`, `feature-cosine`, and `feature-mlp`.
+Available model types are `gae`, `agae`, `gae-mlp`,
+`agae-mlp`, `vgae`, `deal`, `feature-cosine`, and `feature-mlp`.
 `feature-mlp` is a trainable, graph-independent baseline that applies the
 symmetric MLP decoder directly to pairs of input node features. Repeat
 `--model-type` to choose several explicitly:
@@ -182,8 +182,8 @@ symmetric MLP decoder directly to pairs of input node features. Repeat
 ```bash
 glpbench experiment cora \
   out/results.csv \
-  --model-type mlp \
-  --model-type variational
+  --model-type gae-mlp \
+  --model-type vgae
 ```
 
 To evaluate an unpackaged research model, pass a local Python file exporting
@@ -361,7 +361,7 @@ Available reduction methods are `pca`, `truncated-svd`, and
 
 ```bash
 glpbench experiment coauthor-cs out/results.csv \
-  --model-type asymmetric \
+  --model-type agae \
   --reduction-method truncated-svd
 ```
 
@@ -383,14 +383,18 @@ The model registry currently includes:
 
 | Model type | Description |
 | --- | --- |
-| `symmetric` | Graph autoencoder with inner-product decoding |
-| `mlp` | Graph autoencoder with a learned symmetric MLP decoder |
-| `variational` | Variational graph autoencoder with KL regularization |
+| `gae` | Graph autoencoder with inner-product decoding |
+| `gae-mlp` | Graph autoencoder with a learned symmetric MLP decoder |
+| `vgae` | Variational graph autoencoder with KL regularization |
 | `deal` | Dual structural and attribute encoders for inductive prediction |
 | `feature-cosine` | Non-trainable cosine similarity over node features |
 | `feature-mlp` | Trainable graph-independent MLP over feature pairs |
-| `asymmetric` | Graph latent-to-feature inner-product decoder |
-| `asymmetric-mlp` | Learned MLP over graph-derived sources and feature-derived targets |
+| `agae` | Graph latent-to-feature inner-product decoder |
+| `agae-mlp` | Learned MLP over graph-derived sources and feature-derived targets |
+
+The former model names `symmetric`, `mlp`, `asymmetric`, `asymmetric-mlp`, and
+`variational` remain accepted as CLI and Python API aliases. Newly generated
+artifacts use the canonical names shown above.
 
 `glpbench.models.LinkPrediction` provides the shared training and inference interface:
 
@@ -399,7 +403,7 @@ from glpbench.models import LinkPrediction
 
 predictor = LinkPrediction(
     train,
-    model_type="symmetric",
+    model_type="gae",
     conv_layer_type="SAGEConv",
     hidden_channels=128,
     out_channels=64,
@@ -417,11 +421,11 @@ and the variational model with `kl_weight`:
 ```python
 mlp = LinkPrediction(
     train,
-    model_type="mlp",
+    model_type="gae-mlp",
     decoder_hidden_channels=64,
     decoder_dropout=0.2,
 )
-vgae = LinkPrediction(train, model_type="variational", kl_weight=1.0)
+vgae = LinkPrediction(train, model_type="vgae", kl_weight=1.0)
 ```
 
 Architecture-specific options are available for MLP decoders, VGAE KL

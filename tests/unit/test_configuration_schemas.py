@@ -36,7 +36,7 @@ def _common(kind):
             "query_size": 10,
             "validation_query_size": 10,
         },
-        "models": [{"architecture": "symmetric"}],
+        "models": [{"architecture": "gae"}],
         "training": {"max_epochs": 20},
         "execution": {"seeds": [0], "device": "cpu"},
         "output": {"results": "out/results.csv"},
@@ -47,13 +47,13 @@ class TestCanonicalConfigurationSchemas(unittest.TestCase):
     def test_benchmark_parses_minimal_canonical_document(self):
         config = parse_benchmark_config(_common("benchmark"))
         self.assertEqual(config.datasets.names, ("cora",))
-        self.assertEqual(config.models[0].architecture, "symmetric")
+        self.assertEqual(config.models[0].architecture, "gae")
         self.assertEqual(config.output.results, Path("out/results.csv"))
 
     def test_search_parses_spaces_and_freezes_them(self):
         document = _common("hyperparameter-search")
         document["models"] = [{
-            "architecture": "symmetric",
+            "architecture": "gae",
             "spaces": {
                 "hidden_channels": {
                     "values": [32, 64], "sampling": "random"
@@ -187,7 +187,7 @@ class TestCanonicalConfigurationSchemas(unittest.TestCase):
         document["datasets"]["names"] = ["cora", "citeseer"]
         document["execution"]["seeds"] = [0, 1]
         document["models"] = [{
-            "architecture": "asymmetric",
+            "architecture": "agae",
             "conv_layer_types": ["GCNConv", "SAGEConv"],
             "reduction_methods": ["pca"],
             "parameters": {"hidden_channels": 64, "out_channels": 32},

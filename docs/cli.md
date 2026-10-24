@@ -30,7 +30,7 @@ appends the results to a CSV file.
 
 ```bash
 glpbench experiment cora out/results.csv \
-  --model-type symmetric \
+  --model-type gae \
   --model-type feature-cosine \
   --conv-layer-type GCNConv \
   --query-size 50 \
@@ -108,7 +108,7 @@ defaults:
 
 datasets: [Cora, CiteSeer]
 models:
-  - type: symmetric
+  - type: gae
     conv_layer_types: [GCNConv, SAGEConv]
   - type: feature-cosine
 ```
@@ -195,7 +195,7 @@ common_space:
   hidden_channels: {values: [32, 64], sampling: random}
 
 models:
-  symmetric: {}
+  gae: {}
   # The complete file must also define split, preprocessing, remaining common
   # spaces, and model-specific spaces for every trainable architecture.
 ```
@@ -254,7 +254,7 @@ selected_configurations:
   require_all_pairs: true
 
 datasets: [cora]
-models: [symmetric, asymmetric]
+models: [gae, agae]
 splits:
   protocol: matched-semi-inductive-validation-only
   query_fraction: 0.05

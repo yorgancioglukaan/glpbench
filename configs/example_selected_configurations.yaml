@@ -3,7 +3,7 @@ version: 1
 kind: selected-hyperparameters
 selections:
   cora:
-    symmetric:
+    gae:
       hyperparameters:
         hidden_channels: 64
         out_channels: 32
@@ -11,7 +11,7 @@ selections:
         weight_decay: 0.0
         normalize_features: true
         conv_layer_type: GCNConv
-    asymmetric:
+    agae:
       hyperparameters:
         hidden_channels: 64
         out_channels: 32

@@ -81,9 +81,9 @@ preprocessing:
     sampling: balanced
 
 models:
-  symmetric: {}
+  gae: {}
 
-  asymmetric:
+  agae:
     reduction_method:
       values: [pca, truncated-svd, sparse-random-projection]
       sampling: stratified
@@ -93,7 +93,7 @@ models:
         values: [0.0, 0.001, 0.01]
         sampling: stratified
 
-  mlp:
+  gae-mlp:
     decoder_hidden_channels:
       values: [32, 64]
       sampling: random
@@ -109,7 +109,7 @@ models:
       values: [0.0, 0.2]
       sampling: random
 
-  asymmetric-mlp:
+  agae-mlp:
     reduction_method:
       values: [pca, truncated-svd, sparse-random-projection]
       sampling: stratified
@@ -125,7 +125,7 @@ models:
       values: [0.0, 0.2]
       sampling: random
 
-  variational:
+  vgae:
     kl_weight:
       values: [0.01, 0.1, 1.0]
       sampling: stratified

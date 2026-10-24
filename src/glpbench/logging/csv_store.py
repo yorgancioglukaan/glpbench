@@ -173,9 +173,11 @@ class ExperimentResult:
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")
         try:
-            model_capabilities = get_model_adapter(self.model_type).capabilities
+            model_adapter = get_model_adapter(self.model_type)
         except (TypeError, ValueError) as error:
             raise ValueError("model_type is not supported") from error
+        self.model_type = model_adapter.name
+        model_capabilities = model_adapter.capabilities
         if self.split_type not in {"inductive", "transductive"}:
             raise ValueError("split_type must be 'inductive' or 'transductive'")
         if self.conv_layer_type not in {
@@ -192,7 +194,7 @@ class ExperimentResult:
             and self.regularization_type != "none"
         ):
             raise ValueError(
-                "explicit regularization is only supported by asymmetric models"
+                "explicit regularization is only supported by AGAE models"
             )
 
         for name in ("hidden_channels", "out_channels", "epochs"):
@@ -334,7 +336,7 @@ class ExperimentResult:
             and self.regularization_strength != 0
         ):
             raise ValueError(
-                "regularization_strength is only supported by asymmetric models"
+                "regularization_strength is only supported by AGAE models"
             )
         validate_scheduler_config(
             self.lr_scheduler, self.lr_scheduler_kwargs, epochs=self.epochs

@@ -131,17 +131,17 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_models_share_data_aware_decoder_interface(self):
         data = self._training_data()
-        symmetric = link_prediction.GAE_Model(3, 4, 2, conv_layer_type="GCNConv")
-        asymmetric = link_prediction.AGAE_Model(3, 4, 2, conv_layer_type="GCNConv")
+        gae = link_prediction.GAE_Model(3, 4, 2, conv_layer_type="GCNConv")
+        agae = link_prediction.AGAE_Model(3, 4, 2, conv_layer_type="GCNConv")
         z = torch.ones((data.num_nodes, 2))
 
-        symmetric_scores = symmetric.decode_edges(z, data.edge_label_index, data)
-        asymmetric_scores = asymmetric.decode_edges(z, data.edge_label_index, data)
+        symmetric_scores = gae.decode_edges(z, data.edge_label_index, data)
+        asymmetric_scores = agae.decode_edges(z, data.edge_label_index, data)
 
         self.assertEqual(symmetric_scores.shape, data.edge_label.shape)
         self.assertEqual(asymmetric_scores.shape, data.edge_label.shape)
-        self.assertEqual(symmetric.regularization_loss().item(), 0.0)
-        self.assertEqual(asymmetric.regularization_loss().item(), 0.0)
+        self.assertEqual(gae.regularization_loss().item(), 0.0)
+        self.assertEqual(agae.regularization_loss().item(), 0.0)
 
     def test_invalid_model_and_convolution_types(self):
         data = self._training_data()
@@ -156,13 +156,19 @@ class TestLinkPrediction(unittest.TestCase):
         self.assertEqual(
             link_prediction.available_model_types(),
             (
-                "asymmetric", "asymmetric-mlp", "deal", "feature-cosine",
-                "feature-mlp", "mlp", "symmetric", "variational",
+                "agae", "agae-mlp", "deal", "feature-cosine",
+                "feature-mlp", "gae", "gae-mlp", "vgae",
             ),
         )
 
+    def test_legacy_model_name_is_canonicalized(self):
+        predictor = link_prediction.LinkPrediction(
+            self._training_data(), model_type="symmetric"
+        )
+        self.assertEqual(predictor.model_type, "gae")
+
     def test_model_adapters_describe_asymmetric_mlp_capabilities(self):
-        adapter = glp_models.get_model_adapter("asymmetric-mlp")
+        adapter = glp_models.get_model_adapter("agae-mlp")
 
         self.assertTrue(adapter.capabilities.uses_conv_layer)
         self.assertTrue(adapter.capabilities.requires_reduced_features)
@@ -364,7 +370,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="mlp",
+            model_type="gae-mlp",
             conv_layer_type="GCNConv",
             hidden_channels=4,
             out_channels=2,
@@ -393,7 +399,7 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_mlp_decoder_validates_configuration(self):
         data = self._training_data()
-        for model_type in ("mlp", "asymmetric-mlp", "feature-mlp"):
+        for model_type in ("gae-mlp", "agae-mlp", "feature-mlp"):
             with self.subTest(model_type=model_type):
                 with self.assertRaises(ValueError):
                     link_prediction.LinkPrediction(
@@ -410,7 +416,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="asymmetric-mlp",
+            model_type="agae-mlp",
             conv_layer_type="GCNConv",
             hidden_channels=4,
             out_channels=2,
@@ -437,7 +443,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="asymmetric-mlp",
+            model_type="agae-mlp",
             hidden_channels=4,
             out_channels=2,
             decoder_hidden_channels=5,
@@ -464,7 +470,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="variational",
+            model_type="vgae",
             conv_layer_type="GCNConv",
             hidden_channels=4,
             out_channels=2,
@@ -508,7 +514,7 @@ class TestLinkPrediction(unittest.TestCase):
 
     def test_new_baselines_support_all_convolution_types(self):
         data = self._training_data()
-        for model_type in ("mlp", "asymmetric-mlp", "variational"):
+        for model_type in ("gae-mlp", "agae-mlp", "vgae"):
             for conv_layer_type in (
                 "GCNConv", "GraphConv", "SAGEConv", "GATv2Conv"
             ):
@@ -643,7 +649,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="asymmetric",
+            model_type="agae",
             learning_rate=0.005,
             weight_decay=0.01,
         )
@@ -660,44 +666,44 @@ class TestLinkPrediction(unittest.TestCase):
             with self.subTest(config=config):
                 with self.assertRaises((TypeError, ValueError)):
                     link_prediction.LinkPrediction(
-                        data, model_type="asymmetric", **config
+                        data, model_type="agae", **config
                     )
 
     def test_decode_all_applies_score_threshold(self):
-        symmetric = link_prediction.GAE_Model(2, 2, 2, conv_layer_type="GCNConv")
-        asymmetric = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        gae = link_prediction.GAE_Model(2, 2, 2, conv_layer_type="GCNConv")
+        agae = link_prediction.AGAE_Model(2, 2, 2, conv_layer_type="GCNConv")
         z = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
         x_reduced = torch.tensor([[0.4, 0.0], [0.0, 0.6]])
 
         self.assertTrue(torch.equal(
-            symmetric.decode_all(z), torch.tensor([[0, 1], [0, 1]])
+            gae.decode_all(z), torch.tensor([[0, 1], [0, 1]])
         ))
         self.assertTrue(torch.equal(
-            asymmetric.decode_all(z, x_reduced), torch.tensor([[1], [1]])
+            agae.decode_all(z, x_reduced), torch.tensor([[1], [1]])
         ))
 
     def test_link_prediction_constructor_configuration(self):
         data = self._training_data()
-        symmetric = link_prediction.LinkPrediction(
-            data, model_type="symmetric", conv_layer_type="GraphConv",
+        gae = link_prediction.LinkPrediction(
+            data, model_type="gae", conv_layer_type="GraphConv",
             hidden_channels=7, out_channels=2,
         )
-        asymmetric = link_prediction.LinkPrediction(
-            data, model_type="asymmetric", conv_layer_type="SAGEConv",
+        agae = link_prediction.LinkPrediction(
+            data, model_type="agae", conv_layer_type="SAGEConv",
             hidden_channels=6, out_channels=2,
         )
 
-        self.assertIsInstance(symmetric.model, link_prediction.GAE_Model)
-        self.assertIsInstance(symmetric.model.conv1, GraphConv)
-        self.assertEqual(symmetric.model.conv1.out_channels, 7)
-        self.assertEqual(symmetric.model.conv2.out_channels, 2)
-        self.assertIsInstance(asymmetric.model, link_prediction.AGAE_Model)
-        self.assertIsInstance(asymmetric.model.conv1, SAGEConv)
-        self.assertEqual(asymmetric.model.conv1.out_channels, 6)
-        self.assertIsInstance(symmetric.criterion, torch.nn.BCEWithLogitsLoss)
-        optimizer_params = {id(param) for group in symmetric.optimizer.param_groups
+        self.assertIsInstance(gae.model, link_prediction.GAE_Model)
+        self.assertIsInstance(gae.model.conv1, GraphConv)
+        self.assertEqual(gae.model.conv1.out_channels, 7)
+        self.assertEqual(gae.model.conv2.out_channels, 2)
+        self.assertIsInstance(agae.model, link_prediction.AGAE_Model)
+        self.assertIsInstance(agae.model.conv1, SAGEConv)
+        self.assertEqual(agae.model.conv1.out_channels, 6)
+        self.assertIsInstance(gae.criterion, torch.nn.BCEWithLogitsLoss)
+        optimizer_params = {id(param) for group in gae.optimizer.param_groups
                             for param in group["params"]}
-        self.assertEqual(optimizer_params, {id(param) for param in symmetric.model.parameters()})
+        self.assertEqual(optimizer_params, {id(param) for param in gae.model.parameters()})
 
     def test_default_constructor_uses_symmetric_gcn(self):
         predictor = link_prediction.LinkPrediction(self._training_data())
@@ -708,7 +714,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="asymmetric",
+            model_type="agae",
             conv_layer_type="GATv2Conv",
             hidden_channels=4,
             out_channels=2,
@@ -736,7 +742,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
             data,
-            model_type="symmetric",
+            model_type="gae",
             conv_layer_type="GATv2Conv",
             hidden_channels=4,
             out_channels=2,
@@ -760,7 +766,7 @@ class TestLinkPrediction(unittest.TestCase):
         data = self._training_data()
         mock_sampling.return_value = torch.tensor([[0, 4], [3, 1]])
         predictor = link_prediction.LinkPrediction(
-            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+            data, model_type="agae", hidden_channels=4, out_channels=2
         )
         before = [parameter.detach().clone() for parameter in predictor.model.parameters()]
 
@@ -789,7 +795,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_train_without_argument_uses_constructor_data(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+            data, model_type="agae", hidden_channels=4, out_channels=2
         )
         loss = predictor.train()
         self.assertTrue(torch.isfinite(loss))
@@ -797,7 +803,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_train_accepts_precomputed_negative_edges(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="symmetric", hidden_channels=4, out_channels=2
+            data, model_type="gae", hidden_channels=4, out_channels=2
         )
         negative_edges = torch.tensor([[0, 4], [3, 1]])
 
@@ -814,7 +820,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_train_validates_precomputed_negative_edges(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="symmetric", hidden_channels=4, out_channels=2
+            data, model_type="gae", hidden_channels=4, out_channels=2
         )
         invalid_edges = (
             torch.tensor([0, 1]),
@@ -957,14 +963,14 @@ class TestLinkPrediction(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported model parameter"):
             link_prediction.LinkPrediction(
                 self._training_data(),
-                model_type="symmetric",
+                model_type="gae",
                 unsupported_option=True,
             )
 
     def test_symmetric_training_step_returns_finite_loss(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="symmetric", hidden_channels=4, out_channels=2
+            data, model_type="gae", hidden_channels=4, out_channels=2
         )
         loss = predictor.train(data)
         self.assertTrue(torch.isfinite(loss))
@@ -972,7 +978,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_asymmetric_test_returns_probabilities_and_sets_eval_mode(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="asymmetric", hidden_channels=4, out_channels=2
+            data, model_type="agae", hidden_channels=4, out_channels=2
         )
         probabilities = predictor.test(data)
         self.assertEqual(probabilities.shape, (data.edge_label_index.size(1),))
@@ -983,7 +989,7 @@ class TestLinkPrediction(unittest.TestCase):
     def test_symmetric_test_returns_probabilities(self):
         data = self._training_data()
         predictor = link_prediction.LinkPrediction(
-            data, model_type="symmetric", hidden_channels=4, out_channels=2
+            data, model_type="gae", hidden_channels=4, out_channels=2
         )
         probabilities = predictor.test(data)
         self.assertEqual(probabilities.shape, (data.edge_label_index.size(1),))

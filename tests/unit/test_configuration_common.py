@@ -24,7 +24,7 @@ class TestCommonConfigurationSections(unittest.TestCase):
         datasets = parse_dataset_config({"names": ["cora"], "root": "graphs"})
         execution = parse_execution_config({"seeds": [2, 4]})
         model = parse_model_config(
-            {"architecture": "symmetric", "parameters": {"dropout": 0.1}},
+            {"architecture": "gae", "parameters": {"dropout": 0.1}},
             ("models", 0),
         )
 

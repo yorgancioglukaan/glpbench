@@ -55,7 +55,7 @@ class TestConfigurationCompatibility(unittest.TestCase):
                 "kind": "selected-hyperparameters",
                 "selections": {
                     "cora": {
-                        "symmetric": {
+                        "gae": {
                             "hyperparameters": {
                                 "hidden_channels": 16,
                                 "out_channels": 8,
@@ -80,7 +80,7 @@ class TestConfigurationCompatibility(unittest.TestCase):
                     "require_all_pairs": True,
                 },
                 "datasets": ["cora"],
-                "models": ["symmetric"],
+                "models": ["gae"],
             }), encoding="utf-8")
 
             direct = benchmark.load_benchmark_config(path)
@@ -110,7 +110,7 @@ class TestConfigurationCompatibility(unittest.TestCase):
                     "require_all_pairs": True,
                 },
                 "datasets": ["cora"],
-                "models": ["symmetric"],
+                "models": ["gae"],
                 "splits": {
                     "protocol": "matched-semi-inductive",
                     "query_fraction": 0.05,
@@ -147,7 +147,7 @@ class TestConfigurationCompatibility(unittest.TestCase):
     def test_selected_hyperparameters_remain_loadable(self):
         selected = load_config("tests/fixtures/audit_selected_configurations.yaml")
         self.assertIn("cora", selected)
-        self.assertIn("symmetric", selected["cora"])
+        self.assertIn("gae", selected["cora"])
 
     def test_mixed_or_missing_version_markers_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

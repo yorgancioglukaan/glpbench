@@ -32,11 +32,11 @@ from glpbench.models import (
 
 
 ADAPTER_CASES = (
-    (GAEAdapter, "symmetric", GAE_Model),
-    (GAEMLPAdapter, "mlp", MLP_GAE_Model),
-    (AGAEAdapter, "asymmetric", AGAE_Model),
-    (AGAEMLPAdapter, "asymmetric-mlp", MLP_AGAE_Model),
-    (VGAEAdapter, "variational", VGAE_Model),
+    (GAEAdapter, "gae", GAE_Model),
+    (GAEMLPAdapter, "gae-mlp", MLP_GAE_Model),
+    (AGAEAdapter, "agae", AGAE_Model),
+    (AGAEMLPAdapter, "agae-mlp", MLP_AGAE_Model),
+    (VGAEAdapter, "vgae", VGAE_Model),
     (DEALAdapter, "deal", DEALModel),
     (FeatureCosineAdapter, "feature-cosine", FeatureCosineModel),
     (FeatureMLPAdapter, "feature-mlp", FeatureMLPModel),
@@ -86,15 +86,15 @@ def _parameters(name):
         "conv_layer_type": "GCNConv",
         "gatv2_kwargs": {},
     }
-    if name == "mlp":
+    if name == "gae-mlp":
         return {**common, "decoder_hidden_channels": 4, "decoder_dropout": 0.1}
-    if name == "asymmetric":
+    if name == "agae":
         return {
             **common,
             "regularization_type": "cosine-alignment",
             "regularization_strength": 0.2,
         }
-    if name == "asymmetric-mlp":
+    if name == "agae-mlp":
         return {
             **common,
             "decoder_hidden_channels": 4,
@@ -102,7 +102,7 @@ def _parameters(name):
             "regularization_type": "cosine-alignment",
             "regularization_strength": 0.2,
         }
-    if name == "variational":
+    if name == "vgae":
         return {**common, "kl_weight": 0.3}
     if name == "deal":
         return {
@@ -147,21 +147,21 @@ class TestBundledModelAdapters(unittest.TestCase):
         }
 
         graph = resolve_model_parameters(GAEAdapter(), supplied)
-        variational = resolve_model_parameters(VGAEAdapter(), supplied)
+        vgae = resolve_model_parameters(VGAEAdapter(), supplied)
         feature = resolve_model_parameters(FeatureMLPAdapter(), supplied)
 
         self.assertNotIn("kl_weight", graph)
-        self.assertEqual(variational["kl_weight"], 0.4)
+        self.assertEqual(vgae["kl_weight"], 0.4)
         self.assertEqual(feature["decoder_dropout"], 0.2)
         self.assertNotIn("hidden_channels", feature)
 
     def test_link_prediction_accepts_explicit_adapter_parameters(self):
         parameters = resolve_model_parameters(
-            GAEAdapter(), _parameters("symmetric")
+            GAEAdapter(), _parameters("gae")
         )
         predictor = LinkPrediction(
             self.data,
-            model_type="symmetric",
+            model_type="gae",
             model_parameters=parameters,
             learning_rate=0.01,
             weight_decay=0.0,
@@ -171,7 +171,7 @@ class TestBundledModelAdapters(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be combined"):
             LinkPrediction(
                 self.data,
-                model_type="symmetric",
+                model_type="gae",
                 model_parameters=parameters,
                 hidden_channels=8,
             )
