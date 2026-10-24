@@ -130,6 +130,9 @@ class TestMainPipeline(unittest.TestCase):
                     "from glpbench.models import FeatureCosineAdapter\n"
                     "class LocalAdapter(FeatureCosineAdapter):\n"
                     "    name = 'local-cosine'\n"
+                    "    def result_metadata(self, parameters):\n"
+                    "        self.validate_parameters(parameters)\n"
+                    "        return {'custom_marker': 'from-adapter'}\n"
                     "MODEL_ADAPTER = LocalAdapter()\n",
                     encoding="utf-8",
                 )
@@ -159,6 +162,7 @@ class TestMainPipeline(unittest.TestCase):
                 "local-cosine"
             })
             extra = json.loads(rows[0]["extra_fields"])
+            self.assertEqual(extra["custom_marker"], "from-adapter")
             self.assertEqual(
                 extra["model_source"]["path"], str(model_path.resolve())
             )
@@ -310,6 +314,14 @@ class TestMainPipeline(unittest.TestCase):
             def __init__(self, train_data, **kwargs):
                 self.trainable = True
                 self.model_spec = SimpleNamespace(uses_conv_layer=True)
+                self.model_parameters = glp_models.get_model_adapter(
+                    kwargs["model_type"]
+                ).validate_parameters({
+                    "hidden_channels": kwargs["hidden_channels"],
+                    "out_channels": kwargs["out_channels"],
+                    "conv_layer_type": kwargs["conv_layer_type"],
+                    "gatv2_kwargs": kwargs["gatv2_kwargs"],
+                })
                 self.model = torch.nn.Linear(1, 1, bias=False)
                 with torch.no_grad():
                     self.model.weight.zero_()

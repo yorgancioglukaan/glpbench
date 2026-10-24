@@ -4,6 +4,7 @@ import copy
 import json
 import random
 import time
+from collections.abc import Mapping
 
 from sklearn.metrics import (
     accuracy_score,
@@ -76,6 +77,17 @@ def _json_object(value):
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("must decode to a JSON object")
     return parsed
+
+
+def _mutable_metadata(value):
+    """Convert immutable adapter metadata into JSON-compatible containers."""
+    if isinstance(value, Mapping):
+        return {key: _mutable_metadata(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_mutable_metadata(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_mutable_metadata(item) for item in value)
+    return value
 
 
 def _synchronize_device(device):
@@ -708,6 +720,15 @@ def run_experiment(
                 })
             predictor = LinkPrediction(train, **predictor_kwargs)
             predictor.model = predictor.model.to(device)
+            model_metadata = _mutable_metadata(model_adapter.result_metadata(
+                predictor.model_parameters
+            ))
+            logged_regularization_type = model_metadata.pop(
+                "regularization_type", "none"
+            )
+            logged_regularization_strength = model_metadata.pop(
+                "regularization_strength", 0.0
+            )
             effective_conv_layer = (
                 args.conv_layer_type
                 if model_adapter.capabilities.uses_conv_layer else "None"
@@ -749,22 +770,13 @@ def run_experiment(
                     "path": str(model_source.path),
                     "sha256": model_source.sha256,
                 }
-            if (
-                model_adapter.capabilities.uses_conv_layer
-                and args.conv_layer_type == "GATv2Conv"
-            ):
-                extra_fields["gatv2_kwargs"] = gatv2_kwargs
-            if model_adapter.capabilities.uses_mlp_decoder:
-                extra_fields.update({
-                    "decoder_hidden_channels": decoder_hidden_channels,
-                    "decoder_dropout": decoder_dropout,
-                })
-            elif model_type == "variational":
-                extra_fields["kl_weight"] = kl_weight
-            elif model_type == "deal":
-                extra_fields.update({
-                    f"deal_{name}": value for name, value in deal_config.items()
-                })
+            overlapping_metadata = set(extra_fields).intersection(model_metadata)
+            if overlapping_metadata:
+                fields = ", ".join(sorted(overlapping_metadata))
+                raise ValueError(
+                    f"model result metadata conflicts with shared fields: {fields}"
+                )
+            extra_fields.update(model_metadata)
 
             resolved_training_policy = TrainingPolicy(
                 max_epochs=args.epochs,
@@ -814,12 +826,8 @@ def run_experiment(
                     "conv_layer_type": effective_conv_layer,
                     "hidden_channels": args.hidden_channels,
                     "out_channels": args.out_channels,
-                    "regularization_type": regularization_type,
-                    "regularization_strength": (
-                        regularization_strength
-                        if model_adapter.capabilities.supports_agae_regularization
-                        else 0.0
-                    ),
+                    "regularization_type": logged_regularization_type,
+                    "regularization_strength": logged_regularization_strength,
                     "weight_decay": effective_weight_decay,
                 },
             )
@@ -837,11 +845,8 @@ def run_experiment(
                     "train_ratio": args.train_ratio,
                     "epochs": args.epochs,
                     "normalize_features": args.normalize_features,
-                    "regularization_type": regularization_type,
-                    "regularization_strength": (
-                        regularization_strength
-                        if model_adapter.capabilities.supports_agae_regularization else 0.0
-                    ),
+                    "regularization_type": logged_regularization_type,
+                    "regularization_strength": logged_regularization_strength,
                     "weight_decay": effective_weight_decay,
                     "selection_metric": selection_metric,
                     "training_policy": training_policy,
