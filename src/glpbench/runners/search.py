@@ -406,9 +406,11 @@ def _stratified(values, default, rng, count):
     remaining = [value for value in values if value != default]
     rng.shuffle(remaining)
     sequence = [default, *remaining]
-    if len(sequence) != count:
-        raise ValueError("stratified values must match the candidate count")
-    return sequence
+    if len(sequence) < count:
+        raise ValueError(
+            "stratified values and the default must cover every candidate"
+        )
+    return sequence[:count]
 
 
 def _search_sequence(specification, default, rng, count):
@@ -417,7 +419,7 @@ def _search_sequence(specification, default, rng, count):
     sampling = specification["sampling"]
     if sampling == "stratified":
         return _stratified(values, default, rng, count)
-    first = default if default in values else values[len(values) // 2]
+    first = default
     if sampling == "balanced":
         sequence = [first, *(value for value in values if value != first)]
         return [

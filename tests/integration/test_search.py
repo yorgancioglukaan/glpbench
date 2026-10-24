@@ -130,14 +130,42 @@ class TestSearchRunner(unittest.TestCase):
                         {"balanced", "attribute-focused", "alignment-focused"},
                     )
                 if architecture in {"gae-mlp", "feature-mlp", "agae-mlp"}:
-                    self.assertIn(
-                        group[0].hyperparameters["decoder_hidden_channels"],
-                        {32, 64, 128},
+                    self.assertIsNone(
+                        group[0].hyperparameters["decoder_hidden_channels"]
                     )
-                    self.assertIn(
-                        group[0].hyperparameters["decoder_dropout"],
-                        {0.0, 0.2, 0.5},
+                    self.assertEqual(
+                        group[0].hyperparameters["decoder_dropout"], 0.0
                     )
+
+    def test_shipped_search_includes_defaults_outside_sampled_values(self):
+        config = search.load_search_config("configs/example_search.yaml")
+        candidates = search.generate_candidates(config)
+        first_by_model = {}
+        for candidate in candidates:
+            first_by_model.setdefault(
+                candidate.architecture, candidate.hyperparameters
+            )
+
+        self.assertEqual(first_by_model["gae"]["hidden_channels"], 128)
+        self.assertEqual(first_by_model["gae"]["out_channels"], 64)
+        self.assertEqual(first_by_model["gae"]["learning_rate"], 0.01)
+        self.assertEqual(first_by_model["gae"]["weight_decay"], 0.0)
+        self.assertTrue(first_by_model["gae"]["normalize_features"])
+        self.assertIsNone(
+            first_by_model["gae-mlp"]["decoder_hidden_channels"]
+        )
+        self.assertEqual(first_by_model["vgae"]["kl_weight"], 1.0)
+        self.assertEqual(first_by_model["deal"]["deal_profile"], "balanced")
+        gae_candidates = [
+            candidate.hyperparameters
+            for candidate in candidates
+            if candidate.architecture == "gae"
+        ]
+        self.assertTrue(all(
+            candidate["hidden_channels"] in {32, 64}
+            and candidate["out_channels"] in {16, 32}
+            for candidate in gae_candidates[1:]
+        ))
 
     def test_local_adapter_declares_its_own_search_dimension(self):
         document = yaml.safe_load(
