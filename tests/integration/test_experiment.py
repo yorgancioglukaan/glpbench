@@ -314,14 +314,7 @@ class TestMainPipeline(unittest.TestCase):
             def __init__(self, train_data, **kwargs):
                 self.trainable = True
                 self.model_spec = SimpleNamespace(uses_conv_layer=True)
-                self.model_parameters = glp_models.get_model_adapter(
-                    kwargs["model_type"]
-                ).validate_parameters({
-                    "hidden_channels": kwargs["hidden_channels"],
-                    "out_channels": kwargs["out_channels"],
-                    "conv_layer_type": kwargs["conv_layer_type"],
-                    "gatv2_kwargs": kwargs["gatv2_kwargs"],
-                })
+                self.model_parameters = kwargs["model_parameters"]
                 self.model = torch.nn.Linear(1, 1, bias=False)
                 with torch.no_grad():
                     self.model.weight.zero_()
@@ -930,7 +923,7 @@ class TestMainPipeline(unittest.TestCase):
                 rows = list(csv.DictReader(csv_file))
 
         self.assertEqual(
-            mock_predictor.call_args.kwargs["gatv2_kwargs"],
+            mock_predictor.call_args.kwargs["model_parameters"]["gatv2_kwargs"],
             args.gatv2_kwargs,
         )
         for row in rows:

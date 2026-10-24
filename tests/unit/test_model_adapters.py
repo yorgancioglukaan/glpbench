@@ -27,6 +27,7 @@ from glpbench.models import (
     VGAEAdapter,
     VGAE_Model,
     get_model_adapter,
+    resolve_model_parameters,
 )
 
 
@@ -133,6 +134,47 @@ class TestBundledModelAdapters(unittest.TestCase):
             [[0, 1, 2, 3, 0, 2], [1, 2, 3, 0, 2, 0]], dtype=torch.long
         )
         self.loss_edge_label = torch.tensor([1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
+
+    def test_parameter_resolution_selects_only_adapter_declarations(self):
+        supplied = {
+            "hidden_channels": 7,
+            "out_channels": 3,
+            "conv_layer_type": "GCNConv",
+            "gatv2_kwargs": {},
+            "kl_weight": 0.4,
+            "decoder_dropout": 0.2,
+            "theta_ss": 0.5,
+        }
+
+        graph = resolve_model_parameters(GAEAdapter(), supplied)
+        variational = resolve_model_parameters(VGAEAdapter(), supplied)
+        feature = resolve_model_parameters(FeatureMLPAdapter(), supplied)
+
+        self.assertNotIn("kl_weight", graph)
+        self.assertEqual(variational["kl_weight"], 0.4)
+        self.assertEqual(feature["decoder_dropout"], 0.2)
+        self.assertNotIn("hidden_channels", feature)
+
+    def test_link_prediction_accepts_explicit_adapter_parameters(self):
+        parameters = resolve_model_parameters(
+            GAEAdapter(), _parameters("symmetric")
+        )
+        predictor = LinkPrediction(
+            self.data,
+            model_type="symmetric",
+            model_parameters=parameters,
+            learning_rate=0.01,
+            weight_decay=0.0,
+        )
+
+        self.assertEqual(dict(predictor.model_parameters), dict(parameters))
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            LinkPrediction(
+                self.data,
+                model_type="symmetric",
+                model_parameters=parameters,
+                hidden_channels=8,
+            )
 
     def test_all_adapters_satisfy_contract_and_match_capabilities(self):
         for adapter_class, name, _ in ADAPTER_CASES:

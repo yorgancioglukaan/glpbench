@@ -172,7 +172,7 @@ class TestSearchRunner(unittest.TestCase):
             prepared = experiment_pipeline.prepare_validation_data(
                 source,
                 splits,
-                model_type="asymmetric",
+                requires_reduced_features=True,
                 normalize_features=True,
                 out_channels=2,
                 reduction_method="pca",

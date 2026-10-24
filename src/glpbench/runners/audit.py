@@ -27,6 +27,7 @@ from glpbench.models import (
     LinkPrediction,
     count_trainable_parameters,
     get_model_adapter,
+    resolve_model_parameters,
     resolve_model_reference,
 )
 from glpbench.runners.experiment import (
@@ -217,16 +218,13 @@ def expand_audit_config(config):
 
 def _predictor_kwargs(job):
     parameters = job.parameters
-    kwargs = {
-        "model_type": job.model_type,
+    supplied_model_parameters = {
         "conv_layer_type": job.conv_layer_type,
         "hidden_channels": parameters["hidden_channels"],
         "out_channels": parameters["out_channels"],
         "decoder_hidden_channels": parameters["decoder_hidden_channels"],
         "decoder_dropout": parameters["decoder_dropout"],
         "kl_weight": parameters["kl_weight"],
-        "learning_rate": parameters["learning_rate"],
-        "weight_decay": parameters["weight_decay"],
         "gatv2_kwargs": parameters["gatv2_kwargs"] or {},
         "theta_ss": parameters["deal_theta_ss"],
         "theta_aa": parameters["deal_theta_aa"],
@@ -236,13 +234,18 @@ def _predictor_kwargs(job):
         "lambda_sa": parameters["deal_lambda_sa"],
         "similarity_scale": parameters["deal_similarity_scale"],
         "similarity_margin": parameters["deal_similarity_margin"],
+        "regularization_type": job.regularization.type,
+        "regularization_strength": job.regularization.strength,
     }
-    if get_model_adapter(job.model_type).capabilities.supports_agae_regularization:
-        kwargs.update({
-            "regularization_type": job.regularization.type,
-            "regularization_strength": job.regularization.strength,
-        })
-    return kwargs
+    adapter = get_model_adapter(job.model_type)
+    return {
+        "model_type": job.model_type,
+        "model_parameters": resolve_model_parameters(
+            adapter, supplied_model_parameters
+        ),
+        "learning_rate": parameters["learning_rate"],
+        "weight_decay": parameters["weight_decay"],
+    }
 
 
 def _load_completed(path):
@@ -363,7 +366,11 @@ def execute_audit(config, jobs, *, dry_run=False, resume=False, verbose=False,
                 prepared = prepare_validation_data(
                     source,
                     split_cache[split_key],
-                    model_type=job.model_type,
+                    requires_reduced_features=(
+                        get_model_adapter(
+                            job.model_type
+                        ).capabilities.requires_reduced_features
+                    ),
                     normalize_features=job.parameters["normalize_features"],
                     out_channels=job.parameters["out_channels"],
                     reduction_method=job.reduction_method,
