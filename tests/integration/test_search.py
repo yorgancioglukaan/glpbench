@@ -109,7 +109,7 @@ class TestSearchRunner(unittest.TestCase):
                 )
                 self.assertEqual(group[0].hyperparameters["hidden_channels"], 128)
                 self.assertEqual(group[0].hyperparameters["learning_rate"], 0.01)
-                if architecture in {"asymmetric", "asymmetric-mlp"}:
+                if architecture in {"agae", "agae-mlp"}:
                     self.assertEqual(
                         {candidate.hyperparameters["reduction_method"] for candidate in group},
                         {"pca", "truncated-svd", "sparse-random-projection"},
@@ -118,7 +118,7 @@ class TestSearchRunner(unittest.TestCase):
                         {candidate.hyperparameters["regularization_strength"] for candidate in group},
                         {0.0, 0.001, 0.01},
                     )
-                if architecture == "variational":
+                if architecture == "vgae":
                     self.assertEqual(
                         {candidate.hyperparameters["kl_weight"] for candidate in group},
                         {0.01, 0.1, 1.0},
@@ -128,7 +128,7 @@ class TestSearchRunner(unittest.TestCase):
                         {candidate.hyperparameters["deal_profile"] for candidate in group},
                         {"balanced", "attribute-focused", "alignment-focused"},
                     )
-                if architecture in {"mlp", "feature-mlp", "asymmetric-mlp"}:
+                if architecture in {"gae-mlp", "feature-mlp", "agae-mlp"}:
                     self.assertIn(
                         group[0].hyperparameters["decoder_hidden_channels"],
                         {32, 64, 128},
@@ -206,7 +206,7 @@ class TestSearchRunner(unittest.TestCase):
             prepared = experiment_pipeline.prepare_validation_data(
                 source,
                 splits,
-                model_type="symmetric",
+                model_type="gae",
                 normalize_features=True,
                 out_channels=2,
                 random_state=4,
@@ -244,13 +244,13 @@ class TestSearchRunner(unittest.TestCase):
         base = search.load_search_config("tests/fixtures/pilot_search.yaml")
         candidates = [
             candidate for candidate in search.generate_candidates(base)
-            if candidate.dataset == "cora" and candidate.architecture == "symmetric"
+            if candidate.dataset == "cora" and candidate.architecture == "gae"
         ]
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 base,
                 datasets=("cora",),
-                architectures=("symmetric",),
+                architectures=("gae",),
                 history_path=Path(directory) / "history.csv",
                 failures_path=Path(directory) / "errors.jsonl",
                 aggregate_path=Path(directory) / "aggregates.csv",
@@ -278,10 +278,10 @@ class TestSearchRunner(unittest.TestCase):
                 config.selected_path.read_text(encoding="utf-8")
             )
 
-        winner = winners[("cora", "symmetric")]
+        winner = winners[("cora", "gae")]
         self.assertEqual(winner["candidate_id"], candidates[1].candidate_id)
         self.assertEqual(
-            selected["selections"]["cora"]["symmetric"]["candidate_id"],
+            selected["selections"]["cora"]["gae"]["candidate_id"],
             candidates[1].candidate_id,
         )
 
@@ -297,7 +297,7 @@ class TestSearchRunner(unittest.TestCase):
                 base,
                 raw=raw,
                 datasets=("cora",),
-                architectures=("symmetric",),
+                architectures=("gae",),
                 tuning_seeds=(1,),
                 history_path=Path(directory) / "history.csv",
                 failures_path=Path(directory) / "errors.jsonl",
@@ -305,7 +305,7 @@ class TestSearchRunner(unittest.TestCase):
                 selected_path=Path(directory) / "selected.yaml",
             )
             candidate = search.SearchCandidate(
-                "toy-candidate", "cora", "symmetric",
+                "toy-candidate", "cora", "gae",
                 {
                     "hidden_channels": 4,
                     "out_channels": 2,
@@ -343,7 +343,7 @@ class TestSearchRunner(unittest.TestCase):
             config = replace(
                 base,
                 datasets=("cora",),
-                architectures=("symmetric",),
+                architectures=("gae",),
                 tuning_seeds=(1,),
                 history_path=Path(directory) / "history.csv",
                 failures_path=Path(directory) / "errors.jsonl",
@@ -352,7 +352,7 @@ class TestSearchRunner(unittest.TestCase):
             )
             candidates = (
                 search.SearchCandidate(
-                    "candidate-1", "cora", "symmetric",
+                    "candidate-1", "cora", "gae",
                     {
                         "hidden_channels": 4,
                         "out_channels": 2,
@@ -363,7 +363,7 @@ class TestSearchRunner(unittest.TestCase):
                     },
                 ),
                 search.SearchCandidate(
-                    "candidate-2", "cora", "symmetric",
+                    "candidate-2", "cora", "gae",
                     {
                         "hidden_channels": 8,
                         "out_channels": 2,

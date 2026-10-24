@@ -8,7 +8,7 @@ a CSV file:
 
 ```bash
 glpbench experiment cora out/results.csv \
-  --model-type symmetric \
+  --model-type gae \
   --model-type feature-cosine \
   --epochs 100 \
   --seed 42 \

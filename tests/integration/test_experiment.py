@@ -188,7 +188,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(output),
                 data_root="unused",
-                model_type=["symmetric", "feature-cosine"],
+                model_type=["gae", "feature-cosine"],
                 conv_layer_type="GCNConv",
                 hidden_channels=4,
                 out_channels=2,
@@ -221,7 +221,7 @@ class TestMainPipeline(unittest.TestCase):
                 for call in mock_compatibility.call_args_list
             },
             {
-                ("symmetric", "matched-semi-inductive"),
+                ("gae", "matched-semi-inductive"),
                 ("feature-cosine", "matched-semi-inductive"),
             },
         )
@@ -342,7 +342,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(output),
                 data_root="unused",
-                model_type=["symmetric"],
+                model_type=["gae"],
                 conv_layer_type="GCNConv",
                 hidden_channels=4,
                 out_channels=2,
@@ -388,7 +388,7 @@ class TestMainPipeline(unittest.TestCase):
             {record["dataset"] for record in epoch_records}, {"Toy"}
         )
         self.assertEqual(
-            {record["model_type"] for record in epoch_records}, {"symmetric"}
+            {record["model_type"] for record in epoch_records}, {"gae"}
         )
         self.assertEqual(
             {record["random_seed"] for record in epoch_records}, {42}
@@ -714,16 +714,16 @@ class TestMainPipeline(unittest.TestCase):
                 rows = list(csv.DictReader(csv_file))
         combinations = {(row["model_type"], row["split_type"]) for row in rows}
         self.assertEqual(combinations, {
-            ("symmetric", "transductive"),
-            ("symmetric", "inductive"),
-            ("asymmetric", "transductive"),
-            ("asymmetric", "inductive"),
-            ("mlp", "transductive"),
-            ("mlp", "inductive"),
-            ("asymmetric-mlp", "transductive"),
-            ("asymmetric-mlp", "inductive"),
-            ("variational", "transductive"),
-            ("variational", "inductive"),
+            ("gae", "transductive"),
+            ("gae", "inductive"),
+            ("agae", "transductive"),
+            ("agae", "inductive"),
+            ("gae-mlp", "transductive"),
+            ("gae-mlp", "inductive"),
+            ("agae-mlp", "transductive"),
+            ("agae-mlp", "inductive"),
+            ("vgae", "transductive"),
+            ("vgae", "inductive"),
             ("deal", "transductive"),
             ("deal", "inductive"),
             ("feature-cosine", "transductive"),
@@ -743,7 +743,7 @@ class TestMainPipeline(unittest.TestCase):
             )
         reduced_rows = [
             row for row in rows
-            if row["model_type"] in {"asymmetric", "asymmetric-mlp"}
+            if row["model_type"] in {"agae", "agae-mlp"}
         ]
         self.assertTrue(all(
             float(row["reducer_fit_time_seconds"]) >= 0
@@ -756,7 +756,7 @@ class TestMainPipeline(unittest.TestCase):
         self.assertTrue(all(
             row["reducer_fit_time_seconds"] == ""
             for row in rows
-            if row["model_type"] not in {"asymmetric", "asymmetric-mlp"}
+            if row["model_type"] not in {"agae", "agae-mlp"}
         ))
         trainable_rows = [
             row for row in rows if row["model_type"] != "feature-cosine"
@@ -815,7 +815,7 @@ class TestMainPipeline(unittest.TestCase):
             self.assertTrue(common_extra_fields.issubset(
                 json.loads(row["extra_fields"])
             ))
-        for model_type in ("mlp", "asymmetric-mlp"):
+        for model_type in ("gae-mlp", "agae-mlp"):
             mlp_config = json.loads(next(
                 row["extra_fields"]
                 for row in rows if row["model_type"] == model_type
@@ -824,7 +824,7 @@ class TestMainPipeline(unittest.TestCase):
             self.assertIn("decoder_dropout", mlp_config)
         variational_config = json.loads(next(
             row["extra_fields"]
-            for row in rows if row["model_type"] == "variational"
+            for row in rows if row["model_type"] == "vgae"
         ))
         self.assertIn("kl_weight", variational_config)
         deal_rows = [row for row in rows if row["model_type"] == "deal"]
@@ -864,7 +864,7 @@ class TestMainPipeline(unittest.TestCase):
             with output.open(newline="", encoding="utf-8") as csv_file:
                 rows = list(csv.DictReader(csv_file))
         self.assertEqual(len(rows), 2)
-        self.assertEqual({row["model_type"] for row in rows}, {"asymmetric"})
+        self.assertEqual({row["model_type"] for row in rows}, {"agae"})
         query_nodes = utils.select_query_node_sets(
             graph, query_size=args.query_size, seed=args.seed
         )
@@ -902,7 +902,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(output),
                 data_root="unused",
-                model_type=["symmetric"],
+                model_type=["gae"],
                 conv_layer_type="GATv2Conv",
                 gatv2_kwargs={"heads": 2, "concat": False, "dropout": 0.1},
                 hidden_channels=4,
@@ -943,7 +943,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(output),
                 data_root="unused",
-                model_type=["symmetric"],
+                model_type=["gae"],
                 conv_layer_type="GCNConv",
                 hidden_channels=4,
                 out_channels=2,
@@ -971,7 +971,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(Path(directory) / "results.csv"),
                 data_root="unused",
-                model_type=["symmetric"],
+                model_type=["gae"],
                 conv_layer_type="GCNConv",
                 hidden_channels=4,
                 out_channels=2,
@@ -1022,7 +1022,7 @@ class TestMainPipeline(unittest.TestCase):
                 dataset="toy",
                 out_filepath=str(output),
                 data_root="unused",
-                model_type=["asymmetric"],
+                model_type=["agae"],
                 conv_layer_type="GCNConv",
                 hidden_channels=4,
                 out_channels=2,

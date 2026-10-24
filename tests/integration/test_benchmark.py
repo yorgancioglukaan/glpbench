@@ -69,7 +69,7 @@ version: 1
 kind: selected-hyperparameters
 selections:
   cora:
-    asymmetric:
+    agae:
       hyperparameters:
         hidden_channels: 32
         out_channels: 16
@@ -100,7 +100,7 @@ selected_configurations:
   granularity: [dataset, architecture]
   require_all_pairs: true
 datasets: [Cora]
-models: [asymmetric]
+models: [agae]
 splits:
   protocol: matched-semi-inductive
   query_fraction: 0.05
@@ -153,9 +153,9 @@ defaults:
   normalize_features: false
 datasets: [Cora, CiteSeer]
 models:
-  - type: symmetric
+  - type: gae
     conv_layer_types: [GCNConv, SAGEConv]
-  - type: asymmetric
+  - type: agae
     conv_layer_types: [GCNConv]
     reduction_methods: [pca, truncated-svd]
     regularization:
@@ -192,7 +192,7 @@ version: 1
 kind: selected-hyperparameters
 selections:
   cora:
-    asymmetric:
+    agae:
       hyperparameters:
         hidden_channels: 32
         out_channels: 16
@@ -235,7 +235,7 @@ defaults:
   validation_query_fraction: 0.05
   epochs: 100
 datasets: [Cora]
-models: [asymmetric, deal]
+models: [agae, deal]
 """)
 
             config = benchmark.load_benchmark_config(path)
@@ -243,13 +243,13 @@ models: [asymmetric, deal]
 
         self.assertEqual(len(jobs), 2)
         self.assertEqual(config.seeds, (200, 201, 202))
-        asymmetric, deal = jobs
-        self.assertEqual(asymmetric.conv_layer_type, "SAGEConv")
-        self.assertEqual(asymmetric.reduction_method, "truncated-svd")
-        self.assertEqual(asymmetric.regularization.type, "cosine-alignment")
-        self.assertEqual(asymmetric.regularization.strength, 0.01)
-        self.assertFalse(asymmetric.parameters["normalize_features"])
-        self.assertEqual(asymmetric.parameters["hidden_channels"], 32)
+        agae, deal = jobs
+        self.assertEqual(agae.conv_layer_type, "SAGEConv")
+        self.assertEqual(agae.reduction_method, "truncated-svd")
+        self.assertEqual(agae.regularization.type, "cosine-alignment")
+        self.assertEqual(agae.regularization.strength, 0.01)
+        self.assertFalse(agae.parameters["normalize_features"])
+        self.assertEqual(agae.parameters["hidden_channels"], 32)
         self.assertTrue(deal.parameters["normalize_features"])
         self.assertEqual(deal.parameters["deal_theta_ss"], 0.1)
         self.assertEqual(deal.parameters["deal_lambda_sa"], 0.1)
@@ -346,11 +346,11 @@ selected_configurations:
   granularity: [dataset, architecture]
   require_all_pairs: true
 datasets: [Cora]
-models: [symmetric]
+models: [gae]
 """)
             config = benchmark.load_benchmark_config(path)
 
-            with self.assertRaisesRegex(ValueError, "selections.cora.symmetric"):
+            with self.assertRaisesRegex(ValueError, "selections.cora.gae"):
                 benchmark.expand_benchmark_config(config)
 
     def test_config_validation_rejects_incompatible_model_options(self):
@@ -368,7 +368,7 @@ version: 1
 seeds: [0]
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
     regularization:
       - {type: latent-l2, strength: 0.1}
 """,
@@ -377,14 +377,14 @@ version: 1
 seeds: [0]
 datasets: [unknown]
 models:
-  - type: symmetric
+  - type: gae
 """,
             """
 version: 1
 seeds: [0]
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
     parameters:
       kl_weight: 0.5
 """,
@@ -404,7 +404,7 @@ defaults:
   learning_rate: 0
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
 """)
             config = benchmark.load_benchmark_config(path)
 
@@ -418,7 +418,7 @@ version: 1
 seeds: [3]
 datasets: [Cora]
 models:
-  - type: asymmetric-mlp
+  - type: agae-mlp
     conv_layer_types: [GCNConv]
     reduction_methods: [pca, truncated-svd]
     regularization:
@@ -433,7 +433,7 @@ models:
 
         self.assertEqual(len(jobs), 4)
         self.assertTrue(all(
-            job.model_type == "asymmetric-mlp" for job in jobs
+            job.model_type == "agae-mlp" for job in jobs
         ))
         self.assertEqual(
             {job.reduction_method for job in jobs}, {"pca", "truncated-svd"}
@@ -480,7 +480,7 @@ output: {Path(directory) / "results.csv"}
 seeds: [3, 4]
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
 """)
             config = benchmark.load_benchmark_config(path)
             jobs = benchmark.expand_benchmark_config(config)
@@ -491,19 +491,19 @@ models:
                 callback = kwargs["progress_callback"]
                 callback(
                     "run_started", dataset=args.dataset,
-                    model_type="symmetric", seed=3, stage="training",
+                    model_type="gae", seed=3, stage="training",
                 )
                 callback(
                     "run_completed", dataset=args.dataset,
-                    model_type="symmetric", seed=3,
+                    model_type="gae", seed=3,
                 )
                 callback(
                     "run_started", dataset=args.dataset,
-                    model_type="symmetric", seed=4, stage="training",
+                    model_type="gae", seed=4, stage="training",
                 )
                 callback(
                     "run_skipped", dataset=args.dataset,
-                    model_type="symmetric", seed=4,
+                    model_type="gae", seed=4,
                 )
 
             progress = unittest.mock.Mock()
@@ -532,7 +532,7 @@ error_output: {errors}
 seeds: [3]
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
   - type: feature-cosine
 """)
             config = benchmark.load_benchmark_config(path)
@@ -541,7 +541,7 @@ models:
 
             def runner(args, **kwargs):
                 calls.append((args, kwargs))
-                if args.model_type == ["symmetric"]:
+                if args.model_type == ["gae"]:
                     raise RuntimeError("simulated failure")
 
             summary = benchmark.execute_benchmark(
@@ -606,7 +606,7 @@ error_output: {errors}
 seeds: [0]
 datasets: [Cora]
 models:
-  - type: symmetric
+  - type: gae
 """)
             config = benchmark.load_benchmark_config(path)
             jobs = benchmark.expand_benchmark_config(config)

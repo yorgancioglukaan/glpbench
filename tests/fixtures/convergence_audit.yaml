@@ -21,7 +21,7 @@ selected_configurations:
 
 datasets: [cora]
 
-models: [symmetric, asymmetric]
+models: [gae, agae]
 
 splits:
   protocol: matched-semi-inductive-validation-only

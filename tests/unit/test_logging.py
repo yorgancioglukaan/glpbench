@@ -59,7 +59,7 @@ class TestExperimentLogging(unittest.TestCase):
     def _result(**overrides):
         values = {
             "dataset": "Cora",
-            "model_type": "asymmetric",
+            "model_type": "agae",
             "split_type": "inductive",
             "conv_layer_type": "GCNConv",
             "hidden_channels": 128,
@@ -103,18 +103,23 @@ class TestExperimentLogging(unittest.TestCase):
 
     def test_configuration_id_is_stable_and_order_independent(self):
         first = make_configuration_id({
-            "dataset": "Cora", "model_type": "asymmetric", "epochs": 100,
+            "dataset": "Cora", "model_type": "agae", "epochs": 100,
         })
         second = make_configuration_id({
-            "epochs": 100, "model_type": "asymmetric", "dataset": "Cora",
+            "epochs": 100, "model_type": "agae", "dataset": "Cora",
         })
         changed = make_configuration_id({
-            "dataset": "Cora", "model_type": "asymmetric", "epochs": 200,
+            "dataset": "Cora", "model_type": "agae", "epochs": 200,
         })
 
         self.assertEqual(first, second)
         self.assertNotEqual(first, changed)
         self.assertEqual(len(first), 64)
+
+    def test_result_canonicalizes_legacy_model_alias(self):
+        self.assertEqual(
+            self._result(model_type="asymmetric").model_type, "agae"
+        )
 
     def test_result_validates_asymmetric_regularization_fields(self):
         result = self._result(
@@ -124,9 +129,9 @@ class TestExperimentLogging(unittest.TestCase):
         )
         self.assertEqual(result.regularization_type, "cosine-alignment")
 
-        with self.assertRaisesRegex(ValueError, "only supported by asymmetric"):
+        with self.assertRaisesRegex(ValueError, "only supported by AGAE"):
             self._result(
-                model_type="symmetric",
+                model_type="gae",
                 regularization_type="latent-l2",
                 regularization_strength=0.1,
             )
@@ -183,7 +188,7 @@ class TestExperimentLogging(unittest.TestCase):
             logger.log(EpochHistoryRecord(
                 configuration_id="configuration-001",
                 dataset="Cora",
-                model_type="asymmetric",
+                model_type="agae",
                 random_seed=42,
                 training_policy="current",
                 epoch=3,

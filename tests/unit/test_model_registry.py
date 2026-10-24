@@ -69,14 +69,14 @@ class TestModelRegistry(unittest.TestCase):
 
     def test_builtins_are_registered_and_conformant(self):
         self.assertEqual(available_model_types(), (
-            "asymmetric",
-            "asymmetric-mlp",
+            "agae",
+            "agae-mlp",
             "deal",
             "feature-cosine",
             "feature-mlp",
-            "mlp",
-            "symmetric",
-            "variational",
+            "gae",
+            "gae-mlp",
+            "vgae",
         ))
         for name in available_model_types():
             with self.subTest(name=name):
@@ -89,6 +89,20 @@ class TestModelRegistry(unittest.TestCase):
         expected = get_model_adapter("feature-mlp")
         self.assertIs(get_model_adapter("FEATURE MLP"), expected)
         self.assertIs(get_model_adapter("feature_mlp"), expected)
+
+    def test_legacy_builtin_names_are_aliases_for_canonical_adapters(self):
+        aliases = {
+            "symmetric": "gae",
+            "mlp": "gae-mlp",
+            "asymmetric": "agae",
+            "asymmetric-mlp": "agae-mlp",
+            "variational": "vgae",
+        }
+        for alias, canonical in aliases.items():
+            with self.subTest(alias=alias):
+                self.assertIs(
+                    get_model_adapter(alias), get_model_adapter(canonical)
+                )
 
     def test_registration_supports_aliases_and_explicit_replacement(self):
         first = register_model_adapter(
@@ -133,7 +147,7 @@ class TestModelRegistry(unittest.TestCase):
 
     def test_unknown_model_error_lists_available_models(self):
         with self.assertRaisesRegex(
-            CompatibilityError, "Available models:.*symmetric"
+            CompatibilityError, "Available models:.*gae"
         ):
             get_model_adapter("missing")
 
@@ -184,7 +198,7 @@ class TestModelRegistry(unittest.TestCase):
                 load_model_adapter_file(path)
 
         self.assertEqual(available_model_types(), before)
-        self.assertIsNone(get_model_adapter_source("symmetric"))
+        self.assertIsNone(get_model_adapter_source("gae"))
 
     def test_local_file_rejects_invalid_paths_and_duplicate_names(self):
         with tempfile.TemporaryDirectory() as directory:

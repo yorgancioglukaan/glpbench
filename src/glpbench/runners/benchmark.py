@@ -335,8 +335,8 @@ def _parse_model_grid(raw, defaults, index):
         "decoder_hidden_channels", "decoder_dropout"
     }):
         raise ValueError("decoder parameters are only supported by MLP models")
-    if model_type != "variational" and "kl_weight" in parameters:
-        raise ValueError("kl_weight is only supported by variational")
+    if model_type != "vgae" and "kl_weight" in parameters:
+        raise ValueError("kl_weight is only supported by vgae")
     if model_type != "deal" and any(
         name.startswith("deal_") for name in parameters
     ):

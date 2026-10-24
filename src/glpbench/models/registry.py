@@ -223,17 +223,20 @@ def resolve_model_reference(reference, *, base_dir=None):
 
 
 def _register_builtins():
-    for adapter_class in (
-        GAEAdapter,
-        GAEMLPAdapter,
-        AGAEAdapter,
-        AGAEMLPAdapter,
-        VGAEAdapter,
-        DEALAdapter,
-        FeatureCosineAdapter,
-        FeatureMLPAdapter,
-    ):
-        register_model_adapter(adapter_class(), replace=True)
+    registrations = (
+        (GAEAdapter, ("symmetric",)),
+        (GAEMLPAdapter, ("mlp",)),
+        (AGAEAdapter, ("asymmetric",)),
+        (AGAEMLPAdapter, ("asymmetric-mlp",)),
+        (VGAEAdapter, ("variational",)),
+        (DEALAdapter, ()),
+        (FeatureCosineAdapter, ()),
+        (FeatureMLPAdapter, ()),
+    )
+    for adapter_class, aliases in registrations:
+        register_model_adapter(
+            adapter_class(), aliases=aliases, replace=True
+        )
 
 
 _register_builtins()
