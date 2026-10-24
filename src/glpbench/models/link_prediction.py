@@ -862,6 +862,9 @@ class LinkPrediction:
         Message-passing layer name for graph encoders.
     learning_rate, weight_decay : float, optional
         Adam optimizer settings for trainable models.
+    model_parameters : mapping, optional
+        Explicit adapter parameters. This cannot be combined with legacy
+        model-construction keyword arguments.
     **kwargs
         Architecture-specific decoder, regularization, VGAE, DEAL, or GATv2
         arguments.
@@ -892,6 +895,7 @@ class LinkPrediction:
 
         self.train_data = train_data
         self.model_type = kwargs.get("model_type", "symmetric")
+        explicit_model_parameters = kwargs.get("model_parameters")
         hidden_channels = kwargs.get("hidden_channels", 128)
         out_channels = kwargs.get("out_channels", 64)
         conv_layer_type = kwargs.get("conv_layer_type", "GCNConv")
@@ -905,7 +909,7 @@ class LinkPrediction:
             name: value for name, value in kwargs.items()
             if name not in {
                 "model_type", "hidden_channels", "out_channels", "conv_layer_type",
-                "learning_rate", "weight_decay",
+                "learning_rate", "weight_decay", "model_parameters",
             }
         }
 
@@ -915,7 +919,25 @@ class LinkPrediction:
         capabilities = self.model_adapter.capabilities
         self.trainable = capabilities.trainable
         adapter_defaults = getattr(self.model_adapter, "defaults", None)
-        if isinstance(adapter_defaults, Mapping):
+        if explicit_model_parameters is not None:
+            if not isinstance(explicit_model_parameters, Mapping):
+                raise TypeError("model_parameters must be a mapping")
+            conflicting = set(model_kwargs)
+            if isinstance(adapter_defaults, Mapping):
+                conflicting.update(
+                    name for name in (
+                        "hidden_channels", "out_channels", "conv_layer_type"
+                    )
+                    if name in kwargs and name in adapter_defaults
+                )
+            if conflicting:
+                fields = ", ".join(sorted(conflicting))
+                raise ValueError(
+                    "model_parameters cannot be combined with legacy model "
+                    f"arguments: {fields}"
+                )
+            model_parameters = dict(explicit_model_parameters)
+        elif isinstance(adapter_defaults, Mapping):
             if conv_layer_type == "GATv2Conv" and any(
                 name in model_kwargs for name in _GATV2_ARGUMENTS
             ):

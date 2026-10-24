@@ -49,11 +49,29 @@ def _prepare_features(
     )
 
 
+def _resolve_reduced_feature_requirement(
+    model_type, requires_reduced_features
+):
+    """Resolve new capability input while preserving the model-name API."""
+    if requires_reduced_features is None:
+        if model_type is None:
+            raise ValueError(
+                "model_type or requires_reduced_features must be provided"
+            )
+        return get_model_adapter(
+            model_type
+        ).capabilities.requires_reduced_features
+    if not isinstance(requires_reduced_features, bool):
+        raise TypeError("requires_reduced_features must be boolean")
+    return requires_reduced_features
+
+
 def prepare_candidate_data(
     source_data,
     splits,
     *,
-    model_type,
+    model_type=None,
+    requires_reduced_features=None,
     normalize_features,
     out_channels,
     reduction_method="pca",
@@ -70,14 +88,14 @@ def prepare_candidate_data(
         raise ValueError("candidate preparation requires paired test splits")
     if not isinstance(normalize_features, bool):
         raise TypeError("normalize_features must be boolean")
-    model_adapter = get_model_adapter(model_type)
+    needs_reduced_features = _resolve_reduced_feature_requirement(
+        model_type, requires_reduced_features
+    )
 
     feature_data = _prepare_features(
         source_data,
         splits.train.visible_node_mask,
-        requires_reduced_features=(
-            model_adapter.capabilities.requires_reduced_features
-        ),
+        requires_reduced_features=needs_reduced_features,
         normalize_features=normalize_features,
         out_channels=out_channels,
         reduction_method=reduction_method,
@@ -118,7 +136,8 @@ def prepare_validation_data(
     source_data,
     splits,
     *,
-    model_type,
+    model_type=None,
+    requires_reduced_features=None,
     normalize_features,
     out_channels,
     reduction_method="pca",
@@ -132,6 +151,7 @@ def prepare_validation_data(
             source_data,
             splits,
             model_type=model_type,
+            requires_reduced_features=requires_reduced_features,
             normalize_features=normalize_features,
             out_channels=out_channels,
             reduction_method=reduction_method,
@@ -154,7 +174,9 @@ def prepare_validation_data(
     if not isinstance(normalize_features, bool):
         raise TypeError("normalize_features must be boolean")
 
-    model_adapter = get_model_adapter(model_type)
+    needs_reduced_features = _resolve_reduced_feature_requirement(
+        model_type, requires_reduced_features
+    )
     if splits.validation is None:
         raise ValueError("validation preparation requires a validation split")
     train = splits.train.clone()
@@ -162,9 +184,7 @@ def prepare_validation_data(
     feature_data = _prepare_features(
         source_data,
         train.visible_node_mask,
-        requires_reduced_features=(
-            model_adapter.capabilities.requires_reduced_features
-        ),
+        requires_reduced_features=needs_reduced_features,
         normalize_features=normalize_features,
         out_channels=out_channels,
         reduction_method=reduction_method,

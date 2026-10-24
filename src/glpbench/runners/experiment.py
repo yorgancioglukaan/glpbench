@@ -48,6 +48,7 @@ from glpbench.models import (
     count_trainable_parameters,
     get_model_adapter,
     get_model_adapter_source,
+    resolve_model_parameters,
     resolve_model_reference,
     sample_training_negative_edges,
 )
@@ -647,23 +648,24 @@ def run_experiment(
                 "train_ratio": args.train_ratio,
             },
         )
-        if any(spec.capabilities.requires_reduced_features for spec in model_adapters.values()):
+        requires_reduced_features = any(
+            adapter.capabilities.requires_reduced_features
+            for adapter in model_adapters.values()
+        )
+        if requires_reduced_features:
             num_fit_nodes = int(splits.visible_node_mask.sum())
             if args.out_channels > min(num_fit_nodes, data.num_features):
                 raise ValueError(
                     "out_channels cannot exceed the smaller of the number of "
                     "non-query nodes and num_features"
                 )
-        if any(spec.capabilities.requires_reduced_features for spec in model_adapters.values()):
+        if requires_reduced_features:
             report(f"Calculating reduced node features for seed {seed}...")
-            preparation_model_type = "asymmetric"
-        else:
-            preparation_model_type = model_types[0]
         emit("stage", dataset=args.dataset, seed=seed, stage="preprocessing")
         candidate_data = prepare_candidate_data(
             data,
             splits,
-            model_type=preparation_model_type,
+            requires_reduced_features=requires_reduced_features,
             normalize_features=args.normalize_features,
             out_channels=args.out_channels,
             reduction_method=reduction_method,
@@ -700,24 +702,29 @@ def run_experiment(
             effective_weight_decay = (
                 weight_decay if model_adapter.capabilities.trainable else 0.0
             )
-            predictor_kwargs = dict(
-                model_type=model_type,
+            supplied_model_parameters = dict(
                 conv_layer_type=args.conv_layer_type,
                 hidden_channels=args.hidden_channels,
                 out_channels=args.out_channels,
                 decoder_hidden_channels=decoder_hidden_channels,
                 decoder_dropout=decoder_dropout,
                 kl_weight=kl_weight,
-                learning_rate=learning_rate,
-                weight_decay=effective_weight_decay,
                 gatv2_kwargs=gatv2_kwargs,
                 **deal_config,
             )
-            if model_adapter.capabilities.supports_agae_regularization:
-                predictor_kwargs.update({
-                    "regularization_type": regularization_type,
-                    "regularization_strength": regularization_strength,
-                })
+            supplied_model_parameters.update({
+                "regularization_type": regularization_type,
+                "regularization_strength": regularization_strength,
+            })
+            model_parameters = resolve_model_parameters(
+                model_adapter, supplied_model_parameters
+            )
+            predictor_kwargs = {
+                "model_type": model_type,
+                "model_parameters": model_parameters,
+                "learning_rate": learning_rate,
+                "weight_decay": effective_weight_decay,
+            }
             predictor = LinkPrediction(train, **predictor_kwargs)
             predictor.model = predictor.model.to(device)
             model_metadata = _mutable_metadata(model_adapter.result_metadata(

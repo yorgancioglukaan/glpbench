@@ -30,6 +30,7 @@ from glpbench.models import (
     available_model_types,
     count_trainable_parameters,
     get_model_adapter,
+    resolve_model_parameters,
 )
 from glpbench.training import validate_scheduler_config
 from glpbench.runners.experiment import (
@@ -556,10 +557,14 @@ def _prepare_search_split(
 
 def _predictor_kwargs(candidate):
     parameters = dict(candidate.hyperparameters)
-    parameters.pop("normalize_features")
-    parameters.pop("reduction_method", None)
-    parameters.pop("deal_profile", None)
-    return {"model_type": candidate.architecture, **parameters}
+    adapter = get_model_adapter(candidate.architecture)
+    model_parameters = resolve_model_parameters(adapter, parameters)
+    return {
+        "model_type": candidate.architecture,
+        "model_parameters": model_parameters,
+        "learning_rate": parameters["learning_rate"],
+        "weight_decay": parameters["weight_decay"],
+    }
 
 
 def aggregate_and_select(config, candidates, history_rows, run_id):
@@ -765,10 +770,13 @@ def execute_search(
                     loaded_dataset.metadata,
                     device=device,
                 )
+                model_adapter = get_model_adapter(candidate.architecture)
                 validation_data = prepare_validation_data(
                     source_data,
                     prepared_split,
-                    model_type=candidate.architecture,
+                    requires_reduced_features=(
+                        model_adapter.capabilities.requires_reduced_features
+                    ),
                     normalize_features=parameters["normalize_features"],
                     out_channels=parameters["out_channels"],
                     reduction_method=parameters.get("reduction_method", "pca"),

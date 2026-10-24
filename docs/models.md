@@ -37,6 +37,36 @@ for _ in range(100):
 probabilities = predictor.test(test_data)
 ```
 
+Direct calls may continue to pass the bundled model options as keyword
+arguments. Orchestration code can instead resolve one explicit adapter
+parameter mapping, which prevents settings for unrelated architectures from
+reaching shared execution:
+
+```python
+from glpbench.models import (
+    LinkPrediction,
+    get_model_adapter,
+    resolve_model_parameters,
+)
+
+adapter = get_model_adapter("symmetric")
+parameters = resolve_model_parameters(adapter, {
+    "hidden_channels": 128,
+    "out_channels": 64,
+    "conv_layer_type": "GCNConv",
+    "gatv2_kwargs": {},
+})
+predictor = LinkPrediction(
+    train_data,
+    model_type=adapter.name,
+    model_parameters=parameters,
+)
+```
+
+Do not combine `model_parameters` with legacy model-construction keyword
+arguments in the same call. Optimizer options such as `learning_rate` and
+`weight_decay` remain separate.
+
 Use `available_model_types()` to inspect the active model registry and
 `get_model_adapter()` to retrieve an adapter by its case- and
 separator-insensitive name. Custom adapters can be added for the current

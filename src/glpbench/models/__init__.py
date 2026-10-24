@@ -35,6 +35,7 @@ from glpbench.models.registry import (
     register_model_adapter,
     resolve_model_reference,
 )
+from glpbench.models.parameters import resolve_model_parameters
 
 __all__ = [
     "AGAEAdapter",
@@ -65,5 +66,6 @@ __all__ = [
     "normalize_model_name",
     "register_model_adapter",
     "resolve_model_reference",
+    "resolve_model_parameters",
     "sample_training_negative_edges",
 ]
