@@ -26,10 +26,14 @@ from glpbench.models.link_prediction import (
     sample_training_negative_edges,
 )
 from glpbench.models.registry import (
+    ModelAdapterSource,
     available_model_types,
     get_model_adapter,
+    get_model_adapter_source,
+    load_model_adapter_file,
     normalize_model_name,
     register_model_adapter,
+    resolve_model_reference,
 )
 
 __all__ = [
@@ -49,13 +53,17 @@ __all__ = [
     "LinkPredictionModel",
     "MLP_AGAE_Model",
     "MLP_GAE_Model",
+    "ModelAdapterSource",
     "VGAE_Model",
     "VGAEAdapter",
     "available_agae_regularizers",
     "available_model_types",
     "count_trainable_parameters",
     "get_model_adapter",
+    "get_model_adapter_source",
+    "load_model_adapter_file",
     "normalize_model_name",
     "register_model_adapter",
+    "resolve_model_reference",
     "sample_training_negative_edges",
 ]

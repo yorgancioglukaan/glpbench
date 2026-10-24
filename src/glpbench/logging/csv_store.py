@@ -18,6 +18,7 @@ from glpbench.contracts import (
     TrainingResult,
 )
 from glpbench.exceptions import PersistenceError
+from glpbench.models import get_model_adapter
 
 
 def _mutable_value(value):
@@ -171,11 +172,10 @@ class ExperimentResult:
         """Validate experiment parameters and metrics."""
         if not isinstance(self.dataset, str) or not self.dataset.strip():
             raise ValueError("dataset must be a non-empty string")
-        if self.model_type not in {
-            "symmetric", "asymmetric", "mlp", "asymmetric-mlp", "variational",
-            "feature-cosine", "feature-mlp", "deal",
-        }:
-            raise ValueError("model_type is not supported")
+        try:
+            model_capabilities = get_model_adapter(self.model_type).capabilities
+        except (TypeError, ValueError) as error:
+            raise ValueError("model_type is not supported") from error
         if self.split_type not in {"inductive", "transductive"}:
             raise ValueError("split_type must be 'inductive' or 'transductive'")
         if self.conv_layer_type not in {
@@ -188,7 +188,7 @@ class ExperimentResult:
         }:
             raise ValueError("regularization_type is not supported")
         if (
-            self.model_type not in {"asymmetric", "asymmetric-mlp"}
+            not model_capabilities.supports_agae_regularization
             and self.regularization_type != "none"
         ):
             raise ValueError(
@@ -330,7 +330,7 @@ class ExperimentResult:
             if not isinstance(value, (int, float)) or value < 0:
                 raise ValueError(f"{name} must be non-negative")
         if (
-            self.model_type not in {"asymmetric", "asymmetric-mlp"}
+            not model_capabilities.supports_agae_regularization
             and self.regularization_strength != 0
         ):
             raise ValueError(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from glpbench.configuration.ablation import AblationConfig, parse_ablation_config
@@ -10,6 +11,7 @@ from glpbench.configuration.benchmark import BenchmarkConfig, parse_benchmark_co
 from glpbench.configuration.parsing import configuration_error, load_yaml_mapping
 from glpbench.configuration.search import SearchConfig, parse_search_config
 from glpbench.configuration.validation import CanonicalConfig, validate_config
+from glpbench.models import resolve_model_reference
 
 
 _PARSERS = {
@@ -20,8 +22,25 @@ _PARSERS = {
 }
 
 
-def _parse_canonical_document(document) -> CanonicalConfig:
+def _resolve_local_models(document, source_path):
+    """Resolve local model-file references before semantic validation."""
+    resolved = copy.deepcopy(document)
+    models = resolved.get("models")
+    if isinstance(models, list):
+        for model in models:
+            if isinstance(model, dict) and isinstance(
+                model.get("architecture"), str
+            ):
+                model["architecture"] = resolve_model_reference(
+                    model["architecture"], base_dir=Path(source_path).parent
+                )
+    return resolved
+
+
+def _parse_canonical_document(document, *, source_path=None) -> CanonicalConfig:
     """Strictly parse and semantically validate a canonical document."""
+    if source_path is not None:
+        document = _resolve_local_models(document, source_path)
     kind = document.get("kind")
     if not isinstance(kind, str) or kind not in _PARSERS:
         raise configuration_error(
@@ -46,7 +65,7 @@ def load_config(path: str | Path):
             (), "cannot define both schema_version and legacy version"
         )
     if has_canonical_version:
-        return _parse_canonical_document(document)
+        return _parse_canonical_document(document, source_path=path)
     if has_legacy_version:
         from glpbench.configuration.compatibility import load_legacy_config
 
@@ -63,7 +82,7 @@ def _load_kind(path, expected_type, expected_kind):
             ("version",),
             "uses a legacy format; call load_config for compatibility loading",
         )
-    config = _parse_canonical_document(document)
+    config = _parse_canonical_document(document, source_path=path)
     if not isinstance(config, expected_type):
         raise configuration_error(("kind",), f"must be {expected_kind!r}")
     return config
