@@ -4,10 +4,9 @@ GLPBench recognizes canonical and legacy YAML configuration formats. The
 canonical format uses `schema_version`; legacy files use `version`. A document
 must define exactly one of these fields.
 
-As of `0.1.0a4`, canonical documents are supported by the Python configuration
-API. The command-line benchmark, search, and audit runners continue to consume
-the legacy formats described below; canonical files are not yet direct CLI
-inputs.
+Canonical documents are supported by the Python configuration API. The
+command-line benchmark, search, and audit runners continue to consume the
+legacy formats described below; canonical files are not yet direct CLI inputs.
 
 ## Canonical documents
 
@@ -35,9 +34,10 @@ specifications = resolve_experiment_specs(config)
 ## Legacy compatibility
 
 Existing CLI configuration files remain supported without conversion. Their
-original parsers are retained as compatibility adapters so defaults, expansion
-order, seeded candidate generation, configuration identifiers, and path
-semantics remain unchanged.
+original parsers are retained as compatibility adapters. Candidate generation
+is deterministic for a fixed configuration and candidate seed, and the first
+candidate uses declared defaults even when they are outside the sampled value
+lists.
 
 | Document | Supported legacy schema |
 | --- | --- |
@@ -53,5 +53,7 @@ The `benchmark`, `search`, and `audit` CLI commands accept these legacy files.
 The command-specific canonical loaders intentionally reject legacy documents;
 use the general loader when format compatibility is required.
 
-Paths retain their existing meaning and are interpreted relative to the
-working directory from which the command is run.
+Artifact and data paths retain their existing meaning and are interpreted
+relative to the working directory from which the command is run. Local model
+adapter paths are the exception: they are resolved relative to the
+configuration file that references them.

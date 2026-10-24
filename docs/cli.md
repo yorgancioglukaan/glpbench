@@ -17,10 +17,11 @@ glpbench <command> --help
 ```
 
 Configuration-driven commands use versioned YAML files. Paths are resolved
-from the working directory where the command is run. The CLI currently consumes
-the documented legacy `version` formats; canonical `schema_version`
-configurations introduced in `0.1.0a3` are available through the Python API but
-are not yet direct CLI inputs.
+from the working directory where the command is run, except that local model
+adapter paths are resolved relative to their configuration file. The CLI
+currently consumes the documented legacy `version` formats; canonical `schema_version`
+configurations are available through the Python API but are not yet direct CLI
+inputs.
 
 ## `experiment`: run one experiment
 
@@ -196,20 +197,38 @@ common_space:
 
 models:
   gae: {}
-  # The complete file must also define split, preprocessing, remaining common
-  # spaces, and model-specific spaces for every trainable architecture.
+  # The complete file must also define split, preprocessing, and the remaining
+  # required common spaces. Only models selected here are searched.
 ```
 
 See
 [`configs/example_search.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/example_search.yaml)
 for the complete required set of model-specific spaces. The excerpt above is
-intentionally abbreviated; the search runner requires every trainable
-architecture to be defined. The history CSV contains one row per candidate,
+intentionally abbreviated. A search may contain any nonempty subset of
+registered trainable models. The history CSV contains one row per candidate,
 dataset, architecture, and tuning seed. Its companion
 `*_aggregates.csv` reports seed-aggregated validation metrics and marks the
 winning row with `selected`. The selected-configuration YAML contains the
 resolved winners for later benchmarks, while the JSONL failure artifact records
 unsuccessful candidate runs. No test metric is used for selection.
+
+Model-space keys are checked against the selected adapter's declared
+parameters, and candidate values are passed through its parameter validator.
+A local trainable adapter can therefore be searched by using its `.py` path as
+the model key:
+
+```yaml
+models:
+  ./models/my_model.py:
+    my_parameter:
+      values: [0.1, 0.5, 1.0]
+      sampling: random
+```
+
+The file must export exactly one `MODEL_ADAPTER`. Its path is resolved relative
+to the search configuration file. The first candidate uses adapter and shared
+defaults even when a default is not present in the sampled value list; later
+candidates use the configured values.
 
 ## `audit`: inspect convergence
 

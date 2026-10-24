@@ -61,8 +61,8 @@ Full documentation is available at
 - Load attributed graph benchmarks through a consistent dataset interface.
 - Generate comparable transductive and semi-inductive splits with disjoint
   validation queries and automatic leakage checks.
-- Evaluate graph autoencoders, MLP decoders, variational models, DEAL,
-  feature-only baselines, and asymmetric decoders under the same protocol.
+- Evaluate graph autoencoders, MLP decoders, VGAE, DEAL, feature-only
+  baselines, and latent-to-feature decoders under the same protocol.
 - Run individual experiments, YAML-defined benchmark grids, validation-only
   hyperparameter searches, and convergence audits from one CLI.
 - Reuse random seeds, graph splits, and evaluation negatives across models for
@@ -175,8 +175,8 @@ negatives are generated once per seed and reused across architectures.
 
 Available model types are `gae`, `agae`, `gae-mlp`,
 `agae-mlp`, `vgae`, `deal`, `feature-cosine`, and `feature-mlp`.
-`feature-mlp` is a trainable, graph-independent baseline that applies the
-symmetric MLP decoder directly to pairs of input node features. Repeat
+`feature-mlp` is a trainable, graph-independent baseline that applies an
+order-invariant MLP decoder directly to pairs of input node features. Repeat
 `--model-type` to choose several explicitly:
 
 ```bash
@@ -194,11 +194,10 @@ glpbench experiment cora out/results.csv --model-type ./models/my_model.py
 ```
 
 The file is loaded only for the current process, and its resolved path and
-SHA-256 digest are recorded with the result. Relative model paths in benchmark
-and canonical configuration files are resolved from the configuration file's
-directory. See the
+SHA-256 digest are recorded with experiment results. Relative model paths in
+configuration files are resolved from the configuration file's directory. See the
 [model guide](https://glpbench.readthedocs.io/en/default/models.html) for the
-adapter convention.
+adapter convention and the reusable adapter-conformance check.
 
 Bundled datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers,
 Coauthor CS, DBLP, WikiCS, and Deezer Europe. Deezer Europe depends on PyG's
@@ -272,6 +271,11 @@ The runner also writes an aggregate CSV, a JSONL failure log, and a YAML file
 containing the selected resolved configuration for each dataset–architecture
 pair.
 
+A search may include any nonempty subset of registered trainable models.
+Model spaces are validated through their adapters, so a local adapter file can
+declare and search its own parameters without adding model-specific validation
+logic to GLPBench.
+
 ## Convergence audits
 
 The audit runner records validation trajectories for selected model
@@ -294,9 +298,9 @@ glpbench audit configs/example_audit.yaml --resume --verbose
 The benchmark, search, and audit CLI commands continue to accept the documented
 `version`-based YAML formats. GLPBench also provides a strict canonical
 configuration API using `schema_version`, frozen dataclasses, unknown-field
-rejection, and path-aware validation errors. As of `0.1.0a4`, canonical
-configurations are loaded and inspected through the Python API; they are not
-yet accepted directly by the CLI runners.
+rejection, and path-aware validation errors. Canonical configurations are
+loaded and inspected through the Python API; they are not yet accepted
+directly by the CLI runners.
 
 See the [configuration guide](docs/configuration.md) for the supported legacy
 format matrix and canonical API entry points.
@@ -384,17 +388,13 @@ The model registry currently includes:
 | Model type | Description |
 | --- | --- |
 | `gae` | Graph autoencoder with inner-product decoding |
-| `gae-mlp` | Graph autoencoder with a learned symmetric MLP decoder |
+| `gae-mlp` | Graph autoencoder with a learned order-invariant MLP decoder |
 | `vgae` | Variational graph autoencoder with KL regularization |
 | `deal` | Dual structural and attribute encoders for inductive prediction |
 | `feature-cosine` | Non-trainable cosine similarity over node features |
 | `feature-mlp` | Trainable graph-independent MLP over feature pairs |
 | `agae` | Graph latent-to-feature inner-product decoder |
 | `agae-mlp` | Learned MLP over graph-derived sources and feature-derived targets |
-
-The former model names `symmetric`, `mlp`, `asymmetric`, `asymmetric-mlp`, and
-`variational` remain accepted as CLI and Python API aliases. Newly generated
-artifacts use the canonical names shown above.
 
 `glpbench.models.LinkPrediction` provides the shared training and inference interface:
 
@@ -416,7 +416,7 @@ probabilities = predictor.test(test_inductive)
 ```
 
 Configure MLP decoders with `decoder_hidden_channels` and `decoder_dropout`,
-and the variational model with `kl_weight`:
+and `vgae` with `kl_weight`:
 
 ```python
 mlp = LinkPrediction(
@@ -429,7 +429,7 @@ vgae = LinkPrediction(train, model_type="vgae", kl_weight=1.0)
 ```
 
 Architecture-specific options are available for MLP decoders, VGAE KL
-weighting, DEAL loss and inference weights, and asymmetric-model
+weighting, DEAL loss and inference weights, and AGAE
 regularization. Run `glpbench experiment --help` for their CLI definitions;
 resolved settings are retained in the result log.
 
