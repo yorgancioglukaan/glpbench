@@ -29,6 +29,7 @@ from glpbench.models import (
     get_model_adapter,
     resolve_model_parameters,
 )
+from glpbench.testing import assert_model_adapter_conforms
 
 
 ADAPTER_CASES = (
@@ -185,6 +186,18 @@ class TestBundledModelAdapters(unittest.TestCase):
                 self.assertEqual(
                     adapter.capabilities,
                     get_model_adapter(name).capabilities,
+                )
+
+    def test_all_bundled_adapters_pass_reusable_conformance_checks(self):
+        for adapter_class, name, _ in ADAPTER_CASES:
+            with self.subTest(name=name):
+                assert_model_adapter_conforms(
+                    adapter_class(),
+                    self.data,
+                    _parameters(name),
+                    edge_label_index=self.loss_edge_index,
+                    edge_label=self.loss_edge_label,
+                    criterion=self.criterion,
                 )
 
     def test_parameter_validation_is_immutable_and_rejects_unknown_fields(self):
