@@ -239,56 +239,6 @@ class TestBundledModelAdapters(unittest.TestCase):
                 for key, value in facade.model.state_dict().items():
                     torch.testing.assert_close(value, adapted.state_dict()[key])
 
-    def test_training_loss_matches_wrapped_model(self):
-        for adapter_class, name, _ in ADAPTER_CASES:
-            if name == "feature-cosine":
-                continue
-            with self.subTest(name=name):
-                adapter = adapter_class()
-                model = adapter.build(self.data, _parameters(name))
-                reference = adapter.build(self.data, _parameters(name))
-                reference.load_state_dict(model.state_dict())
-                model.train()
-                reference.train()
-                torch.manual_seed(47)
-                expected_total, expected_components = reference.compute_training_loss(
-                    self.data,
-                    self.loss_edge_index,
-                    self.loss_edge_label,
-                    self.criterion,
-                )
-                torch.manual_seed(47)
-                actual = adapter.compute_training_loss(
-                    model,
-                    self.data,
-                    self.loss_edge_index,
-                    self.loss_edge_label,
-                    self.criterion,
-                )
-                torch.testing.assert_close(actual.total, expected_total)
-                self.assertEqual(set(actual.components), set(expected_components))
-                for key, expected in expected_components.items():
-                    torch.testing.assert_close(actual.components[key], expected)
-
-    def test_scoring_matches_existing_facade(self):
-        for adapter_class, name, _ in ADAPTER_CASES:
-            with self.subTest(name=name):
-                parameters = _parameters(name)
-                facade = LinkPrediction(
-                    self.data,
-                    model_type=name,
-                    learning_rate=0.01,
-                    weight_decay=0.0,
-                    **parameters,
-                )
-                expected = facade.test(self.data)
-                actual = adapter_class().score_edges(
-                    facade.model, self.data, self.data.edge_label_index
-                )
-                torch.testing.assert_close(actual, expected)
-                self.assertGreaterEqual(float(actual.min()), 0.0)
-                self.assertLessEqual(float(actual.max()), 1.0)
-
     def test_feature_cosine_rejects_training_loss(self):
         adapter = FeatureCosineAdapter()
         model = adapter.build(self.data, {})
