@@ -136,3 +136,24 @@ The example subclasses a bundled adapter only to keep it short. A custom
 architecture can instead provide any object conforming to the public
 `ModelAdapter` protocol. Each file currently exports one adapter; multiple
 adapters per file and installed-package discovery are intentionally deferred.
+
+## Check adapter conformance
+
+Use the same contract checks applied to GLPBench's bundled models before
+running a custom adapter. Supply a small graph containing every input declared
+by the adapter, including reduced features or graph context when required:
+
+```python
+from glpbench.testing import assert_model_adapter_conforms
+
+assert_model_adapter_conforms(
+    MODEL_ADAPTER,
+    toy_data,
+    {"my_parameter": 0.5},
+)
+```
+
+The helper checks parameter declarations, construction, loss and gradient
+behavior, edge-score shape and finiteness, result metadata, and unintended
+mutation of the supplied graph. It raises `AssertionError` at the first
+contract violation and has no dependency on a particular test framework.

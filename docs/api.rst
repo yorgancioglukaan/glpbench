@@ -71,6 +71,16 @@ Models
    :members:
    :imported-members:
 
+Testing extensions
+------------------
+
+Reusable conformance checks help external model authors verify the adapter
+boundary without depending on GLPBench's internal test suite.
+
+.. automodule:: glpbench.testing
+   :members:
+   :imported-members:
+
 Evaluation
 ----------
 
