@@ -75,6 +75,7 @@ class _FeaturePreprocessor:
 
 class _ModelAdapter:
     name = "toy-model"
+    parameter_defaults = MappingProxyType({})
     capabilities = ModelCapabilities()
 
     def validate_parameters(self, parameters):

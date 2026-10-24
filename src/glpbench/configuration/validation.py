@@ -10,7 +10,8 @@ from glpbench.configuration.benchmark import BenchmarkConfig
 from glpbench.configuration.parsing import configuration_error
 from glpbench.configuration.search import SearchConfig
 from glpbench.datasets import available_datasets
-from glpbench.models import available_model_types, get_model_adapter
+from glpbench.exceptions import CompatibilityError, ConfigurationError
+from glpbench.models import get_model_adapter
 from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.training import validate_scheduler_config
 
@@ -22,16 +23,6 @@ _SPLIT_PROTOCOLS = {
     "matched-semi-inductive-validation-only",
 }
 _DEVICES = {"cpu", "cuda", "mps"}
-_MODEL_PARAMETERS = {
-    "hidden_channels", "out_channels", "learning_rate", "weight_decay",
-    "decoder_hidden_channels", "decoder_dropout", "kl_weight",
-    "regularization_type", "regularization_strength", "gatv2_kwargs",
-    "deal_theta_ss", "deal_theta_aa", "deal_theta_sa", "deal_lambda_ss",
-    "deal_lambda_aa", "deal_lambda_sa", "deal_similarity_scale",
-    "deal_similarity_margin",
-}
-
-
 def _validate_dataset_names(config: CanonicalConfig) -> None:
     supported = set(available_datasets())
     for index, name in enumerate(config.datasets.names):
@@ -79,12 +70,14 @@ def _validate_training(training, path: tuple[str | int, ...]) -> None:
 def _validate_model(
     model, path: tuple[str | int, ...], *, search: bool = False
 ) -> None:
-    if model.architecture not in set(available_model_types()):
+    try:
+        adapter = get_model_adapter(model.architecture)
+    except CompatibilityError as error:
         raise configuration_error(
             path + ("architecture",),
             f"references unknown model {model.architecture!r}",
-        )
-    capabilities = get_model_adapter(model.architecture).capabilities
+        ) from error
+    capabilities = adapter.capabilities
     conv_layers = () if search else model.conv_layer_types
     reduction_methods = () if search else model.reduction_methods
     for index, name in enumerate(conv_layers):
@@ -111,13 +104,14 @@ def _validate_model(
             f"is not supported by {model.architecture!r}",
         )
     parameters = model.spaces if search else model.parameters
+    declared = set(adapter.parameter_defaults)
+    pipeline_dimensions = {"conv_layer_type", "reduction_method"}
+    key = "spaces" if search else "parameters"
     for name in parameters:
-        if name not in _MODEL_PARAMETERS and name not in {
-            "conv_layer_type", "reduction_method"
-        }:
-            key = "spaces" if search else "parameters"
+        if name not in declared and name not in pipeline_dimensions:
             raise configuration_error(
-                path + (key, name), "is not a recognized model parameter"
+                path + (key, name),
+                f"is not declared by model adapter {adapter.name!r}",
             )
     if search and "conv_layer_type" in parameters:
         for index, name in enumerate(parameters["conv_layer_type"].values):
@@ -144,6 +138,24 @@ def _validate_model(
                 path + ("spaces", "reduction_method"),
                 f"is not supported by {model.architecture!r}",
             )
+    if search:
+        for name, space in parameters.items():
+            if name in pipeline_dimensions:
+                continue
+            for index, value in enumerate(space.values):
+                candidate = dict(adapter.parameter_defaults)
+                candidate[name] = value
+                try:
+                    adapter.validate_parameters(candidate)
+                except (ConfigurationError, TypeError, ValueError) as error:
+                    raise configuration_error(
+                        path + ("spaces", name, "values", index), str(error)
+                    ) from error
+    else:
+        try:
+            adapter.validate_parameters(model.parameters)
+        except (ConfigurationError, TypeError, ValueError) as error:
+            raise configuration_error(path + ("parameters",), str(error)) from error
 
 
 def validate_config(config: CanonicalConfig) -> CanonicalConfig:

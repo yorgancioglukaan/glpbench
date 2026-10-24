@@ -83,6 +83,7 @@ class ModelAdapter(Protocol):
 
     name: str
     capabilities: ModelCapabilities
+    parameter_defaults: Mapping[str, object]
 
     def validate_parameters(
         self,

@@ -23,6 +23,7 @@ import glpbench.models.registry as registry
 
 class _ToyAdapter:
     name = "toy-model"
+    parameter_defaults = {}
     capabilities = ModelCapabilities(
         uses_message_passing=False,
         uses_conv_layer=False,
@@ -138,6 +139,13 @@ class TestModelRegistry(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "ModelCapabilities"):
             register_model_adapter(InvalidCapabilities())
+
+        class InvalidDefaults(_ToyAdapter):
+            name = "invalid-defaults"
+            parameter_defaults = ()
+
+        with self.assertRaisesRegex(TypeError, "parameter_defaults"):
+            register_model_adapter(InvalidDefaults())
         with self.assertRaisesRegex(TypeError, "aliases"):
             register_model_adapter(_ToyAdapter(), aliases="alias")
         with self.assertRaisesRegex(TypeError, "replace"):

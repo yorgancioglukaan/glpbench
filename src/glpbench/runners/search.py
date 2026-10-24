@@ -27,9 +27,9 @@ from glpbench.evaluation import (
 from glpbench.preprocessing import available_reduction_preprocessors
 from glpbench.models import (
     LinkPrediction,
-    available_model_types,
     count_trainable_parameters,
     get_model_adapter,
+    resolve_model_reference,
     resolve_model_parameters,
 )
 from glpbench.training import validate_scheduler_config
@@ -39,10 +39,6 @@ from glpbench.runners.experiment import (
 )
 
 
-_TRAINABLE_MODELS = tuple(
-    model_type for model_type in available_model_types()
-    if get_model_adapter(model_type).capabilities.trainable
-)
 _HISTORY_FIELDS = [
     "search_run_id", "candidate_id", "dataset", "architecture",
     "tuning_seed", "status", "hyperparameters", "validation_roc_auc",
@@ -260,9 +256,22 @@ def load_search_config(path):
     if _values(normalization, "normalize_features") != [True, False]:
         raise ValueError("normalization values must be true and false")
 
-    models = _mapping(raw.get("models"), "models")
-    if set(models) != set(_TRAINABLE_MODELS):
-        raise ValueError("models must define every trainable architecture")
+    model_references = _mapping(raw.get("models"), "models")
+    models = {}
+    for reference, space in model_references.items():
+        architecture = resolve_model_reference(reference, base_dir=path.parent)
+        if architecture in models:
+            raise ValueError(
+                f"models contains duplicate architecture {architecture!r}"
+            )
+        if not get_model_adapter(architecture).capabilities.trainable:
+            raise ValueError(
+                f"search model {architecture!r} must be trainable"
+            )
+        models[architecture] = space
+    if not models:
+        raise ValueError("models must define at least one trainable architecture")
+    raw["models"] = models
     _validate_model_spaces(models, num_candidates)
 
     history_path = Path(artifacts["history"])
@@ -284,52 +293,106 @@ def load_search_config(path):
 
 
 def _validate_model_spaces(models, num_candidates):
-    if models["gae"] != {}:
-        raise ValueError("GAE model space must be empty")
-    for model_type in ("agae", "agae-mlp"):
-        model = _mapping(models[model_type], model_type)
-        reducers = _values(model.get("reduction_method"), "reduction_method")
-        unknown_reducers = set(reducers).difference(
-            available_reduction_preprocessors()
+    common_parameters = {"hidden_channels", "out_channels"}
+    for model_type, raw_space in models.items():
+        adapter = get_model_adapter(model_type)
+        model = _mapping(raw_space, model_type)
+        defaults = dict(adapter.parameter_defaults)
+        declared = set(defaults)
+        allowed = declared.difference(
+            common_parameters | {"conv_layer_type", "gatv2_kwargs"}
         )
-        if unknown_reducers:
+        if adapter.capabilities.requires_reduced_features:
+            allowed.add("reduction_method")
+        if adapter.capabilities.supports_agae_regularization:
+            allowed.add("regularization")
+            allowed.difference_update({
+                "regularization_type", "regularization_strength"
+            })
+        profile_parameters = {
+            "theta_ss", "theta_aa", "theta_sa", "lambda_ss", "lambda_aa",
+            "lambda_sa",
+        }
+        if profile_parameters.issubset(declared):
+            allowed.update({"profiles", "sampling"})
+            allowed.difference_update(profile_parameters)
+        unknown = set(model).difference(allowed)
+        if unknown:
             raise ValueError(
-                f"unknown asymmetric reducer: {sorted(unknown_reducers)[0]}"
+                f"{model_type} contains undeclared search dimension "
+                f"{sorted(unknown)[0]!r}"
             )
-        regularization = _mapping(model.get("regularization"), "regularization")
-        if regularization.get("type") != "cosine-alignment":
-            raise ValueError("asymmetric regularization must use cosine alignment")
-        strengths = _values(regularization.get("strength"), "strength")
-        if strengths != [0.0, 0.001, 0.01]:
-            raise ValueError("unexpected cosine-alignment strengths")
-        if len(reducers) != num_candidates or len(strengths) != num_candidates:
-            raise ValueError("stratified spaces must match num_candidates")
-    for model_type in ("gae-mlp", "feature-mlp", "agae-mlp"):
-        model = models[model_type]
-        _values(model.get("decoder_hidden_channels"), "decoder_hidden_channels")
-        dropouts = _values(model.get("decoder_dropout"), "decoder_dropout")
-        if any(not 0 <= value < 1 for value in dropouts):
-            raise ValueError("decoder dropout must be in [0, 1)")
-    kl_weights = _values(models["vgae"].get("kl_weight"), "kl_weight")
-    if len(kl_weights) != num_candidates or any(value < 0 for value in kl_weights):
-        raise ValueError("VGAE KL values must cover every candidate")
-    deal = _mapping(models["deal"], "deal")
-    if deal.get("similarity_scale") != 1.0 or deal.get("similarity_margin") != 0.0:
-        raise ValueError("unexpected fixed DEAL similarity settings")
-    profiles = _mapping(deal.get("profiles"), "DEAL profiles")
-    if set(profiles) != {"balanced", "attribute-focused", "alignment-focused"}:
-        raise ValueError("unexpected DEAL profile names")
-    required = {
-        "theta_ss", "theta_aa", "theta_sa", "lambda_ss", "lambda_aa",
-        "lambda_sa",
-    }
-    for name, profile in profiles.items():
-        if set(_mapping(profile, name)) != required:
-            raise ValueError(f"DEAL profile {name} has incomplete coefficients")
-        if any(not isinstance(value, (int, float)) or value < 0 for value in profile.values()):
-            raise ValueError(f"DEAL profile {name} contains an invalid coefficient")
-    if deal.get("sampling") != "stratified" or len(profiles) != num_candidates:
-        raise ValueError("DEAL profiles must be stratified across candidates")
+
+        if "reduction_method" in model:
+            reducers = _values(
+                model["reduction_method"], f"{model_type}.reduction_method"
+            )
+            unknown_reducers = set(reducers).difference(
+                available_reduction_preprocessors()
+            )
+            if unknown_reducers:
+                raise ValueError(
+                    f"unknown reducer: {sorted(unknown_reducers)[0]}"
+                )
+            if len(reducers) != num_candidates:
+                raise ValueError(
+                    "stratified spaces must match num_candidates"
+                )
+
+        if "regularization" in model:
+            regularization = _mapping(
+                model["regularization"], f"{model_type}.regularization"
+            )
+            if set(regularization) != {"type", "strength"}:
+                raise ValueError(
+                    "regularization must define type and strength"
+                )
+            strengths = _values(
+                regularization["strength"],
+                f"{model_type}.regularization.strength",
+            )
+            if len(strengths) != num_candidates:
+                raise ValueError(
+                    "stratified spaces must match num_candidates"
+                )
+            for strength in strengths:
+                candidate = dict(defaults)
+                candidate.update({
+                    "regularization_type": regularization["type"],
+                    "regularization_strength": strength,
+                })
+                adapter.validate_parameters(candidate)
+
+        if "profiles" in model:
+            profiles = _mapping(
+                model["profiles"], f"{model_type}.profiles"
+            )
+            if model.get("sampling") != "stratified":
+                raise ValueError("model profiles must use stratified sampling")
+            if len(profiles) != num_candidates:
+                raise ValueError(
+                    "model profiles must match num_candidates"
+                )
+            for name, profile in profiles.items():
+                profile = _mapping(profile, f"{model_type}.profiles.{name}")
+                if set(profile) != profile_parameters:
+                    raise ValueError(
+                        f"model profile {name} has incomplete parameters"
+                    )
+                adapter.validate_parameters({**defaults, **profile})
+
+        special = {"reduction_method", "regularization", "profiles", "sampling"}
+        for parameter, specification in model.items():
+            if parameter in special:
+                continue
+            if isinstance(specification, dict) and "values" in specification:
+                values = _values(
+                    specification, f"{model_type}.{parameter}"
+                )
+            else:
+                values = [specification]
+            for value in values:
+                adapter.validate_parameters({**defaults, parameter: value})
 
 
 def _stable_rng(seed, dataset, architecture):
@@ -348,82 +411,101 @@ def _stratified(values, default, rng, count):
     return sequence
 
 
+def _search_sequence(specification, default, rng, count):
+    """Resolve one legacy search-space declaration into candidate values."""
+    values = _values(specification, "model search dimension")
+    sampling = specification["sampling"]
+    if sampling == "stratified":
+        return _stratified(values, default, rng, count)
+    first = default if default in values else values[len(values) // 2]
+    if sampling == "balanced":
+        sequence = [first, *(value for value in values if value != first)]
+        return [
+            sequence[index] if index < len(sequence) else rng.choice(values)
+            for index in range(count)
+        ]
+    return [
+        first if index == 0 else rng.choice(values)
+        for index in range(count)
+    ]
+
+
 def generate_candidates(config):
     """Return deterministic, fully resolved search candidates."""
     candidates = []
     common = config.raw["common_space"]
     models = config.raw["models"]
-    defaults = {
-        "hidden_channels": 128,
-        "out_channels": 64,
-        "learning_rate": 0.01,
-        "weight_decay": 0.0,
-    }
+    shared_defaults = {"learning_rate": 0.01, "weight_decay": 0.0}
     for dataset in config.datasets:
         for architecture in config.architectures:
             rng = _stable_rng(config.candidate_seed, dataset, architecture)
-            normalization = [True, False, rng.choice((True, False))]
+            normalization = _search_sequence(
+                config.raw["preprocessing"]["normalize_features"],
+                True,
+                rng,
+                config.num_candidates,
+            )
             model_space = models[architecture]
-            reducers = strengths = kl_values = profile_names = None
-            if architecture in {"agae", "agae-mlp"}:
-                reducers = _stratified(
+            adapter = get_model_adapter(architecture)
+            defaults = dict(adapter.parameter_defaults)
+            sequences = {}
+            for name, fallback in (
+                ("hidden_channels", 128), ("out_channels", 64)
+            ):
+                sequences[name] = _search_sequence(
+                    common[name], defaults.get(name, fallback), rng,
+                    config.num_candidates,
+                )
+            for name, default in shared_defaults.items():
+                sequences[name] = _search_sequence(
+                    common[name], default, rng, config.num_candidates
+                )
+            if "reduction_method" in model_space:
+                sequences["reduction_method"] = _stratified(
                     model_space["reduction_method"]["values"], "pca", rng,
                     config.num_candidates,
                 )
-                strengths = _stratified(
-                    model_space["regularization"]["strength"]["values"],
+            if "regularization" in model_space:
+                regularization = model_space["regularization"]
+                sequences["regularization_strength"] = _stratified(
+                    regularization["strength"]["values"],
                     0.0, rng, config.num_candidates,
                 )
-            if architecture == "vgae":
-                kl_values = _stratified(
-                    model_space["kl_weight"]["values"], 1.0, rng,
+                sequences["regularization_type"] = [
+                    regularization["type"]
+                ] * config.num_candidates
+            if "profiles" in model_space:
+                profile_default = (
+                    "balanced" if "balanced" in model_space["profiles"]
+                    else next(iter(model_space["profiles"]))
+                )
+                sequences["deal_profile"] = _stratified(
+                    list(model_space["profiles"]), profile_default, rng,
                     config.num_candidates,
                 )
-            if architecture == "deal":
-                profile_names = _stratified(
-                    list(model_space["profiles"]), "balanced", rng,
-                    config.num_candidates,
-                )
+            special = {
+                "reduction_method", "regularization", "profiles", "sampling"
+            }
+            for name, specification in model_space.items():
+                if name in special:
+                    continue
+                if isinstance(specification, dict) and "values" in specification:
+                    sequences[name] = _search_sequence(
+                        specification, defaults[name], rng,
+                        config.num_candidates,
+                    )
+                else:
+                    sequences[name] = [specification] * config.num_candidates
             resolved = []
             for index in range(config.num_candidates):
                 parameters = {
-                    name: (
-                        default if index == 0
-                        else rng.choice(common[name]["values"])
-                    )
-                    for name, default in defaults.items()
+                    name: values[index] for name, values in sequences.items()
                 }
                 parameters["normalize_features"] = normalization[index]
                 parameters["conv_layer_type"] = "GCNConv"
-                if architecture in {"agae", "agae-mlp"}:
-                    parameters.update({
-                        "reduction_method": reducers[index],
-                        "regularization_type": "cosine-alignment",
-                        "regularization_strength": strengths[index],
-                    })
-                if architecture in {"gae-mlp", "feature-mlp", "agae-mlp"}:
-                    parameters.update({
-                        "decoder_hidden_channels": (
-                            64 if index == 0 else rng.choice(
-                                model_space["decoder_hidden_channels"]["values"]
-                            )
-                        ),
-                        "decoder_dropout": (
-                            0.0 if index == 0 else rng.choice(
-                                model_space["decoder_dropout"]["values"]
-                            )
-                        ),
-                    })
-                if architecture == "vgae":
-                    parameters["kl_weight"] = kl_values[index]
-                if architecture == "deal":
-                    profile_name = profile_names[index]
+                if "profiles" in model_space:
+                    profile_name = parameters["deal_profile"]
                     parameters.update(model_space["profiles"][profile_name])
-                    parameters.update({
-                        "deal_profile": profile_name,
-                        "similarity_scale": model_space["similarity_scale"],
-                        "similarity_margin": model_space["similarity_margin"],
-                    })
                 resolved.append(parameters)
 
             serialized = [
@@ -435,6 +517,9 @@ def generate_candidates(config):
                     f"candidate generation produced duplicates for {dataset}/{architecture}"
                 )
             for parameters, canonical in zip(resolved, serialized):
+                resolve_model_parameters(
+                    get_model_adapter(architecture), parameters
+                )
                 candidate_id = hashlib.sha256(
                     f"{dataset}:{architecture}:{canonical}".encode("utf-8")
                 ).hexdigest()

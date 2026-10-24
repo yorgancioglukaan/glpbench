@@ -886,6 +886,10 @@ class TestLinkPrediction(unittest.TestCase):
         negative_edges = torch.tensor([[0, 4], [3, 1]])
         class ContextAdapter:
             name = "context-test"
+            parameter_defaults = {
+                "hidden_channels": 128,
+                "out_channels": 64,
+            }
             capabilities = ModelCapabilities(
                 uses_message_passing=False,
                 uses_conv_layer=False,

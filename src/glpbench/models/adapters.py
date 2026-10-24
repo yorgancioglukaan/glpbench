@@ -102,6 +102,11 @@ class _BaseAdapter:
     defaults: Mapping[str, object] = MappingProxyType({})
     capabilities: ModelCapabilities
 
+    @property
+    def parameter_defaults(self) -> Mapping[str, object]:
+        """Return immutable defaults defining accepted model parameters."""
+        return self.defaults
+
     def validate_parameters(
         self, parameters: Mapping[str, object]
     ) -> Mapping[str, object]:
