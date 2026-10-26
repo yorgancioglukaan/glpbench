@@ -14,7 +14,7 @@
 
 [![PyPI release](https://img.shields.io/pypi/v/glpbench.svg)](https://pypi.org/project/glpbench/)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/glpbench.svg)](https://pypi.org/project/glpbench/)
-[![Documentation](https://img.shields.io/readthedocs/glpbench?label=docs)](https://glpbench.readthedocs.io/en/default/)
+[![Documentation](https://img.shields.io/readthedocs/glpbench?label=docs)](https://glpbench.readthedocs.io/)
 
 [Installation](#installation) | [Experiment CLI](#experiment-cli) | [Benchmark grids](#benchmark-grids) | [Configuration](#configuration-formats) | [Python API](#python-api) | [Documentation](https://glpbench.readthedocs.io/)
 
@@ -196,7 +196,7 @@ glpbench experiment cora out/results.csv --model-type ./models/my_model.py
 The file is loaded only for the current process, and its resolved path and
 SHA-256 digest are recorded with experiment results. Relative model paths in
 configuration files are resolved from the configuration file's directory. See the
-[model guide](https://glpbench.readthedocs.io/en/default/models.html) for the
+[model guide](https://glpbench.readthedocs.io/en/latest/models.html) for the
 adapter convention and the reusable adapter-conformance check.
 
 Bundled datasets are Cora, CiteSeer, PubMed, Amazon Photo, Amazon Computers,
