@@ -8,8 +8,9 @@ from typing import Mapping
 
 import torch
 
-from glpbench.contracts import ModelCapabilities, TrainingLoss
+from glpbench.contracts import ModelCapabilities
 from glpbench.exceptions import ConfigurationError, TrainingError
+from glpbench.models.base import BaseModelAdapter, _freeze
 from glpbench.models.link_prediction import (
     AGAE_Model,
     DEALModel,
@@ -52,15 +53,6 @@ _DEAL_DEFAULTS = {
 }
 
 
-def _freeze(value):
-    """Return a recursively immutable copy of a parameter value."""
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(item) for item in value)
-    return value
-
-
 def _mutable_mapping(value: Mapping[str, object]) -> dict[str, object]:
     """Copy a possibly immutable parameter mapping for a constructor."""
     result = {}
@@ -94,43 +86,10 @@ def _number(value, name, *, minimum=None, positive=False):
         )
 
 
-class _BaseAdapter:
-    """Share validation, loss delegation, and scoring across adapters."""
+class _BuiltinAdapter(BaseModelAdapter):
+    """Construct bundled models with their existing keyword arguments."""
 
-    name: str
     model_class: type[torch.nn.Module]
-    defaults: Mapping[str, object] = MappingProxyType({})
-    capabilities: ModelCapabilities
-
-    @property
-    def parameter_defaults(self) -> Mapping[str, object]:
-        """Return immutable defaults defining accepted model parameters."""
-        return self.defaults
-
-    def validate_parameters(
-        self, parameters: Mapping[str, object]
-    ) -> Mapping[str, object]:
-        """Validate and normalize model construction parameters."""
-        if not isinstance(parameters, Mapping):
-            raise ConfigurationError(
-                "model parameters must be a mapping",
-                component="model-adapter",
-                model=self.name,
-            )
-        unknown = set(parameters).difference(self.defaults)
-        if unknown:
-            fields = ", ".join(sorted(unknown))
-            raise ConfigurationError(
-                f"unsupported model parameter(s): {fields}",
-                component="model-adapter",
-                model=self.name,
-            )
-        normalized = {**self.defaults, **dict(parameters)}
-        self._validate_values(normalized)
-        return _freeze(normalized)
-
-    def _validate_values(self, parameters: Mapping[str, object]) -> None:
-        """Validate normalized values for one adapter."""
 
     def _constructor_parameters(
         self, train_data, parameters: Mapping[str, object]
@@ -145,41 +104,7 @@ class _BaseAdapter:
         )
         return self.model_class(**constructor_parameters)
 
-    def compute_training_loss(
-        self,
-        model: torch.nn.Module,
-        train_data,
-        edge_label_index: torch.Tensor,
-        edge_label: torch.Tensor,
-        criterion: torch.nn.Module,
-    ) -> TrainingLoss:
-        """Delegate loss computation and normalize its return type."""
-        total, components = model.compute_training_loss(
-            train_data, edge_label_index, edge_label, criterion
-        )
-        return TrainingLoss(total=total, components=components)
-
-    @torch.no_grad()
-    def score_edges(
-        self, model: torch.nn.Module, data, edge_index: torch.Tensor
-    ) -> torch.Tensor:
-        """Score candidate edges using the existing model semantics."""
-        model.eval()
-        representations = model.encode(data.x, data.edge_index)
-        scores = model.decode_edges(representations, edge_index, data).view(-1)
-        if self.capabilities.output_kind != "probabilities":
-            scores = scores.sigmoid()
-        return scores
-
-    def result_metadata(
-        self, parameters: Mapping[str, object]
-    ) -> Mapping[str, object]:
-        """Return immutable model-specific result fields."""
-        self.validate_parameters(parameters)
-        return MappingProxyType({})
-
-
-class _GraphAdapter(_BaseAdapter):
+class _GraphAdapter(_BuiltinAdapter):
     defaults = MappingProxyType(_GRAPH_DEFAULTS)
 
     def _validate_values(self, parameters):
@@ -322,7 +247,7 @@ class VGAEAdapter(_GraphAdapter):
         return _freeze(metadata)
 
 
-class DEALAdapter(_BaseAdapter):
+class DEALAdapter(_BuiltinAdapter):
     """Adapt the deep embedding alignment model."""
 
     name = "deal"
@@ -396,11 +321,12 @@ class DEALAdapter(_BaseAdapter):
         })
 
 
-class FeatureCosineAdapter(_BaseAdapter):
+class FeatureCosineAdapter(_BuiltinAdapter):
     """Adapt parameter-free feature cosine similarity."""
 
     name = "feature-cosine"
     model_class = FeatureCosineModel
+    defaults = MappingProxyType({})
     capabilities = ModelCapabilities(
         trainable=False,
         uses_message_passing=False,
@@ -419,7 +345,7 @@ class FeatureCosineAdapter(_BaseAdapter):
         )
 
 
-class FeatureMLPAdapter(_MLPMixin, _BaseAdapter):
+class FeatureMLPAdapter(_MLPMixin, _BuiltinAdapter):
     """Adapt the trainable feature-only MLP."""
 
     name = "feature-mlp"

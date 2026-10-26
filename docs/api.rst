@@ -18,8 +18,10 @@ Component interfaces
 --------------------
 
 These runtime-checkable protocols describe the intended extension boundaries
-without requiring user components to inherit from GLPBench base classes. The
-bundled models expose adapters implementing the model contract. The
+without requiring user components to inherit from GLPBench base classes.
+Model authors can also subclass ``glpbench.models.BaseModelAdapter`` for shared
+validation, loss, and scoring behavior. The bundled models expose adapters
+implementing the model contract. The
 ``glpbench.models.LinkPrediction`` compatibility façade and current runners
 resolve construction, loss computation, and scoring through these adapters.
 

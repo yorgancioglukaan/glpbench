@@ -10,6 +10,7 @@ from glpbench.models.adapters import (
     GAEMLPAdapter,
     VGAEAdapter,
 )
+from glpbench.models.base import BaseModelAdapter
 from glpbench.models.link_prediction import (
     AGAE_Model,
     DEALModel,
@@ -41,6 +42,7 @@ __all__ = [
     "AGAEAdapter",
     "AGAE_Model",
     "AGAEMLPAdapter",
+    "BaseModelAdapter",
     "DEALAdapter",
     "DEALModel",
     "FeatureCosineAdapter",
