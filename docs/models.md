@@ -99,11 +99,11 @@ model-specific implementation.
 
 ### Required adapter interface
 
-GLPBench currently validates adapters against the runtime-checkable
-`ModelAdapter` protocol. A public abstract base class is planned but is not yet
-available, so a from-scratch adapter must define every field and method below.
-Run the conformance check at the end of this page before using the adapter in
-an experiment.
+GLPBench validates adapters against the runtime-checkable `ModelAdapter`
+protocol. Subclass `BaseModelAdapter` to reuse common parameter validation,
+loss delegation, scoring, and empty result metadata, or implement the protocol
+directly. Run the conformance check at the end of this page before using an
+adapter in an experiment.
 
 - `name: str` is the unique canonical registration name. It must be nonempty.
 - `capabilities: ModelCapabilities` declares whether the model is trainable,
@@ -136,6 +136,43 @@ adapter instance to `MODEL_ADAPTER`. Registration and loading check the
 protocol structure, capabilities, parameter declaration, name collisions, and
 file provenance. The conformance utility additionally exercises construction,
 loss, gradients, scoring, metadata, and input-mutation behavior.
+
+### Subclass the adapter base
+
+`BaseModelAdapter` requires a name, capabilities, an immutable `defaults`
+mapping, and a `build()` implementation. The model constructed by `build()`
+can use the supplied loss and scoring methods by implementing
+`compute_training_loss()`, `encode()`, and `decode_edges()` as the bundled models
+do. Override either adapter method for a different loss or scoring path:
+
+```python
+from types import MappingProxyType
+
+from glpbench.contracts import ModelCapabilities
+from glpbench.models import BaseModelAdapter
+
+
+class MyAdapter(BaseModelAdapter):
+    name = "my-model"
+    capabilities = ModelCapabilities(requires_labels=True)
+    defaults = MappingProxyType({"hidden_channels": 64})
+
+    def _validate_values(self, parameters):
+        if parameters["hidden_channels"] <= 0:
+            raise ValueError("hidden_channels must be positive")
+
+    def build(self, train_data, parameters):
+        parameters = self.validate_parameters(parameters)
+        return MyModel(train_data.num_features, parameters["hidden_channels"])
+
+
+MODEL_ADAPTER = MyAdapter()
+```
+
+The base class checks required declarations when instantiated, merges and
+freezes defaults, and rejects unknown parameters. The full example below
+implements the structural protocol directly and illustrates custom loss and
+scoring methods.
 
 The following complete example implements a trainable, feature-only pair MLP.
 It deliberately does not use the message-passing graph. Node features are
