@@ -55,6 +55,63 @@ import glpbench.models.link_prediction as link_prediction
 
 
 class TestBenchmarkRunner(unittest.TestCase):
+    def test_adapter_parameters_survive_grid_and_selected_job_routing(self):
+        class Adapter:
+            name = "custom"
+            parameter_defaults = {"scale": 1.0}
+            capabilities = SimpleNamespace(
+                trainable=True, uses_conv_layer=False,
+                requires_reduced_features=False,
+                supports_agae_regularization=False,
+            )
+
+            def validate_parameters(self, values):
+                if values.get("scale", 1.0) <= 0:
+                    raise ValueError("scale must be positive")
+                return {**self.parameter_defaults, **values}
+
+        adapter = Adapter()
+        defaults = {**benchmark._DEFAULTS, "query_size": 5}
+        grid = benchmark.ModelGrid(
+            "custom", ("GCNConv",), ("pca",),
+            (benchmark.RegularizationConfig("none"),), {"scale": 2.5},
+        )
+        config = benchmark.BenchmarkConfig(
+            output="out/test.csv", data_root="data", seeds=(1,),
+            defaults=defaults, datasets=("cora",), models=(grid,),
+            error_output="out/errors.jsonl",
+        )
+        with patch.object(benchmark, "get_model_adapter", return_value=adapter):
+            job = benchmark.expand_benchmark_config(config)[0]
+            self.assertEqual(job.to_namespace().model_parameters, {"scale": 2.5})
+            invalid = replace(grid, parameters={"scale": -1.0})
+            with self.assertRaisesRegex(ValueError, "scale must be positive"):
+                benchmark.expand_benchmark_config(
+                    replace(config, models=(invalid,))
+                )
+
+            with tempfile.TemporaryDirectory() as directory:
+                selected = Path(directory) / "selected.yaml"
+                selected.write_text(
+                    "version: 1\nkind: selected-hyperparameters\n"
+                    "selections:\n  cora:\n    custom:\n"
+                    "      hyperparameters:\n        scale: 3.5\n",
+                    encoding="utf-8",
+                )
+                selected_config = replace(config, selected_configurations=selected)
+                selected_job = benchmark.expand_benchmark_config(selected_config)[0]
+                self.assertEqual(
+                    selected_job.to_namespace().model_parameters, {"scale": 3.5}
+                )
+                selected.write_text(
+                    "version: 1\nkind: selected-hyperparameters\n"
+                    "selections:\n  cora:\n    custom:\n"
+                    "      hyperparameters:\n        typo: 3.5\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "Unknown selected hyperparameter"):
+                    benchmark.expand_benchmark_config(selected_config)
+
     @staticmethod
     def _write_config(directory, content):
         path = Path(directory) / "benchmark.yaml"

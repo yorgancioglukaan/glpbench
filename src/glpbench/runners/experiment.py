@@ -384,6 +384,10 @@ def parse_args():
     parser.add_argument("--decoder-dropout", type=float, default=0.0)
     parser.add_argument("--kl-weight", type=float, default=1.0)
     parser.add_argument(
+        "--model-parameters", type=_json_object, default=None,
+        help="JSON object of parameters declared by the selected model adapter",
+    )
+    parser.add_argument(
         "--agae-regularization",
         choices=available_agae_regularizers(),
         action="append",
@@ -538,6 +542,15 @@ def run_experiment(
     model_adapters = {
         model_type: get_model_adapter(model_type) for model_type in model_types
     }
+    explicit_model_parameters = getattr(args, "model_parameters", None) or {}
+    if not isinstance(explicit_model_parameters, dict):
+        raise ValueError("model_parameters must be a mapping")
+    for model_type, adapter in model_adapters.items():
+        unknown = set(explicit_model_parameters).difference(adapter.parameter_defaults)
+        if unknown:
+            raise ValueError(
+                f"Unknown model parameter for {model_type}: {sorted(unknown)[0]}"
+            )
     if (
         not any(spec.capabilities.supports_agae_regularization for spec in model_adapters.values())
         and selected_regularizers != ("none",)
@@ -716,6 +729,17 @@ def run_experiment(
                 "regularization_type": regularization_type,
                 "regularization_strength": regularization_strength,
             })
+            conflicting = {
+                name for name, value in explicit_model_parameters.items()
+                if name in supplied_model_parameters
+                and supplied_model_parameters[name] != value
+            }
+            if conflicting:
+                raise ValueError(
+                    "model_parameters conflict with dedicated model options: "
+                    + ", ".join(sorted(conflicting))
+                )
+            supplied_model_parameters.update(explicit_model_parameters)
             model_parameters = resolve_model_parameters(
                 model_adapter, supplied_model_parameters
             )
@@ -830,6 +854,7 @@ def run_experiment(
                     "extra_fields": extra_fields,
                 },
                 model_parameters={
+                    **_mutable_metadata(model_parameters),
                     "conv_layer_type": effective_conv_layer,
                     "hidden_channels": args.hidden_channels,
                     "out_channels": args.out_channels,
@@ -866,6 +891,7 @@ def run_experiment(
                         early_stopping_minimum_epochs
                     ),
                     "extra_fields": extra_fields,
+                    "model_parameters": _mutable_metadata(model_parameters),
                 })
                 for split_type in ("transductive", "inductive")
             }

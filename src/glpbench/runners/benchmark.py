@@ -764,6 +764,17 @@ _SELECTED_PARAMETER_KEYS = {
     "lambda_aa", "lambda_sa", "similarity_scale", "similarity_margin",
     "gatv2_kwargs",
 }
+
+
+def _declared_model_parameters(model_type, values):
+    """Select and validate adapter parameters from benchmark values."""
+    adapter = get_model_adapter(model_type)
+    declared = set(adapter.parameter_defaults)
+    selected = {
+        name: value for name, value in values.items() if name in declared
+    }
+    adapter.validate_parameters(selected)
+    return selected
 _DEAL_PARAMETER_MAP = {
     "theta_ss": "deal_theta_ss",
     "theta_aa": "deal_theta_aa",
@@ -803,7 +814,10 @@ def _selected_experiment_job(config, dataset, model, selections):
         selection.get("hyperparameters"),
         f"selections.{dataset}.{model.type}.hyperparameters",
     )
-    unknown = set(hyperparameters).difference(_SELECTED_PARAMETER_KEYS)
+    model_adapter = get_model_adapter(model.type)
+    unknown = set(hyperparameters).difference(
+        _SELECTED_PARAMETER_KEYS | set(model_adapter.parameter_defaults)
+    )
     if unknown:
         raise ValueError(
             f"Unknown selected hyperparameter: {sorted(unknown)[0]}"
@@ -815,7 +829,6 @@ def _selected_experiment_job(config, dataset, model, selections):
     if conv_layer not in _CONV_LAYER_TYPES:
         raise ValueError("Unknown selected convolution layer")
 
-    model_adapter = get_model_adapter(model.type)
     reducer = values.pop(
         "reduction_method", config.defaults["reduction_method"]
     )
@@ -848,7 +861,9 @@ def _selected_experiment_job(config, dataset, model, selections):
                 raise ValueError(f"{source} is only supported by DEAL")
             values[destination] = values.pop(source)
 
+    model_parameters = _declared_model_parameters(model.type, values)
     parameters = {**config.defaults, **values}
+    parameters["model_parameters"] = model_parameters
     parameters.update({
         "out_filepath": config.output,
         "data_root": config.data_root,
@@ -917,6 +932,9 @@ def expand_benchmark_config(config):
             model.regularization,
         ):
             parameters = {**config.defaults, **model.parameters}
+            parameters["model_parameters"] = _declared_model_parameters(
+                model.type, model.parameters
+            )
             parameters.update({
                 "out_filepath": config.output,
                 "data_root": config.data_root,
