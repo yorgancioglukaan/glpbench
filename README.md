@@ -18,10 +18,11 @@
 
 [Installation](#installation) | [Experiment CLI](#experiment-cli) | [Benchmark grids](#benchmark-grids) | [Configuration](#configuration-formats) | [Python API](#python-api) | [Documentation](https://glpbench.readthedocs.io/)
 
-GLPBench is a Python library and command-line toolkit for reproducible graph
-link-prediction evaluation. It provides benchmark datasets, matched
-transductive and semi-inductive protocols, leakage audits, reference models,
-hyperparameter search, benchmark grids, and structured result logging.
+GLPBench (Graph Link Prediction Benchmark) is a Python library and
+command-line toolkit for reproducible graph link-prediction evaluation. It
+provides benchmark datasets, matched transductive and semi-inductive protocols,
+leakage audits, reference models, hyperparameter search, benchmark grids, and
+structured result logging.
 
 This is an alpha release. Its public API and configuration schema may change
 before the first stable release.

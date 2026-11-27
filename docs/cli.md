@@ -59,6 +59,10 @@ glpbench experiment cora out/local-model.csv \
 
 The adapter is loaded only for the current process. See [Models](models.md)
 for the file convention and adapter contract.
+Pass adapter-declared values that lack dedicated flags as a JSON object, for
+example `--model-parameters '{"pair_score_scale": 2.0}'`. Unknown keys and
+invalid values are rejected by the selected adapter. If a key is also set by
+a dedicated option, the values must agree.
 
 `experiment` is configured entirely with command-line arguments; it does not
 use a YAML configuration file. The output CSV contains one row per model,
@@ -122,6 +126,9 @@ Model entries may add architecture-specific parameters, reduction methods, or
 regularization profiles. See
 [`configs/example_benchmark.yaml`](https://github.com/yorgancioglukaan/glpbench/blob/main/configs/example_benchmark.yaml)
 for a broader example.
+For a custom adapter, place declared values under the model entry's
+`parameters` mapping, such as `parameters: {pair_score_scale: 2.0}`.
+Selected-configuration benchmarks also carry custom values from search results.
 
 The result CSV has the same row structure as `experiment`, making rows directly
 comparable after grouping by dataset, seed, and split type. Failed jobs are

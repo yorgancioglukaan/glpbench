@@ -5,6 +5,9 @@ link-prediction evaluation. It provides attributed benchmark datasets,
 transductive and semi-inductive protocols, leakage audits, reference models,
 hyperparameter search, benchmark grids, and structured result logging.
 
+The [GLPBench source repository](https://github.com/yorgancioglukaan/glpbench)
+contains the code, issue tracker, and example configurations.
+
 ```{toctree}
 :maxdepth: 2
 :caption: User guide
