@@ -322,20 +322,36 @@ glpbench experiment cora out/results.csv \
   --decoder-dropout 0.1
 ```
 
-### Current custom-parameter limitation
+### Set custom model parameters
 
-The `experiment` and `benchmark` commands currently route only the model
-parameters for which the experiment CLI provides explicit options. This is a
-known limitation: an additional parameter declared by a custom adapter cannot
-yet be set through those commands unless it happens to share an existing CLI
-option. GLPBench plans to replace this fixed routing with a general
-adapter-parameter mapping.
+Use `--model-parameters` with a JSON object to set adapter-declared values in
+an experiment. For example, the adapter above declares `pair_score_scale`:
 
-As a temporary workaround, use the search runner. It accepts model-specific
-keys declared by the adapter's `parameter_defaults` mapping and validates
-their values through `validate_parameters()` without requiring a GLPBench
-source change. For example, the `pair_score_scale` parameter from the adapter
-above can be searched with this model section:
+```bash
+glpbench experiment cora out/pair-mlp.csv \
+  --model-type ./models/pair_mlp.py \
+  --hidden-channels 32 \
+  --model-parameters '{"pair_score_scale": 2.0}'
+```
+
+In a benchmark configuration, put the values under the model's `parameters`:
+
+```yaml
+models:
+  - type: ./models/pair_mlp.py
+    parameters:
+      hidden_channels: 32
+      pair_score_scale: 2.0
+```
+
+Selected configurations produced by search also carry adapter-declared
+parameters into a benchmark. The adapter's `parameter_defaults` declares the
+accepted keys, and `validate_parameters()` checks their values. Dedicated
+experiment flags remain available for built-in options; if the same key is
+supplied with a different value in `--model-parameters`, the experiment rejects
+the conflict.
+
+To tune a custom parameter, use the search runner. For example:
 
 ```yaml
 models:
@@ -353,9 +369,7 @@ then run:
 glpbench search configs/pair_mlp_search.yaml --verbose
 ```
 
-The local adapter path is resolved relative to the configuration file. Use
-the Python API instead when a fixed custom parameter value is needed without
-running a search.
+The local adapter path is resolved relative to the configuration file.
 
 The loader imports only the explicitly named file and requires the
 conventional `MODEL_ADAPTER` export. It registers the adapter for the current
